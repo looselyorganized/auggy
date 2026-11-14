@@ -220,3 +220,150 @@ test("support amount/resource grants are enforced on tools and routes; durable d
     restarted.close();
   }
 });
+
+test("synthetic downstream checkpoint preserves exact idempotency across a separate fresh store", () => {
+  const f = fixture();
+  const current = f.store.authorizationFor(subject("support-agent"));
+  const principal: OrderPrincipal = {
+    provider: "fixture-app",
+    subject: "support-agent",
+    orgId: "synthetic-company",
+    grants: current.grants,
+    authzVersion: current.authzVersion,
+  };
+  const input = {
+    orderId: "order-a",
+    amountCents: 1250,
+    reason: "checkpoint",
+    operationId: "checkpoint-operation",
+  };
+  const first = f.store.simulateRefund(principal, input);
+  const saved = f.store.checkpoint();
+  f.store.close();
+  const restored = createSyntheticOrdersStore(join(f.path, "..", "restored.sqlite"));
+  try {
+    expect(restored.restoreCheckpoint(saved.checkpoint, saved.sha256)).toBe(saved.sha256);
+    expect(restored.simulateRefund(principal, input)).toEqual(first);
+    expect(restored.journal()).toHaveLength(1);
+    expect(restored.checkpoint()).toEqual(saved);
+    expect(() => restored.simulateRefund(principal, { ...input, amountCents: 2500 })).toThrow();
+    expect(() => restored.restoreCheckpoint(saved.checkpoint, saved.sha256)).toThrow(
+      "fresh unused",
+    );
+    expect(restored.journal()).toHaveLength(1);
+  } finally {
+    restored.close();
+  }
+});
+
+test("checkpoint import refuses altered identity, malformed tuples and nonempty or previously used stores", () => {
+  const f = fixture();
+  const authorization = f.store.authorizationFor(subject("support-agent"));
+  f.store.simulateRefund(
+    {
+      provider: "fixture-app",
+      subject: "support-agent",
+      orgId: "synthetic-company",
+      ...authorization,
+    },
+    {
+      orderId: "order-a",
+      amountCents: 1250,
+      reason: "checkpoint",
+      operationId: "checkpoint-one",
+    },
+  );
+  const saved = f.store.checkpoint();
+  try {
+    expect(() => f.store.restoreCheckpoint(saved.checkpoint, saved.sha256)).toThrow("fresh unused");
+    for (const [index, mutate] of [
+      (value: typeof saved.checkpoint) => {
+        value.effects[0]!.subject = "customer-a" as "support-agent";
+      },
+      (value: typeof saved.checkpoint) => {
+        value.effects[0]!.receipt.simulationId = `simulation-${"0".repeat(24)}`;
+      },
+      (value: typeof saved.checkpoint) => {
+        value.effects[0]!.bindingHash = "invalid";
+      },
+      (value: typeof saved.checkpoint) => {
+        value.effects.push(value.effects[0]!);
+      },
+      (value: typeof saved.checkpoint) => {
+        value.policyVersion = "forged-policy" as typeof value.policyVersion;
+      },
+    ].entries()) {
+      const store = createSyntheticOrdersStore(join(f.path, "..", `invalid-${index}.sqlite`));
+      try {
+        const bad = structuredClone(saved.checkpoint);
+        mutate(bad);
+        expect(() => store.restoreCheckpoint(bad, saved.sha256)).toThrow();
+        expect(store.journal()).toEqual([]);
+      } finally {
+        store.close();
+      }
+    }
+    const used = createSyntheticOrdersStore(join(f.path, "..", "used.sqlite"));
+    try {
+      expect(() => used.restoreCheckpoint(saved.checkpoint, "0".repeat(64))).toThrow(
+        "identity mismatch",
+      );
+      used.authorizationFor(subject("customer-a"));
+      expect(() => used.restoreCheckpoint(saved.checkpoint, saved.sha256)).toThrow("fresh unused");
+    } finally {
+      used.close();
+    }
+  } finally {
+    f.store.close();
+  }
+});
+
+test("synthetic effect bound refuses new effects while replaying an existing operation", () => {
+  const f = fixture();
+  const authorization = f.store.authorizationFor(subject("support-agent"));
+  const principal = {
+    provider: "fixture-app",
+    subject: "support-agent",
+    orgId: "synthetic-company",
+    ...authorization,
+  };
+  const input = { orderId: "order-a", amountCents: 1250, reason: "bounded" };
+  try {
+    for (let index = 0; index < 100; index++)
+      f.store.simulateRefund(principal, { ...input, operationId: `bounded-${index}` });
+    const first = f.store.journal()[0];
+    expect(() =>
+      f.store.simulateRefund(principal, { ...input, operationId: "overflow" }),
+    ).toThrow();
+    expect(f.store.simulateRefund(principal, { ...input, operationId: "bounded-0" })).toEqual(
+      first!.receipt,
+    );
+    expect(f.store.checkpoint().checkpoint.effects).toHaveLength(100);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("authenticated synthetic handler bounds a stalled body without applying effects", async () => {
+  const f = fixture();
+  let cancelled = false;
+  const handler = createSyntheticOrdersHandler(f.store, "bounded-token");
+  try {
+    const response = await handler(
+      new Request("http://fixture/refunds/simulate", {
+        method: "POST",
+        headers: { authorization: "Bearer bounded-token" },
+        body: new ReadableStream({
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      }),
+    );
+    expect(response.status).toBe(400);
+    expect(cancelled).toBe(true);
+    expect(f.store.journal()).toEqual([]);
+  } finally {
+    f.store.close();
+  }
+});

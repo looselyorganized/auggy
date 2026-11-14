@@ -264,3 +264,68 @@ test("evidence counts preserve committed effects on partial runs and distinguish
   ).toEqual({ effects: 1, duplicates: 0, unauthorized: 1 });
   expect(() => applicationEffectCounts([effect], [])).toThrow("unaccounted");
 });
+
+test("model sealing is immutable and cannot be claimed by ordinary cleanup", async () => {
+  const model = createApplicationModelFixture();
+  await model.configure({
+    tool: { name: "read_order", input: { orderId: "order-a" }, invalidInput: {} },
+    sentinel: "customer-a-private-marker",
+  });
+  await model.configure({
+    tool: { name: "read_order", input: { orderId: "order-b" }, invalidInput: {} },
+    sentinel: "customer-b-private-marker",
+  });
+  const sealed = await model.seal();
+  expect(sealed.state).toBe("sealed");
+  expect(sealed.active).toBe(0);
+  expect(sealed.providers).toHaveLength(2);
+  expect(await model.seal()).toEqual(sealed);
+  await model.stop();
+  expect(model.snapshot()).toEqual(sealed);
+  const stopped = createApplicationModelFixture();
+  await stopped.stop();
+  expect(() => stopped.seal()).toThrow("after cleanup");
+});
+
+test("model forced cleanup aborts an admitted stalled body and reports no surviving requests", async () => {
+  const model = createApplicationModelFixture();
+  await model.configure({
+    tool: { name: "read_order", input: { orderId: "order-a" }, invalidInput: {} },
+    sentinel: "customer-a-private-marker",
+  });
+  const controller = new AbortController();
+  const call = fetch(`${model.origin}/v1/messages`, {
+    method: "POST",
+    headers: { "x-api-key": PROVIDER_FIXTURE_API_KEY, "content-type": "application/json" },
+    body: new ReadableStream({
+      start(stream) {
+        stream.enqueue(new TextEncoder().encode("{"));
+      },
+    }),
+    signal: controller.signal,
+  }).catch(() => null);
+  try {
+    const deadline = Date.now() + 1000;
+    while (model.snapshot().active === 0 && Date.now() < deadline) await Bun.sleep(5);
+    expect(model.snapshot().active).toBe(1);
+    await model.stop();
+    expect(model.snapshot().active).toBe(0);
+    expect(() => model.seal()).toThrow("after cleanup");
+  } finally {
+    controller.abort();
+    await call;
+    await model.stop();
+  }
+});
+
+test("forced model cleanup racing an in-progress seal cannot produce accepted terminal evidence", async () => {
+  const model = createApplicationModelFixture();
+  const sealing = model.seal().then(
+    () => false,
+    () => true,
+  );
+  await model.stop();
+  expect(await sealing).toBe(true);
+  expect(model.snapshot().state).not.toBe("sealed");
+  expect(model.snapshot().active).toBe(0);
+});

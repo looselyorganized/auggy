@@ -12,6 +12,48 @@ import type {
 import { OrdersServiceError } from "../agent-integration/orders/service-client";
 
 export const SYNTHETIC_POLICY_VERSION = "synthetic-company-policy-v1";
+export const SYNTHETIC_CHECKPOINT_LIMITS = Object.freeze({ effects: 100, bytes: 64 * 1024 });
+const checkpointEffect = z
+  .object({
+    operationHash: z.string().regex(/^[a-f0-9]{64}$/),
+    bindingHash: z.string().regex(/^[a-f0-9]{64}$/),
+    subject: z.literal("support-agent"),
+    receipt: z
+      .object({
+        simulationId: z.string().regex(/^simulation-[a-f0-9]{24}$/),
+        orderId: z.literal("order-a"),
+        amountCents: z.number().int().min(1).max(5000),
+        simulated: z.literal(true),
+      })
+      .strict(),
+  })
+  .strict();
+const checkpointSchema = z
+  .object({
+    version: z.literal(1),
+    policyVersion: z.literal(SYNTHETIC_POLICY_VERSION),
+    effects: z.array(checkpointEffect).max(SYNTHETIC_CHECKPOINT_LIMITS.effects),
+  })
+  .strict();
+export type SyntheticOrdersCheckpoint = z.infer<typeof checkpointSchema>;
+
+/** A synthetic downstream checkpoint, never an Auggy managed-state backup. */
+export function serializeSyntheticOrdersCheckpoint(value: unknown) {
+  const checkpoint = checkpointSchema.parse(value);
+  const seen = new Set<string>();
+  for (const effect of checkpoint.effects) {
+    if (
+      seen.has(effect.operationHash) ||
+      effect.receipt.simulationId !== `simulation-${effect.operationHash.slice(0, 24)}`
+    )
+      throw new Error("Invalid synthetic checkpoint effect tuple");
+    seen.add(effect.operationHash);
+  }
+  const bytes = JSON.stringify(checkpoint);
+  if (Buffer.byteLength(bytes) > SYNTHETIC_CHECKPOINT_LIMITS.bytes)
+    throw new Error("Synthetic checkpoint exceeded byte bound");
+  return { checkpoint, bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
+}
 const provider = "fixture-app";
 const orgId = "synthetic-company";
 const maximumRefund = 5000;
@@ -83,8 +125,11 @@ export function createSyntheticOrdersStore(dbPath: string) {
       );
   });
   seed.immediate();
+  let touched = false;
+  let imported = false;
 
   function authorizationFor(subject: CompanySubject): CompanyAuthorization {
+    touched = true;
     const account =
       subject.provider === provider && subject.orgId === orgId
         ? db
@@ -191,6 +236,9 @@ export function createSyntheticOrdersStore(dbPath: string) {
         if (existing.binding_hash !== binding) throw new OrdersServiceError(409);
         return JSON.parse(existing.receipt);
       }
+      const count = db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM effects").get();
+      if (!count || count.count >= SYNTHETIC_CHECKPOINT_LIMITS.effects)
+        throw new OrdersServiceError(503);
       const receipt: RefundSimulation = {
         simulationId: `simulation-${operation.slice(0, 24)}`,
         orderId: input.orderId,
@@ -206,6 +254,53 @@ export function createSyntheticOrdersStore(dbPath: string) {
       return receipt;
     },
   );
+  function checkpoint() {
+    const rows = db
+      .query<
+        {
+          operation_hash: string;
+          binding_hash: string;
+          receipt: string;
+          subject: string;
+        },
+        []
+      >(
+        "SELECT operation_hash, binding_hash, receipt, subject FROM effects ORDER BY rowid LIMIT 101",
+      )
+      .all();
+    return serializeSyntheticOrdersCheckpoint({
+      version: 1,
+      policyVersion: SYNTHETIC_POLICY_VERSION,
+      effects: rows.map((row) => ({
+        operationHash: row.operation_hash,
+        bindingHash: row.binding_hash,
+        subject: row.subject,
+        receipt: JSON.parse(row.receipt),
+      })),
+    });
+  }
+  function restoreCheckpoint(value: unknown, expectedSHA256: string) {
+    if (!/^[a-f0-9]{64}$/.test(expectedSHA256)) throw new Error("Missing checkpoint identity");
+    const prepared = serializeSyntheticOrdersCheckpoint(value);
+    if (prepared.sha256 !== expectedSHA256)
+      throw new Error("Synthetic checkpoint identity mismatch");
+    const restore = db.transaction(() => {
+      const count = db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM effects").get();
+      if (touched || imported || !count || count.count !== 0)
+        throw new Error("Synthetic checkpoint requires a fresh unused store");
+      const insert = db.query("INSERT INTO effects VALUES (?, ?, ?, ?)");
+      for (const effect of prepared.checkpoint.effects)
+        insert.run(
+          effect.operationHash,
+          effect.bindingHash,
+          JSON.stringify(effect.receipt),
+          effect.subject,
+        );
+    });
+    restore.immediate();
+    imported = true;
+    return prepared.sha256;
+  }
   return {
     authorizationFor,
     read,
@@ -214,17 +309,41 @@ export function createSyntheticOrdersStore(dbPath: string) {
       input: { orderId: string; amountCents: number; reason: string; operationId: string },
     ) => simulate.immediate(principal, input),
     journal: () =>
-      db
-        .query<{ receipt: string; subject: string }, []>(
-          "SELECT receipt, subject FROM effects ORDER BY rowid",
-        )
-        .all()
-        .map((row) => ({
-          subject: row.subject,
-          receipt: JSON.parse(row.receipt) as RefundSimulation,
-        })),
+      checkpoint().checkpoint.effects.map((effect) => ({
+        subject: effect.subject,
+        receipt: effect.receipt,
+      })),
+    checkpoint,
+    restoreCheckpoint,
     close: () => db.close(),
   };
+}
+
+async function readSyntheticBody(request: Request) {
+  const reader = request.body?.getReader();
+  if (!reader) throw new Error("missing body");
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  let expired = false;
+  const timer = setTimeout(() => {
+    expired = true;
+    void reader.cancel().catch(() => {});
+  }, 2000);
+  try {
+    for (;;) {
+      const part = await reader.read();
+      if (expired || request.signal.aborted) throw new Error("request body timed out or aborted");
+      if (part.done) break;
+      bytes += part.value.byteLength;
+      if (bytes > 16 * 1024) throw new Error("request too large");
+      chunks.push(part.value);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } finally {
+    clearTimeout(timer);
+    void reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
 }
 
 export function createSyntheticOrdersHandler(
@@ -243,23 +362,7 @@ export function createSyntheticOrdersHandler(
         { status: 405, headers: { allow: "POST" } },
       );
     try {
-      const reader = request.body?.getReader();
-      if (!reader) throw new Error("missing body");
-      const chunks: Uint8Array[] = [];
-      let bytes = 0;
-      try {
-        for (;;) {
-          const part = await reader.read();
-          if (part.done) break;
-          bytes += part.value.byteLength;
-          if (bytes > 16 * 1024) throw new Error("request too large");
-          chunks.push(part.value);
-        }
-      } finally {
-        await reader.cancel();
-        reader.releaseLock();
-      }
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const body = await readSyntheticBody(request);
       switch (new URL(request.url).pathname) {
         case "/authorization":
           return Response.json(store.authorizationFor(accountSchema.parse(body)));
