@@ -56,13 +56,24 @@ function plan(): HostedIntegrationPlan {
       services: [
         { role: "http", name: "proof-http" },
         { role: "worker", name: "proof-worker" },
-        { role: "recovery", name: "proof-recovery" },
+        { role: "http-recovery", name: "proof-http-recovery" },
+        { role: "worker-recovery", name: "proof-worker-recovery" },
       ],
       volumes: [
         { alias: "http-original", serviceRole: "http", mountPath: "/app/data", sizeMB: 50000 },
         { alias: "worker-original", serviceRole: "worker", mountPath: "/app/data", sizeMB: 50000 },
-        { alias: "http-restore", serviceRole: "recovery", mountPath: "/app/data", sizeMB: 50000 },
-        { alias: "worker-restore", serviceRole: "recovery", mountPath: "/app/data", sizeMB: 50000 },
+        {
+          alias: "http-restore",
+          serviceRole: "http-recovery",
+          mountPath: "/app/data",
+          sizeMB: 50000,
+        },
+        {
+          alias: "worker-restore",
+          serviceRole: "worker-recovery",
+          mountPath: "/app/data",
+          sizeMB: 50000,
+        },
       ],
     },
     ssh: {
@@ -94,7 +105,7 @@ function plan(): HostedIntegrationPlan {
       hostedFixtureSHA256: sha(17),
     },
     limits: {
-      maxServices: 3,
+      maxServices: 4,
       maxVolumes: 4,
       maxVolumeSizeMB: 50000,
       maxCpuPerService: 4,
@@ -197,6 +208,7 @@ function serviceFixture() {
     prepared: fixture.prepared,
     project,
     role: "http" as const,
+    previousServiceIds: [] as string[],
     creation: data({ serviceCreate: { id: uuid(4), name: "proof-http", projectId: uuid(2) } }),
     capMutation: data({ serviceInstanceLimitsUpdate: true }),
     policyMutation: data({ serviceInstanceUpdate: true }),
@@ -459,7 +471,7 @@ describe("hosted v2 gate only; no resource creation or certification", () => {
       (input) => {
         input.railway.services = [
           ...input.railway.services,
-          { role: "recovery", name: "extra-service" },
+          { role: "http-recovery", name: "extra-service" },
         ];
       },
       (input) => {
@@ -482,15 +494,23 @@ describe("hosted v2 gate only; no resource creation or certification", () => {
     }
   });
 
-  test("sequential recovery may reuse primary service slots but still counts four distinct volumes", () => {
+  test("recovery requires four dedicated service slots and four distinct volumes", () => {
     const input = plan();
+    expect(prepareHostedIntegration(input).plan.railway.services).toHaveLength(4);
     input.railway.services = input.railway.services.slice(0, 2);
     input.limits.maxServices = 2;
     input.railway.volumes[2]!.serviceRole = "http";
     input.railway.volumes[3]!.serviceRole = "worker";
-    expect(prepareHostedIntegration(input).plan.railway.volumes).toHaveLength(4);
-    input.limits.maxVolumes = 3;
-    expect(() => prepareHostedIntegration(input)).toThrow("resource limits");
+    expect(() => prepareHostedIntegration(input)).toThrow("four distinct");
+    const tooMany = plan();
+    tooMany.limits.maxServices = 5;
+    expect(() => prepareHostedIntegration(tooMany)).toThrow();
+    const swapped = plan();
+    swapped.railway.volumes[2]!.serviceRole = "worker-recovery";
+    expect(() => prepareHostedIntegration(swapped)).toThrow("wrong approved service role");
+    const duplicate = plan();
+    duplicate.railway.services[3]!.name = duplicate.railway.services[2]!.name;
+    expect(() => prepareHostedIntegration(duplicate)).toThrow("four distinct");
   });
 
   test("unknown credential fields and private material never survive review reconstruction", () => {
@@ -543,22 +563,52 @@ describe("hosted readback bindings; no network calls", () => {
       },
       { role: "worker", serviceName: "proof-worker", artifactId: "http-baseline", allowed: false },
       {
-        role: "recovery",
-        serviceName: "proof-recovery",
+        role: "http-recovery",
+        serviceName: "proof-http-recovery",
         artifactId: "http-maintenance",
         allowed: true,
       },
       {
-        role: "recovery",
-        serviceName: "proof-recovery",
+        role: "http-recovery",
+        serviceName: "proof-http-recovery",
         artifactId: "http-baseline",
         allowed: true,
       },
       {
-        role: "recovery",
-        serviceName: "proof-recovery",
+        role: "http-recovery",
+        serviceName: "proof-http-recovery",
         artifactId: "none-maintenance",
         allowed: true,
+      },
+      {
+        role: "http-recovery",
+        serviceName: "proof-http-recovery",
+        artifactId: "none-baseline",
+        allowed: false,
+      },
+      {
+        role: "worker-recovery",
+        serviceName: "proof-worker-recovery",
+        artifactId: "none-baseline",
+        allowed: true,
+      },
+      {
+        role: "worker-recovery",
+        serviceName: "proof-worker-recovery",
+        artifactId: "none-maintenance",
+        allowed: true,
+      },
+      {
+        role: "worker-recovery",
+        serviceName: "proof-worker-recovery",
+        artifactId: "http-baseline",
+        allowed: false,
+      },
+      {
+        role: "worker-recovery",
+        serviceName: "proof-worker-recovery",
+        artifactId: "http-maintenance",
+        allowed: false,
       },
     ] as const;
     for (const row of cases) {
@@ -572,7 +622,10 @@ describe("hosted readback bindings; no network calls", () => {
         ...fixture,
         prepared,
         service,
-        artifactId: row.role === "worker" ? "none-baseline" : "http-baseline",
+        artifactId:
+          row.role === "worker" || row.role === "worker-recovery"
+            ? "none-baseline"
+            : "http-baseline",
       });
       const rebind = () =>
         assertHostedInstanceBinding({
@@ -692,6 +745,12 @@ describe("hosted readback bindings; no network calls", () => {
 
   test("refused setters, wrong identities, widened caps or restart policy cannot admit workload", () => {
     expect(bindHostedServiceAdmission(serviceFixture()).serviceId).toBe(uuid(4));
+    const reused = serviceFixture();
+    reused.previousServiceIds = [uuid(4)];
+    expect(() => bindHostedServiceAdmission(reused)).toThrow("reused");
+    const ambiguous = serviceFixture();
+    ambiguous.previousServiceIds = [uuid(8), uuid(8)];
+    expect(() => bindHostedServiceAdmission(ambiguous)).toThrow("distinct-resource");
     const rejected = serviceFixture();
     rejected.capMutation.data.serviceInstanceLimitsUpdate = false;
     expect(() => bindHostedServiceAdmission(rejected)).toThrow("widening");

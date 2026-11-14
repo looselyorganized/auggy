@@ -32,13 +32,24 @@ function plan(): HostedIntegrationPlan {
       services: [
         { role: "http", name: "owned-http" },
         { role: "worker", name: "owned-worker" },
-        { role: "recovery", name: "owned-recovery" },
+        { role: "http-recovery", name: "owned-http-recovery" },
+        { role: "worker-recovery", name: "owned-worker-recovery" },
       ],
       volumes: [
         { alias: "http-original", serviceRole: "http", mountPath: "/app/data", sizeMB: 50000 },
         { alias: "worker-original", serviceRole: "worker", mountPath: "/app/data", sizeMB: 50000 },
-        { alias: "http-restore", serviceRole: "recovery", mountPath: "/app/data", sizeMB: 50000 },
-        { alias: "worker-restore", serviceRole: "recovery", mountPath: "/app/data", sizeMB: 50000 },
+        {
+          alias: "http-restore",
+          serviceRole: "http-recovery",
+          mountPath: "/app/data",
+          sizeMB: 50000,
+        },
+        {
+          alias: "worker-restore",
+          serviceRole: "worker-recovery",
+          mountPath: "/app/data",
+          sizeMB: 50000,
+        },
       ],
     },
     ssh: {
@@ -84,7 +95,7 @@ function plan(): HostedIntegrationPlan {
       hostedFixtureSHA256: sha(14),
     },
     limits: {
-      maxServices: 3,
+      maxServices: 4,
       maxVolumes: 4,
       maxVolumeSizeMB: 50000,
       maxCpuPerService: 4,
@@ -386,6 +397,50 @@ test("production executable hash mismatch refuses without invoking Railway or ne
   await expect(api.run({ actionId: "inventory", operation: "workspace-projects" })).rejects.toThrow(
     "Pinned Railway CLI",
   );
+});
+
+test("dedicated restore roles target distinct services and reject cross-profile volume aliases", () => {
+  const prepared = prepareHostedIntegration(plan());
+  const httpRecovery = {
+    ...project,
+    role: "http-recovery" as const,
+    serviceId: id(30),
+    serviceName: "owned-http-recovery",
+  };
+  const workerRecovery = {
+    ...project,
+    role: "worker-recovery" as const,
+    serviceId: id(31),
+    serviceName: "owned-worker-recovery",
+  };
+  for (const [target, alias] of [
+    [httpRecovery, "http-restore"],
+    [workerRecovery, "worker-restore"],
+  ] as const) {
+    const action = prepareHostedRailwayAction(prepared, {
+      actionId: "restore",
+      operation: "volume-create",
+      service: target,
+      alias,
+    });
+    expect(JSON.parse(action.input.toString()).input.serviceId).toBe(target.serviceId);
+  }
+  expect(() =>
+    prepareHostedRailwayAction(prepared, {
+      actionId: "swapped",
+      operation: "volume-create",
+      service: httpRecovery,
+      alias: "worker-restore",
+    }),
+  ).toThrow("role");
+  expect(() =>
+    prepareHostedRailwayAction(prepared, {
+      actionId: "shared",
+      operation: "service-create",
+      project,
+      role: "recovery" as typeof httpRecovery.role,
+    }),
+  ).toThrow("role");
 });
 
 test("adapter construction rejects changed artifact evidence before any child admission", () => {

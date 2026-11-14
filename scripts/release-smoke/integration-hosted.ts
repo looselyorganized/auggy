@@ -2,7 +2,7 @@
 import { applicationHash } from "./application-consumer";
 import type { IntegrationBuildKind } from "./integration-contracts";
 
-export type HostedServiceRole = "http" | "worker" | "recovery";
+export type HostedServiceRole = "http" | "worker" | "http-recovery" | "worker-recovery";
 export type HostedVolumeAlias =
   | "http-original"
   | "worker-original"
@@ -285,22 +285,21 @@ export function prepareHostedIntegration(input: HostedIntegrationPlan) {
   name(input.railway.region);
   name(input.railway.newProject.name);
   name(input.railway.newProject.environmentName);
-  const services = items(input.railway.services, 3).map((value) => {
+  const services = items(input.railway.services, 4).map((value) => {
     const service = object(value);
     check(
-      typeof service.role === "string" && ["http", "worker", "recovery"].includes(service.role),
+      typeof service.role === "string" &&
+        ["http", "worker", "http-recovery", "worker-recovery"].includes(service.role),
       "Invalid hosted service role",
     );
     name(service.name);
     return { role: service.role as HostedServiceRole, name: service.name };
   });
   check(
-    services.length >= 2 &&
-      services.some((service) => service.role === "http") &&
-      services.some((service) => service.role === "worker") &&
+    services.length === 4 &&
       new Set(services.map((service) => service.role)).size === services.length &&
       new Set(services.map((service) => service.name)).size === services.length,
-    "Hosted proof requires distinct HTTP/worker services and at most one recovery service",
+    "Hosted proof requires four distinct primary and recovery services",
   );
   const volumeAliases: HostedVolumeAlias[] = [
     "http-original",
@@ -311,14 +310,12 @@ export function prepareHostedIntegration(input: HostedIntegrationPlan) {
   const volumes = items(input.railway.volumes, 4).map((value) => {
     const volume = object(value);
     check(volumeAliases.includes(volume.alias as HostedVolumeAlias), "Invalid hosted volume alias");
-    const originalRole = volume.alias === "http-original" ? "http" : "worker";
-    const expectedRole =
-      String(volume.alias).endsWith("-restore") &&
-      services.some((service) => service.role === "recovery")
-        ? "recovery"
-        : String(volume.alias).startsWith("http-")
-          ? "http"
-          : originalRole;
+    const expectedRole = {
+      "http-original": "http",
+      "worker-original": "worker",
+      "http-restore": "http-recovery",
+      "worker-restore": "worker-recovery",
+    }[volume.alias as HostedVolumeAlias] as HostedServiceRole;
     check(volume.serviceRole === expectedRole, "Volume belongs to the wrong approved service role");
     check(volume.mountPath === "/app/data", "Hosted volume must use the admitted runtime mount");
     positive(volume.sizeMB as number, 1_000_000);
@@ -414,7 +411,7 @@ export function prepareHostedIntegration(input: HostedIntegrationPlan) {
   positive(input.actionManifest.actionCount, 128);
 
   const limits = input.limits;
-  positive(limits.maxServices, 3);
+  positive(limits.maxServices, 4);
   positive(limits.maxVolumes, 4);
   positive(limits.maxVolumeSizeMB, 1_000_000);
   positive(limits.maxCpuPerService, 16, false);
@@ -831,6 +828,7 @@ export function bindHostedServiceAdmission(options: {
   prepared: ReturnType<typeof prepareHostedIntegration>;
   project: HostedProjectBinding;
   role: HostedServiceRole;
+  previousServiceIds: readonly string[];
   creation: unknown;
   capMutation: unknown;
   policyMutation: unknown;
@@ -841,6 +839,13 @@ export function bindHostedServiceAdmission(options: {
   const approved = servicePlan(plan, options.role);
   const service = object(responseData(options.creation).serviceCreate);
   id(service.id);
+  check(
+    !options.previousServiceIds.includes(service.id) &&
+      options.previousServiceIds.length < plan.limits.maxServices &&
+      new Set(options.previousServiceIds).size === options.previousServiceIds.length,
+    "Hosted service was reused or exceeds the distinct-resource allowance",
+  );
+  for (const previous of options.previousServiceIds) id(previous);
   check(
     service.projectId === options.project.projectId && service.name === approved.name,
     "Hosted service allocation has the wrong parent/name",
@@ -982,12 +987,10 @@ function runningDeployment(value: unknown): {
 }
 
 function assertArtifactProfile(role: HostedServiceRole, artifact: HostedSourceArtifact): void {
-  // Recovery is the explicitly approved temporary slot for either profile.
-  // Only no-ingress maintenance may temporarily replace a primary profile.
+  // Recovery retains its primary profile; only no-ingress maintenance may cross profiles.
   check(
-    role === "recovery" ||
-      (artifact.purpose === "maintenance" && artifact.profile === "none") ||
-      artifact.profile === (role === "http" ? "http" : "none"),
+    (artifact.purpose === "maintenance" && artifact.profile === "none") ||
+      artifact.profile === (role === "http" || role === "http-recovery" ? "http" : "none"),
     "Hosted artifact belongs to the wrong service profile",
   );
 }
