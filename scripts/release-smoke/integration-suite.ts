@@ -153,9 +153,13 @@ function sourceIdentity(repo: string) {
   let total = 0;
   const inventory = paths.map((path) => {
     check(
-      !path
-        .split("/")
-        .some((part) => part === ".env" || (part.startsWith(".env.") && part !== ".env.example")),
+      // This tracked security-eval canary is deliberate adversarial input, not
+      // deployment credentials. Inventory records its hash only; core packaging
+      // excludes packages/evals entirely.
+      path === "packages/evals/src/security/fixtures/private/.env.fixture" ||
+        !path
+          .split("/")
+          .some((part) => part === ".env" || (part.startsWith(".env.") && part !== ".env.example")),
       "Source inventory contains a private environment file",
     );
     const bytes = readIntegrationFile(repo, path, APPLICATION_BOUNDS.artifactBytes);
