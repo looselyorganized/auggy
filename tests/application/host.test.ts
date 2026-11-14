@@ -24,6 +24,7 @@ import { contractComposer, contractTurnProgram } from "../fixtures/application-c
 import { createSqliteDurableJobStore } from "../../src/jobs/sqlite-store";
 import { routeFixtureAugment } from "../fixtures/route-fixture-augment";
 import { prepareRuntimeDataVolume } from "../../src/cli/runtime-volume";
+import { deploymentManifestFixture } from "../fixtures/deployment-manifest";
 
 const roots: string[] = [];
 const hosts: OwnedApplicationHost[] = [];
@@ -111,6 +112,49 @@ function fixture(augments: Augment[] = []) {
     },
   };
 }
+
+test("deployment metadata rejects wrong identity or known ingress before provider and augment effects", async () => {
+  const f = fixture();
+  const metadata = join(f.project, "auggy-deployment.json");
+  const previous = process.env.AUGGY_DEPLOYMENT_MANIFEST;
+  process.env.AUGGY_DEPLOYMENT_MANIFEST = metadata;
+  let calls = 0;
+  try {
+    const manifest = deploymentManifestFixture({
+      agentId: f.id,
+      agentName: "host-test",
+      configPath: "agent.yaml",
+    });
+    for (const value of [
+      { ...manifest, agentId: `aug1_${crypto.randomUUID()}` },
+      {
+        ...manifest,
+        profile: { kind: "http", port: 8080, healthPath: "/health", consolePath: null },
+      },
+    ]) {
+      writeFileSync(metadata, JSON.stringify(value));
+      const host = f.host({
+        factories: {
+          resolveEngine: async () => {
+            calls++;
+            return createMockModel();
+          },
+          resolveAugments: async () => {
+            calls++;
+            return [];
+          },
+        },
+      });
+      await expect(host.prepare()).rejects.toThrow();
+      await host.stop();
+      expect(f.manifest()).toBeNull();
+    }
+    expect(calls).toBe(0);
+  } finally {
+    if (previous === undefined) delete process.env.AUGGY_DEPLOYMENT_MANIFEST;
+    else process.env.AUGGY_DEPLOYMENT_MANIFEST = previous;
+  }
+});
 
 test("all managed replay paths are admitted before any provider or transport factory", async () => {
   const f = fixture();

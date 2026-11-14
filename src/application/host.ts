@@ -1,4 +1,4 @@
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import type {
   AgentComposer,
   AgentComposition,
@@ -28,6 +28,9 @@ import { enumerateDistributedCoordinationBlockers } from "../coordination/topolo
 import type { HostedAgentInstance } from "./hosted-agent";
 import { acquireRuntimeOwnership, type RuntimeOwnershipOptions } from "./runtime-ownership";
 import { hasConfirmedCleanup } from "./cleanup-proof";
+import { DEPLOYMENT_MANIFEST_ENV } from "../cli/deploy/contracts";
+import { readDeploymentManifest } from "../cli/deploy/manifest";
+import { reconcileDeploymentProfile } from "../cli/deploy/profile";
 
 export interface ApplicationHostOptions extends RuntimeOwnershipOptions {
   configPath: string;
@@ -210,6 +213,15 @@ export function createApplicationHost(options: ApplicationHostOptions): OwnedApp
           throw new Error(
             "[application] distributed coordination is not available for ordinary startup",
           );
+        }
+        const deploymentManifestPath = process.env[DEPLOYMENT_MANIFEST_ENV];
+        if (deploymentManifestPath !== undefined) {
+          const deployment = readDeploymentManifest(deploymentManifestPath, agentDir, {
+            agentId: config.id,
+            agentName: config.name,
+            configPath: relative(agentDir, configPath).split(sep).join("/"),
+          });
+          reconcileDeploymentProfile(deployment.profile, config.augments);
         }
         options.onConfigured?.(config);
         ownership = acquireRuntimeOwnership(configPath, config, options, (acquired) => {

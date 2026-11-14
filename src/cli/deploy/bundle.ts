@@ -1,13 +1,5 @@
-/**
- * Bundle staging — copies an agent dir into a fresh temp directory minus the
- * exclusions defined by ADR-021 (`.env`, `workspace/`, `data/`, `*.db*`, `node_modules/`,
- * `.git/`, `.DS_Store`, `*.tmp`) plus local tooling metadata (`.worktrees/`,
- * `.claude/`, `.auggy/`).
- *
- * The deploy command runs `railway up` from the staging dir so volume-bound
- * state (SQLite files) and secrets (`.env`) never enter the Railway image.
- */
-
+/** Shared bounded, no-follow source copier for Railway staging and portable export. */
+import { createHash } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -17,208 +9,282 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  opendirSync,
   realpathSync,
   readSync,
-  readdirSync,
   rmSync,
-  unlinkSync,
   writeSync,
   type Stats,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { DEPLOYMENT_LIMITS, type DeploymentFileDigest, type StageBundleOptions } from "./contracts";
 
-interface StageBundleOptions {
-  agentDir: string;
-  agentName: string;
-  /** Config-derived state files whose names do not match generic exclusions. */
-  excludedPaths?: readonly string[];
+export type { StageBundleOptions } from "./contracts";
+
+export class BundleError extends Error {}
+
+// Data-only names: importing runtime admission/state implementations here would
+// compromise the passive exporter. Presence is enough; never parse private state.
+const RUNTIME_CONTROL_MARKERS = [
+  ".auggy-state-identity.json",
+  ".auggy-restore-fence.json",
+  ".auggy-runtime-singleton.lock",
+  ".auggy-auth-replay-guard.json",
+  ".auggy-auth-replay-guard.pending",
+] as const;
+
+function isRuntimeStateDirectory(path: string): boolean {
+  return RUNTIME_CONTROL_MARKERS.some(
+    (name) => lstatSync(join(path, name), { throwIfNoEntry: false }) !== undefined,
+  );
 }
 
 const EXCLUDED_NAMES = new Set([
   ".env",
   ".git",
-  ".DS_Store",
+  ".ds_store",
   "node_modules",
   "workspace",
   "data",
   ".worktrees",
   ".claude",
+  ".codex",
   ".auggy",
+  ".auggy-cloud.json",
+  ".npmrc",
   "agent-mail-reviews.json",
   "agent-mail-state.json",
   "admin-overrides.json",
 ]);
 
-function isExcluded(name: string): boolean {
+export function isExcludedBundleName(name: string): boolean {
+  // macOS commonly aliases .ENV to .env. Treat known private names uniformly
+  // on every host instead of exporting a different security boundary on Linux.
+  name = name.toLowerCase();
   if (EXCLUDED_NAMES.has(name)) return true;
+  if (name.startsWith(".auggy-") || name.endsWith(".auggy-state")) return true;
   if (name.startsWith(".env.") && name !== ".env.example") return true;
   if (
-    name.startsWith("agent-mail-reviews.json.") ||
-    name.startsWith("agent-mail-state.json.") ||
-    name.startsWith("admin-overrides.json.")
-  ) {
+    [
+      "agent-mail-reviews.json.",
+      "agent-mail-state.json.",
+      "admin-overrides.json.",
+      ".auggy-cloud.json.",
+    ].some((prefix) => name.startsWith(prefix))
+  )
     return true;
-  }
-  if (/\.(?:db|sqlite|sqlite3)(?:-(?:wal|shm|journal))?$/i.test(name)) return true;
-  if (name.endsWith(".tmp")) return true;
-  if (name.includes(".tmp.")) return true;
-  return false;
-}
-
-function closeQuietly(fd: number | undefined): void {
-  if (fd === undefined) return;
-  try {
-    closeSync(fd);
-  } catch {
-    // Preserve the copy failure that triggered cleanup.
-  }
-}
-
-function isContained(root: string, target: string): boolean {
-  const fromRoot = relative(root, target);
   return (
-    fromRoot !== "" &&
-    fromRoot !== ".." &&
-    !fromRoot.startsWith(`..${sep}`) &&
-    !isAbsolute(fromRoot)
+    /\.(?:db|sqlite|sqlite3)(?:-(?:wal|shm|journal))?$/i.test(name) ||
+    name.endsWith(".tmp") ||
+    name.includes(".tmp.")
   );
 }
 
-function isConfiguredExcluded(path: string, excludedPaths: ReadonlySet<string>): boolean {
-  if (excludedPaths.has(resolve(path))) return true;
-  try {
-    return excludedPaths.has(realpathSync.native(path));
-  } catch {
-    return false;
-  }
+export function isContainedBundlePath(root: string, target: string): boolean {
+  const path = relative(root, target);
+  return path !== "" && path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
 }
 
-function copyRegularFile(src: string, dst: string, expected: Stats): void {
-  let srcFd: number | undefined;
-  let dstFd: number | undefined;
-  let ownsDestination = false;
-  try {
-    try {
-      srcFd = openSync(src, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ELOOP") return;
-      throw error;
-    }
-    const stat = fstatSync(srcFd);
-    if (!stat.isFile() || stat.dev !== expected.dev || stat.ino !== expected.ino) {
-      throw new Error(`Bundle source changed during staging: ${src}`);
-    }
-    dstFd = openSync(dst, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
-    ownsDestination = true;
-    const buffer = Buffer.allocUnsafe(64 * 1024);
-    let remaining = stat.size;
-    while (remaining > 0) {
-      const bytesRead = readSync(srcFd, buffer, 0, Math.min(buffer.byteLength, remaining), null);
-      if (bytesRead === 0) throw new Error(`Bundle source was truncated during staging: ${src}`);
-      remaining -= bytesRead;
-      let written = 0;
-      while (written < bytesRead) {
-        const count = writeSync(dstFd, buffer, written, bytesRead - written);
-        if (count === 0) throw new Error(`Bundle destination stopped accepting data: ${dst}`);
-        written += count;
-      }
-    }
-    const finalStat = fstatSync(srcFd);
-    if (
-      finalStat.size !== stat.size ||
-      finalStat.mtimeMs !== stat.mtimeMs ||
-      finalStat.ctimeMs !== stat.ctimeMs
-    ) {
-      throw new Error(`Bundle source was modified during staging: ${src}`);
-    }
-    fchmodSync(dstFd, stat.mode & 0o777);
-    closeSync(dstFd);
-    dstFd = undefined;
-  } finally {
-    closeQuietly(srcFd);
-    closeQuietly(dstFd);
-    if (dstFd !== undefined && ownsDestination) {
-      try {
-        unlinkSync(dst);
-      } catch {
-        // Best effort: staging is discarded if the copy fails.
-      }
-    }
-  }
+export function hasBundleControlCharacters(value: string): boolean {
+  return [...value].some(
+    (character) =>
+      character.charCodeAt(0) < 32 ||
+      (character.charCodeAt(0) >= 127 && character.charCodeAt(0) <= 159),
+  );
 }
 
-function copyTree(
-  src: string,
-  dst: string,
-  excludedPaths: ReadonlySet<string>,
-  expected?: Stats,
-): void {
-  // The agent tree is owned by the invoking local operator. We reject static
-  // symlinks and regular-file swaps, but Node does not expose openat(2), so an
-  // attacker already able to mutate this same-user tree concurrently is
-  // outside the deploy bundler's trust boundary.
-  const current = lstatSync(src);
+export function validateBundleRelativePath(path: string): void {
   if (
-    current.isSymbolicLink() ||
-    !current.isDirectory() ||
-    (expected && (current.dev !== expected.dev || current.ino !== expected.ino))
+    !path ||
+    Buffer.byteLength(path) > DEPLOYMENT_LIMITS.pathBytes ||
+    path.includes("\\") ||
+    hasBundleControlCharacters(path) ||
+    path.startsWith("/") ||
+    /^[A-Za-z]:/.test(path) ||
+    path.split("/").some((part) => !part || part === "." || part === "..") ||
+    path.split("/").length > DEPLOYMENT_LIMITS.directoryDepth
   ) {
-    throw new Error(`Bundle directory changed during staging: ${src}`);
-  }
-  mkdirSync(dst, { recursive: true });
-  for (const entry of readdirSync(src)) {
-    if (isExcluded(entry)) continue;
-    const srcPath = join(src, entry);
-    if (isConfiguredExcluded(srcPath, excludedPaths)) continue;
-    const dstPath = join(dst, entry);
-    const stats = lstatSync(srcPath);
-    if (stats.isDirectory()) {
-      copyTree(srcPath, dstPath, excludedPaths, stats);
-    } else if (stats.isFile()) {
-      copyRegularFile(srcPath, dstPath, stats);
-    }
-    // Skip symlinks/sockets/etc — agent dirs shouldn't have them.
+    throw new BundleError("Bundle path exceeds supported portable path/depth bounds.");
   }
 }
 
-/**
- * Copy the agent dir into a fresh temp staging dir, minus exclusions.
- * Returns the absolute path to the staging dir.
- */
-export function stageBundle(opts: StageBundleOptions): string {
-  const rootStat = lstatSync(opts.agentDir, { throwIfNoEntry: false });
-  if (!rootStat) {
-    throw new Error(`Agent directory not found: ${opts.agentDir}`);
-  }
-  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
-    throw new Error(`Agent directory must be a real directory: ${opts.agentDir}`);
-  }
-  const root = resolve(opts.agentDir);
-  const canonicalRoot = realpathSync.native(root);
-  const excludedPaths = new Set<string>();
-  for (const configuredPath of opts.excludedPaths ?? []) {
-    const target = resolve(root, configuredPath);
-    if (isContained(root, target)) {
-      excludedPaths.add(target);
+function sameStat(left: Stats, right: Stats): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs
+  );
+}
+
+interface SourceEntry {
+  readonly absolute: string;
+  readonly stat: Stats;
+  readonly digest?: DeploymentFileDigest;
+}
+
+export interface StagedBundle {
+  readonly directory: string;
+  /** Bounded root-entry inventory includes excluded and symbolic entries. */
+  readonly rootEntries: readonly string[];
+  readonly directories: readonly string[];
+  readonly files: readonly DeploymentFileDigest[];
+  readonly sourceBytes: number;
+  /** Rechecks copied bytes and directory identities, without executing source. */
+  verifySource(): void;
+}
+
+/** Streams exact bounded source bytes, optionally into an exclusively created output file. */
+function streamFile(src: string, expected: Stats, dst?: string): string {
+  let source: number | undefined;
+  let destination: number | undefined;
+  try {
+    source = openSync(src, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const before = fstatSync(source);
+    if (!before.isFile() || !sameStat(before, expected))
+      throw new BundleError("Bundle source changed during staging.");
+    if (dst !== undefined)
+      destination = openSync(dst, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let remaining = before.size;
+    while (remaining > 0) {
+      const count = readSync(source, buffer, 0, Math.min(remaining, buffer.length), null);
+      if (count === 0) throw new BundleError("Bundle source was truncated during staging.");
+      remaining -= count;
+      hash.update(buffer.subarray(0, count));
+      if (destination !== undefined) {
+        let offset = 0;
+        while (offset < count) {
+          const written = writeSync(destination, buffer, offset, count - offset);
+          if (written === 0) throw new BundleError("Bundle destination stopped accepting data.");
+          offset += written;
+        }
+      }
     }
+    if (readSync(source, buffer, 0, 1, null) !== 0 || !sameStat(before, fstatSync(source)))
+      throw new BundleError("Bundle source was modified during staging.");
+    if (destination !== undefined) fchmodSync(destination, before.mode & 0o777);
+    return hash.digest("hex");
+  } finally {
+    if (source !== undefined) closeSync(source);
+    if (destination !== undefined) closeSync(destination);
+  }
+}
+
+export function stageBundleWithManifest(
+  options: StageBundleOptions,
+  temporaryParent = tmpdir(),
+): StagedBundle {
+  const root = resolve(options.agentDir);
+  const rootStat = lstatSync(root, { throwIfNoEntry: false });
+  if (!rootStat) throw new BundleError("Agent directory not found.");
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory())
+    throw new BundleError("Agent directory must be a real directory.");
+  if (isRuntimeStateDirectory(root))
+    throw new BundleError(
+      "Selected source project is marked as a runtime state root; separate application source from durable state before exporting.",
+    );
+  const canonicalRoot = realpathSync.native(root);
+  const exclusions = new Set<string>();
+  for (const configured of options.excludedPaths ?? []) {
+    const target = resolve(root, configured);
+    if (target === root)
+      throw new BundleError("A configured state path covers the entire source project.");
+    if (isContainedBundlePath(root, target)) exclusions.add(target);
     try {
-      const canonicalTarget = realpathSync.native(target);
-      if (isContained(canonicalRoot, canonicalTarget)) excludedPaths.add(canonicalTarget);
+      const canonical = realpathSync.native(target);
+      if (canonical === canonicalRoot)
+        throw new BundleError("A configured state path covers the entire source project.");
+      if (isContainedBundlePath(canonicalRoot, canonical)) exclusions.add(canonical);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
-  const staging = mkdtempSync(join(tmpdir(), `auggy-deploy-${opts.agentName}-`));
-  try {
-    copyTree(opts.agentDir, staging, excludedPaths, rootStat);
-    return staging;
-  } catch (error) {
+  const directory = mkdtempSync(join(temporaryParent, "auggy-deploy-"));
+  const sources: SourceEntry[] = [];
+  const rootEntries: string[] = [];
+  const directories: string[] = [];
+  const files: DeploymentFileDigest[] = [];
+  let entries = 0;
+  let sourceBytes = 0;
+  const copy = (source: string, destination: string, expected: Stats): void => {
+    // Same-user ancestor replacement is outside this owned-local-tree boundary;
+    // static symlinks and regular-file identity changes are rejected.
+    const current = lstatSync(source);
+    if (!current.isDirectory() || current.isSymbolicLink() || !sameStat(current, expected))
+      throw new BundleError("Bundle directory changed during staging.");
+    sources.push({ absolute: source, stat: current });
+    if (source !== root) directories.push(relative(root, source).split(sep).join("/"));
+    mkdirSync(destination, { recursive: true, mode: 0o700 });
+    const handle = opendirSync(source);
     try {
-      rmSync(staging, { recursive: true, force: true });
-    } catch {
-      // Preserve the staging failure; the caller still receives the root cause.
+      for (let entry = handle.readSync(); entry; entry = handle.readSync()) {
+        if (++entries > DEPLOYMENT_LIMITS.visitedEntries)
+          throw new BundleError("Bundle exceeds the 10000 visited-entry limit.");
+        if (source === root) rootEntries.push(entry.name);
+        const src = join(source, entry.name);
+        const path = relative(root, src).split(sep).join("/");
+        validateBundleRelativePath(path);
+        if (isExcludedBundleName(entry.name) || exclusions.has(src)) continue;
+        const stat = lstatSync(src);
+        if (stat.isSymbolicLink()) continue;
+        if (exclusions.has(realpathSync.native(src))) continue;
+        const dst = join(destination, entry.name);
+        if (stat.isDirectory()) {
+          // This excluded root was counted above; do not visit its private children.
+          if (!isRuntimeStateDirectory(src)) copy(src, dst, stat);
+        } else if (stat.isFile()) {
+          if (!Number.isSafeInteger(stat.size) || stat.size > DEPLOYMENT_LIMITS.regularFileBytes)
+            throw new BundleError("Bundle regular file exceeds the 256 MiB limit.");
+          sourceBytes += stat.size;
+          if (sourceBytes > DEPLOYMENT_LIMITS.stagedSourceBytes)
+            throw new BundleError("Bundle exceeds the 1 GiB cumulative source limit.");
+          const digest = {
+            path,
+            sha256: streamFile(src, stat, dst),
+            bytes: stat.size,
+            mode: stat.mode & 0o777,
+          };
+          files.push(digest);
+          sources.push({ absolute: src, stat, digest });
+        }
+      }
+    } finally {
+      handle.closeSync();
     }
+  };
+  try {
+    copy(root, directory, rootStat);
+    files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    return {
+      directory,
+      rootEntries,
+      directories,
+      files,
+      sourceBytes,
+      verifySource() {
+        for (const source of sources) {
+          const stat = lstatSync(source.absolute);
+          if (!sameStat(source.stat, stat))
+            throw new BundleError(
+              "Bundle source changed before publication; retry with a stable project.",
+            );
+          if (source.digest && streamFile(source.absolute, stat) !== source.digest.sha256)
+            throw new BundleError("Bundle source bytes changed before publication.");
+        }
+      },
+    };
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true });
     throw error;
   }
+}
+
+/** Existing synchronous Railway seam; the caller owns cleanup of the returned directory. */
+export function stageBundle(options: StageBundleOptions): string {
+  return stageBundleWithManifest(options).directory;
 }

@@ -60,6 +60,7 @@ import type { CloudRecord } from "./types";
 import { failureMark, successMark, warningLabel, type CliStyleOptions } from "./_shared/styles";
 import { registerAuthoringCommands } from "./authoring-bootstrap";
 import { authoringCommandHandlers } from "./authoring-command-handlers";
+import { registerExportCommand } from "./export-bootstrap";
 
 interface CreateCommandOptions {
   skipInstall?: boolean;
@@ -75,6 +76,7 @@ export function buildCli(): Command {
 
   program.name("auggy").description("Auggy agent runtime CLI").version(pkg.version);
   registerAuthoringCommands(program, authoringCommandHandlers);
+  registerExportCommand(program);
 
   program
     .command("create <name>")

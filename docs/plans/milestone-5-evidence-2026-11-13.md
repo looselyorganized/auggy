@@ -270,3 +270,27 @@ strict typecheck, and repository lint (722 files; inherited schema-version info
 only). Independent and root counts overlap and are not additive. Immutable commit
 capture precedes dependent release. Installed, browser, container and hosted
 certification remain open.
+
+### M5-02 portable Docker export candidate
+
+The passive `auggy export docker` path reads bounded project inputs, classifies
+known listeners, preserves manifest/lock/source bytes and contained dependency
+archives, and publishes a new context exclusively. The generated image pins the
+reviewed Bun image and uses generic explicit storage admission. The manifest
+records source/generated/archive hashes and an identity-bound deployment profile;
+runtime preflight reconciles known listeners before provider/augment effects.
+
+Independent review resolved case-aliased private files, relocated runtime roots,
+both Docker ignore filenames, Docker environment expansion in archive operands,
+explicit empty configuration selection, and project preload execution before CLI
+validation. The declared executable now disables Bun dotenv, project config and
+automatic installation before loading CLI source. Real executable and bin-symlink
+tests exercise hostile project preload configuration. Direct caller-controlled
+`bun path/to/index.ts` invocation is distinct from the declared executable.
+
+The exact staged snapshot passed 96 tests /685 assertions, strict typecheck and
+repository lint (736 files; inherited schema-version info only). Independent
+review passed 75 tests /527 assertions plus host preflight; these counts overlap.
+The nested local-tarball fixture performs a real offline frozen Bun install and
+preserves lock bytes. Export truthfully reports `buildVerified: false`; actual
+Linux image, container and Railway acceptance remain open.
