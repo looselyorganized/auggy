@@ -19,6 +19,7 @@ interface PosixAtSymbols {
 let symbols: PosixAtSymbols | null = null;
 let library: ReturnType<typeof dlopen> | null = null;
 let noReplaceLibrary: ReturnType<typeof dlopen> | null = null;
+let noReplaceSyscallLibrary: ReturnType<typeof dlopen> | null = null;
 
 function libcPaths(): string[] {
   if (process.platform === "darwin") return ["/usr/lib/libSystem.B.dylib"];
@@ -220,7 +221,9 @@ export function renameAtNoReplace(
       }
     }
   }
-  if (!noReplaceLibrary) return false;
+  if (!noReplaceLibrary) {
+    return linuxRenameAtNoReplace(olddirfd, source, newdirfd, destination);
+  }
   const rename = noReplaceLibrary.symbols[symbol] as unknown as (
     oldfd: number,
     oldpath: Uint8Array,
@@ -230,6 +233,58 @@ export function renameAtNoReplace(
   ) => number;
   const exclusive = process.platform === "darwin" ? 0x4 : 0x1;
   return rename(olddirfd, source, newdirfd, destination, exclusive) === 0;
+}
+
+function linuxRenameAtNoReplace(
+  olddirfd: number,
+  source: Uint8Array,
+  newdirfd: number,
+  destination: Uint8Array,
+): boolean {
+  if (process.platform !== "linux") return false;
+  // Linux UAPI: arch/x86/entry/syscalls/syscall_64.tbl (x86_64),
+  // include/uapi/asm-generic/unistd.h (arm64). Never guess for another ABI.
+  const syscallNumber = process.arch === "x64" ? 316 : process.arch === "arm64" ? 276 : null;
+  if (syscallNumber === null) return false;
+  // musl may expose syscall without a renameat2 wrapper. These Linux LP64 ABIs
+  // pass long/pointer arguments in full-width slots. Supply all six syscall
+  // argument slots, including the unused last one; libc returns a C long.
+  if (!noReplaceSyscallLibrary) {
+    for (const path of libcPaths()) {
+      try {
+        noReplaceSyscallLibrary = dlopen(path, {
+          syscall: {
+            args: [
+              FFIType.i64_fast,
+              FFIType.i64_fast,
+              FFIType.ptr,
+              FFIType.i64_fast,
+              FFIType.ptr,
+              FFIType.i64_fast,
+              FFIType.i64_fast,
+            ],
+            returns: FFIType.i64_fast,
+          },
+        });
+        break;
+      } catch {
+        // An unavailable syscall binding remains fail-closed.
+      }
+    }
+  }
+  if (!noReplaceSyscallLibrary) return false;
+  const syscall = noReplaceSyscallLibrary.symbols.syscall as unknown as (
+    number: number,
+    oldfd: number,
+    oldpath: Uint8Array,
+    newfd: number,
+    newpath: Uint8Array,
+    flags: number,
+    unused: number,
+  ) => number | bigint;
+  // RENAME_NOREPLACE is enforced atomically by the kernel. ENOSYS, unsupported
+  // filesystems and every other failure stay failures; never retry with rename.
+  return syscall(syscallNumber, olddirfd, source, newdirfd, destination, 0x1, 0) === 0;
 }
 
 export function duplicateFd(fd: number): number {
