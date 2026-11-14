@@ -1,50 +1,78 @@
 /**
- * `auggy deploy <name>` command.
+ * Railway adapter for a project-owned agent and its passive deployment profile.
  *
- * Orchestrates the first-deploy + redeploy flows:
+ * Portable export creates the unchanged source/lock context. The adapter selects
+ * an explicit Railway target, verifies its ingress and durable volume, then
+ * uploads configuration and code. The external-runtime-tarball compatibility
+ * path is explicitly unfrozen and is not portable-build certification.
  *
- *   first-deploy: presence + auth checks → operator prompt for projectId →
- *     stage bundle → write Dockerfile + entrypoint → link project →
- *     create service (or link --service existing) → addVolume →
- *     generateDomain → push secrets (.env + AUGGY_PUBLIC_URL) → up →
- *     capture status → write CloudRecord to index.
- *
- *   redeploy:    presence + auth checks → stage bundle → write Dockerfile +
- *     entrypoint → link (idempotent) → re-push secrets → up → status →
- *     update CloudRecord.deployedAt.
- *
- * Cleanly testable via a dependency-injected `RailwayCli` (real or mocked)
- * plus pluggable prompt + logger helpers — no I/O hardcoded into the orchestrator.
- *
- * Per D7 (architecture deltas in the v1.0 plan): the URL is captured BEFORE
- * `up` runs so AUGGY_PUBLIC_URL is set as a Railway env var, ensuring
- * visitorAuth sees the publicUrl on first boot. This avoids a first-boot
- * crash when agent.yaml interpolates `${AUGGY_PUBLIC_URL}` or similar.
+ * Public domains and PORT exist only for configured HTTP listeners. Platform,
+ * optional HTTP readiness and unverified channel execution remain distinct.
+ * All hosted operations go through the injected RailwayCli boundary.
  */
 
 import {
   closeSync,
+  mkdtempSync,
   constants,
   fstatSync,
   openSync,
+  opendirSync,
   readFileSync,
   rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
-import { getAgentFromDir, readBoundCloudRecord, setCloudForDir } from "../agent-index";
+import {
+  getAgentFromDir,
+  normalizeCloudRecord,
+  readBoundCloudRecord,
+  setCloudForDir,
+} from "../agent-index";
 import { parseConfig } from "../config-parser";
 import { formatDoctorChecks, hasDoctorFailures, runDoctor } from "./doctor";
 import { readAgentName, resolveConfigPath } from "../resolve-config";
 import { stageBundle } from "../deploy/bundle";
-import { generateDockerfile, generateEntrypoint } from "../deploy/dockerfile";
-import { waitForHealth, type HealthCheckOptions, type HealthCheckResult } from "../deploy/health";
+import {
+  generateRailwayCompatibilityDockerfile,
+  generateRailwayEntrypoint,
+} from "../deploy/dockerfile";
+import { readAuthoringDocument } from "../authoring/document";
+import { decodeSnapshotText, readFileSnapshot } from "../authoring/document-io";
+import { assertImmutableAgentId } from "../agent-isolation";
+import { exportDocker } from "../deploy/portable-export";
+import { readDeploymentManifest, validateDeploymentManifest } from "../deploy/manifest";
+import { reconcileDeploymentProfile, resolveDeploymentProfile } from "../deploy/profile";
+import {
+  DEPLOYMENT_FILES,
+  DEPLOYMENT_LIMITS,
+  DEPLOYMENT_READINESS_DEFAULTS,
+  type DeploymentProfile,
+  type DeploymentReadiness,
+  type IngressSelection,
+  type ProfileAwareDeployResult,
+} from "../deploy/contracts";
+import {
+  HEALTH_TIMEOUT_ERROR,
+  validateHealthCheckOptions,
+  waitForHealth,
+  type HealthCheckOptions,
+  type HealthCheckResult,
+} from "../deploy/health";
 import {
   RailwayWorkspaceRequiredError,
+  RailwaySubprocessCleanupError,
+  RailwayDeploymentPolicyError,
+  assertNoRailwayBuildVariables,
+  assertNoAmbientRailwayTarget,
   type RailwayCli,
+  type RailwayIngress,
+  type RailwayStatus,
   type RailwayProject,
   type RailwayWorkspace,
 } from "../deploy/railway-cli";
@@ -64,6 +92,10 @@ export interface DeployOptions {
   yes: boolean;
   auggyDir?: string;
   cwd?: string;
+  config?: string;
+  ingress?: IngressSelection;
+  port?: number;
+  healthPath?: string;
   cli: RailwayCli;
   /** Existing Railway project ID. When omitted on first deploy, operator chooses new/existing. */
   project?: string;
@@ -110,18 +142,9 @@ export interface DeployWaitOptions {
   now?: () => number;
 }
 
-export interface DeployResult {
-  name: string;
-  url: string;
-  projectId: string;
-  serviceId: string;
-  volumeId: string;
-  health: HealthCheckResult;
-}
+export type DeployResult = ProfileAwareDeployResult;
 
 const VOLUME_MOUNT_PATH = "/app/data";
-const DEFAULT_DEPLOY_WAIT_TIMEOUT_MS = 10 * 60_000;
-const DEFAULT_DEPLOY_WAIT_INTERVAL_MS = 5_000;
 
 function isRailwayServiceNotFoundError(err: unknown): boolean {
   return /Service ".*" not found/i.test((err as Error).message ?? "");
@@ -216,7 +239,9 @@ function readRegularFileNoFollow(path: string, maxBytes: number): Uint8Array | n
   try {
     descriptor = openSync(
       path,
-      constants.O_RDONLY | (process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0)),
+      constants.O_RDONLY |
+        (constants.O_NONBLOCK ?? 0) |
+        (process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0)),
     );
     const stat = fstatSync(descriptor);
     if (!stat.isFile()) return null;
@@ -291,13 +316,21 @@ export async function runDeploy(
 ): Promise<DeployResult> {
   if (opts.to !== "railway") {
     throw new Error(
-      `Only "railway" is supported in v1.0 (got "${opts.to}"). Other targets: deferred.`,
+      `Only "railway" is supported by deploy (got "${opts.to}"). Use export docker for another host.`,
     );
   }
 
+  assertNoAmbientRailwayTarget();
+  validateDeployWaitOptions(opts.deployWait);
+  if (opts.healthCheck !== false) validateHealthCheckOptions(opts.healthCheck ?? {});
+  if (opts.config !== undefined && !opts.config.trim())
+    throw new Error("--config requires an explicit non-empty path.");
   let configPath: string;
   try {
-    configPath = resolveConfigPath(nameArg, undefined, { auggyDir: opts.auggyDir, cwd: opts.cwd });
+    configPath = resolveConfigPath(nameArg, opts.config, {
+      auggyDir: opts.auggyDir,
+      cwd: opts.cwd,
+    });
   } catch {
     const nameForMessage = nameArg ?? "<name>";
     throw new Error(
@@ -306,7 +339,23 @@ export async function runDeploy(
   }
   const name = readAgentName(configPath);
   const agentDir = dirname(configPath);
+  assertNoRailwayProjectOverrides(agentDir);
   assertDeployableRuntimeDependency(agentDir);
+  const selection = {
+    ingress: opts.ingress ?? "auto",
+    port: opts.port,
+    healthPath: opts.healthPath,
+  } as const;
+  const document = readAuthoringDocument(configPath);
+  assertCanonicalDeploymentIdentity(document.configPath, document.value.id);
+  const { profile } = resolveDeploymentProfile(document, selection);
+  if (
+    opts.healthCheck &&
+    opts.healthCheck.healthPath !== undefined &&
+    (profile.kind !== "http" || opts.healthCheck.healthPath !== profile.healthPath)
+  ) {
+    throw new Error("Health check options must match the selected deployment health path.");
+  }
   const entry = getAgentFromDir(agentDir);
   if (!entry) {
     throw new Error(
@@ -329,9 +378,75 @@ export async function runDeploy(
     throw new Error(`Deploy preflight failed:\n${formatDoctorChecks(preflight)}`);
   }
   const config = assertRailwayDeploySafeConfig(configPath);
+  reconcileDeploymentProfile(profile, config.augments);
   const savedCloud = readBoundCloudRecord(agentDir, config.id);
   await acknowledgeBudgetsDeployPosture(config, opts);
   opts.logger.info(`Deploy preflight passed.`);
+
+  // Validate all local deployment inputs and confirm before any hosted creation.
+  const envPath = join(agentDir, ".env");
+  const plan = loadSecretsPlan(envPath);
+  const agentIdentityVariable = {
+    key: "AUGGY_AGENT_ID",
+    value: config.id,
+    redactedValue: "<server-minted agent id>",
+  };
+  const configuredIdentityIndex = plan.variables.findIndex(
+    (variable) => variable.key === "AUGGY_AGENT_ID",
+  );
+  if (configuredIdentityIndex >= 0) {
+    plan.variables[configuredIdentityIndex] = agentIdentityVariable;
+  } else {
+    plan.variables.push(agentIdentityVariable);
+  }
+  if (
+    profile.kind === "none" &&
+    plan.variables.some((variable) =>
+      [
+        "PORT",
+        "AUGGY_PUBLIC_URL",
+        "RAILWAY_PUBLIC_DOMAIN",
+        "RAILWAY_HEALTHCHECK_TIMEOUT_SEC",
+      ].includes(variable.key),
+    )
+  ) {
+    throw new Error(
+      "Worker deployment cannot push HTTP variables. Review and remove PORT/public URL/HTTP health variables from .env, or select an HTTP profile for an existing listener.",
+    );
+  }
+  if (
+    plan.variables.some((variable) =>
+      [
+        "RAILWAY_PROJECT_ID",
+        "RAILWAY_SERVICE_ID",
+        "RAILWAY_ENVIRONMENT_ID",
+        "RAILWAY_VOLUME_MOUNT_PATH",
+        "AUGGY_DATA_DIR",
+        "AUGGY_DEPLOYMENT_MANIFEST",
+      ].includes(variable.key),
+    )
+  ) {
+    throw new Error(
+      "Deployment .env must not override Railway target, advertised mount or Auggy deployment metadata/data-root variables.",
+    );
+  }
+  assertNoRailwayBuildVariables(
+    Object.fromEntries(plan.variables.map((variable) => [variable.key, variable.value])),
+  );
+  if (plan.warnings.length > 0) {
+    for (const w of plan.warnings) opts.logger.warn(w);
+  }
+  if (!opts.yes) {
+    const summary =
+      plan.variables.length === 0
+        ? `No secrets to push (no .env file or all entries malformed).`
+        : `Push ${plan.variables.length} secret(s) to Railway:\n` +
+          plan.variables.map((v) => `  ${v.key} = ${v.redactedValue}`).join("\n");
+    const confirmed = await opts.promptConfirm(`${summary}\n\nProceed?`);
+    if (!confirmed) {
+      throw new Error("Deploy aborted by operator (declined secrets push).");
+    }
+  }
 
   // 2) Presence + auth checks (fail fast before any subprocess work).
   await opts.cli.checkPresence();
@@ -374,31 +489,83 @@ export async function runDeploy(
     }
   }
 
-  // 4) Stage the bundle (excludes secrets + volume-bound state). New Railway
-  //    project creation links the current directory, so staging must exist
-  //    before we can create/link project state.
-  const stagingDir = stageBundle({
-    agentDir,
-    agentName: name,
-    excludedPaths: configuredDatabaseArtifacts(config),
-  });
-
+  // Portable export remains the primary artifact producer. Only an explicit
+  // external runtime archive takes the documented unfrozen compatibility path.
+  const cleanupRoot = mkdtempSync(join(tmpdir(), "auggy-railway-"));
+  let stagingDir = join(cleanupRoot, "context");
   try {
-    opts.logger.info(`Bundle staged at ${stagingDir}.`);
-    // 5) Write Dockerfile + entrypoint into the staging dir.
-    const vendoredRuntime = maybeVendorLocalAuggyTarball({
-      agentDir,
-      stagingDir,
-      cwd: opts.cwd,
-    });
-    if (vendoredRuntime) {
+    const packageValue = JSON.parse(readFileSync(join(agentDir, "package.json"), "utf8"));
+    const runtimeSpec = asRecord(packageValue.dependencies)?.auggy;
+    const runtimeTarball =
+      typeof runtimeSpec === "string" ? resolveFileAuggyTarball(runtimeSpec, agentDir) : null;
+    const archiveRelative = runtimeTarball ? relative(agentDir, runtimeTarball) : null;
+    const externalArchive =
+      archiveRelative !== null &&
+      (archiveRelative === ".." ||
+        archiveRelative.startsWith(`..${sep}`) ||
+        isAbsolute(archiveRelative));
+    if (externalArchive) {
+      stagingDir = stageBundle({
+        agentDir,
+        agentName: name,
+        excludedPaths: configuredDatabaseArtifacts(config),
+      });
+      const vendoredRuntime = maybeVendorLocalAuggyTarball({ agentDir, stagingDir, cwd: opts.cwd });
+      if (!vendoredRuntime)
+        throw new Error("The explicitly selected external Auggy archive is unavailable.");
+      opts.logger.warn(
+        "External Auggy archive compatibility build: dependencies are not frozen; this is outside portable export certification.",
+      );
       opts.logger.info(`Vendored local Auggy runtime ${vendoredRuntime} into deploy bundle.`);
+      writeFileSync(
+        join(stagingDir, DEPLOYMENT_FILES.dockerfile),
+        generateRailwayCompatibilityDockerfile({
+          agentName: name,
+          configPath: basename(configPath),
+          profile,
+          runtimeTarballName: vendoredRuntime,
+        }),
+      );
+      writeFileSync(join(stagingDir, DEPLOYMENT_FILES.entrypoint), generateRailwayEntrypoint(), {
+        mode: 0o755,
+      });
+    } else {
+      const exported = await exportDocker({
+        config: configPath,
+        cwd: agentDir,
+        out: stagingDir,
+        ...selection,
+      });
+      stagingDir = exported.outputDir;
+      const manifest = readDeploymentManifest(exported.manifestPath, stagingDir, {
+        agentId: config.id,
+        agentName: name,
+        configPath: basename(configPath),
+      });
+      const entrypoint = Buffer.from(generateRailwayEntrypoint());
+      writeFileSync(join(stagingDir, DEPLOYMENT_FILES.entrypoint), entrypoint, { mode: 0o755 });
+      const adapted = {
+        ...manifest,
+        generatedFiles: manifest.generatedFiles.map((file) =>
+          file.path === DEPLOYMENT_FILES.entrypoint
+            ? {
+                ...file,
+                bytes: entrypoint.length,
+                sha256: createHash("sha256").update(entrypoint).digest("hex"),
+              }
+            : file,
+        ),
+      };
+      validateDeploymentManifest(adapted, {
+        agentId: config.id,
+        agentName: name,
+        configPath: basename(configPath),
+      });
+      writeFileSync(exported.manifestPath, `${JSON.stringify(adapted, null, 2)}\n`);
     }
-    writeFileSync(
-      join(stagingDir, "Dockerfile"),
-      generateDockerfile({ agentName: name, runtimeTarballName: vendoredRuntime ?? undefined }),
-    );
-    writeFileSync(join(stagingDir, "auggy-entrypoint.sh"), generateEntrypoint());
+    assertNoRailwayProjectOverrides(stagingDir);
+    assertRailwayUploadIgnoresAbsent(stagingDir);
+    opts.logger.info(`Bundle staged at ${stagingDir}.`);
 
     let projectId: string;
     let projectAlreadyLinked = false;
@@ -439,37 +606,6 @@ export async function runDeploy(
       } else {
         projectId = await opts.promptProjectId(projects);
         opts.logger.info(`First deploy of ${name} to existing Railway project ${projectId}.`);
-      }
-    }
-
-    // 6) Load secrets plan and confirm with operator unless --yes.
-    const envPath = join(agentDir, ".env");
-    const plan = loadSecretsPlan(envPath);
-    const agentIdentityVariable = {
-      key: "AUGGY_AGENT_ID",
-      value: config.id,
-      redactedValue: "<server-minted agent id>",
-    };
-    const configuredIdentityIndex = plan.variables.findIndex(
-      (variable) => variable.key === "AUGGY_AGENT_ID",
-    );
-    if (configuredIdentityIndex >= 0) {
-      plan.variables[configuredIdentityIndex] = agentIdentityVariable;
-    } else {
-      plan.variables.push(agentIdentityVariable);
-    }
-    if (plan.warnings.length > 0) {
-      for (const w of plan.warnings) opts.logger.warn(w);
-    }
-    if (!opts.yes) {
-      const summary =
-        plan.variables.length === 0
-          ? `No secrets to push (no .env file or all entries malformed).`
-          : `Push ${plan.variables.length} secret(s) to Railway:\n` +
-            plan.variables.map((v) => `  ${v.key} = ${v.redactedValue}`).join("\n");
-      const confirmed = await opts.promptConfirm(`${summary}\n\nProceed?`);
-      if (!confirmed) {
-        throw new Error("Deploy aborted by operator (declined secrets push).");
       }
     }
 
@@ -551,35 +687,89 @@ export async function runDeploy(
       }
     }
 
-    // 8) Volume: only add on first deploy. Redeploys keep the existing volume
-    //    (Railway preserves it via the volumeId in the existing CloudRecord).
-    if (!isRedeploy) {
-      await withProgress(opts, `Mounting Railway volume`, () =>
+    // Read-only admission precedes any mutation of the selected service.
+    const ingress = await opts.cli.inspectIngress({ cwd: stagingDir });
+    if (ingress.projectId !== projectId)
+      throw new Error(
+        "Railway linked project differs from the selected project; deployment stopped.",
+      );
+    if (
+      isRedeploy &&
+      existingCloud &&
+      !opts.service &&
+      ingress.serviceId !== existingCloud.serviceId &&
+      ingress.serviceName !== existingCloud.serviceId
+    ) {
+      throw new Error("Railway linked service differs from the saved immutable deployment target.");
+    }
+    if (
+      opts.service &&
+      existingCloud &&
+      ingress.serviceId !== existingCloud.serviceId &&
+      ingress.serviceName !== existingCloud.serviceId
+    ) {
+      existingCloud = null;
+      isRedeploy = false;
+    }
+    assertRailwayIngress(profile, ingress, existingCloud);
+    let volumeId = await opts.cli.inspectVolume({ cwd: stagingDir, target: ingress });
+    if (isRedeploy && volumeId === null)
+      throw new Error(
+        "The saved Railway service has no verified durable volume; restore/reconcile its state before deploying.",
+      );
+    if (existingCloud?.version === 2 && volumeId !== existingCloud.volumeId)
+      throw new Error(
+        "Railway volume identity differs from the saved deployment; reconcile state before deploying.",
+      );
+    if (volumeId === null) {
+      await withProgress(opts, "Mounting Railway volume", () =>
         opts.cli.addVolume({
           name: `${name}-data`,
           mountPath: VOLUME_MOUNT_PATH,
           cwd: stagingDir,
         }),
       );
-      opts.logger.info(`Volume "${name}-data" mounted at ${VOLUME_MOUNT_PATH}.`);
+      volumeId = await opts.cli.inspectVolume({ cwd: stagingDir, target: ingress });
+      if (volumeId === null)
+        throw new Error(
+          "Railway did not verify the new /app/data volume; deployment stopped before pushing variables or code.",
+        );
+      opts.logger.info(`Railway volume mounted at ${VOLUME_MOUNT_PATH}.`);
     }
 
-    // 9) Generate (or recover) the public domain. Idempotent: second call
-    //    returns the existing URL.
-    const url = await withProgress(opts, `Generating public Railway URL`, () =>
-      opts.cli.generateDomain({ cwd: stagingDir }),
-    );
-    opts.logger.info(`Public URL: ${url}`);
-
-    // 10) Push secrets (.env keys + AUGGY_PUBLIC_URL). D7: AUGGY_PUBLIC_URL must
-    //    be set BEFORE `up` so visitorAuth sees the publicUrl on first boot.
-    await withProgress(opts, `Pushing ${plan.variables.length + 1} env var(s)`, async () => {
-      for (const v of plan.variables) {
+    let url: string | null = null;
+    if (profile.kind === "http") {
+      url = await withProgress(opts, "Generating public Railway URL", () =>
+        opts.cli.generateDomain({ cwd: stagingDir, port: profile.port }),
+      );
+      const parsed = new URL(url);
+      if (
+        !/^https?:\/\/[^/?#]+\/?$/.test(url) ||
+        parsed.username ||
+        parsed.password ||
+        parsed.pathname !== "/" ||
+        parsed.search ||
+        parsed.hash
+      )
+        throw new Error("Railway did not return a valid HTTP deployment origin.");
+      url = parsed.origin;
+      opts.logger.info(`Public URL: ${url}`);
+    }
+    // A channel's existing configuration decides whether these variables exist.
+    const variables =
+      profile.kind === "http"
+        ? plan.variables.filter((v) => v.key !== "PORT" && v.key !== "AUGGY_PUBLIC_URL")
+        : plan.variables;
+    if (profile.kind === "http")
+      variables.push(
+        { key: "PORT", value: String(profile.port), redactedValue: String(profile.port) },
+        { key: "AUGGY_PUBLIC_URL", value: url!, redactedValue: "<deployment origin>" },
+      );
+    await withProgress(opts, `Pushing ${variables.length} env var(s)`, async () => {
+      for (const v of variables)
         await opts.cli.setVariable({ key: v.key, value: v.value, cwd: stagingDir });
-      }
-      await opts.cli.setVariable({ key: "AUGGY_PUBLIC_URL", value: url, cwd: stagingDir });
     });
-    opts.logger.info(`Pushed ${plan.variables.length + 1} env var(s) to Railway.`);
+    opts.logger.info(`Pushed ${variables.length} env var(s) to Railway.`);
 
     // 11) Start the build + deploy. --detach so we return without tailing
     //     build logs; operator follows progress via Railway UI / `railway logs`.
@@ -588,90 +778,100 @@ export async function runDeploy(
       `Build started. Railway will build the image, deploy it, then start the service.`,
     );
 
-    // 12) Wait for Railway to report a terminal deployment state when the CLI
-    //     exposes one. If status is unavailable or shape-shifts, fall back to
-    //     the health check instead of blocking forever.
     const deployWait =
       opts.deployWait === false
-        ? {
-            state: "unknown" as const,
-            status: await opts.cli.status({ cwd: stagingDir }),
-            reason: "deployment wait disabled",
-          }
-        : await withProgress(opts, `Waiting for Railway deployment`, () =>
-            waitForRailwayDeployment(opts, stagingDir),
+        ? { state: "unverified" as const, reason: "wait-disabled" as const }
+        : await withProgress(opts, "Waiting for Railway deployment", () =>
+            waitForRailwayDeployment(opts, stagingDir, ingress),
           );
-    if (deployWait.state === "ready") {
-      opts.logger.info(`Railway deployment finished: ${deployWait.statusText}.`);
-    } else if (deployWait.state === "failed") {
+    if (deployWait.state === "failed")
       throw new Error(
         `Railway deployment failed with status ${deployWait.statusText}. Check \`railway logs\` for details.`,
       );
-    }
+    if (deployWait.state === "ready")
+      opts.logger.info(`Railway deployment finished: ${deployWait.statusText}.`);
 
-    // 13) Verify the public health endpoint. Timeout is non-destructive: the
-    //     deploy may still finish, but the operator needs recovery commands.
-    const healthCheckOptions = opts.healthCheck === false ? undefined : opts.healthCheck;
-    const health =
-      opts.healthCheck === false
-        ? { ok: false, url: new URL("/health", ensureTrailingSlash(url)).toString(), attempts: 0 }
-        : await withProgress(opts, `Verifying deployment health`, () =>
-            waitForHealth(url, healthCheckOptions),
-          );
-    if (health.ok) {
-      opts.logger.info(`Deployment health verified: ${health.url}`);
-    } else {
-      if (deployWait.state === "unknown") {
-        opts.logger.info(
-          `Railway deployment status not final yet; continuing with health check (${deployWait.reason}).`,
-        );
-      }
-      const reason = health.status
-        ? `last HTTP status ${health.status}`
-        : health.error
-          ? `last error: ${health.error}`
-          : "no attempts completed";
+    let health: HealthCheckResult | null = null;
+    let http: DeploymentReadiness["http"];
+    if (profile.kind === "none") http = { state: "not-applicable", reason: "no-ingress" };
+    else if (profile.healthPath === null)
+      http = { state: "not-configured", reason: "no-health-path" };
+    else if (opts.healthCheck === false) http = { state: "not-checked", reason: "check-disabled" };
+    else if (deployWait.state === "timed-out")
+      http = { state: "not-attempted", reason: "platform-not-ready" };
+    else {
+      health = await withProgress(opts, "Verifying deployment health", () =>
+        waitForHealth(url!, { ...opts.healthCheck, healthPath: profile.healthPath! }),
+      );
+      http = {
+        state: health.ok ? "ready" : health.error === HEALTH_TIMEOUT_ERROR ? "timed-out" : "failed",
+        result: health,
+      };
       opts.logger.info(
-        `Deployment health is pending (${reason}). Railway may still be building or starting the service.`,
+        health.ok
+          ? `Deployment health verified: ${health.url}`
+          : "Deployment health is pending; inspect Railway logs and retry the configured health endpoint.",
       );
     }
-
-    // 14) Capture service metadata for the CloudRecord.
-    const status = deployWait.status ?? (await opts.cli.status({ cwd: stagingDir }));
-    opts.logger.info(`Service status: ${formatRailwayServiceStatus(status, health.ok)}.`);
-
-    // 15) Write CloudRecord to the agent index.
-    const statusRecord = asRecord(status);
-    const serviceRecord = asRecord(statusRecord?.service);
-    const serviceId =
-      stringField(serviceRecord?.id) ??
-      stringField(serviceRecord?.name) ??
-      opts.service ??
-      existingCloud?.serviceId ??
-      name;
-    const result: DeployResult = {
+    const readiness: DeploymentReadiness =
+      deployWait.state === "unverified"
+        ? {
+            platform: "unverified",
+            platformReason: deployWait.reason,
+            http,
+            channel: { state: "unverified" },
+          }
+        : { platform: deployWait.state, http, channel: { state: "unverified" } };
+    opts.logger.info(
+      `Platform readiness: ${readiness.platform}; HTTP readiness: ${http.state}; channel: unverified.`,
+    );
+    const finalIngress = await opts.cli.inspectIngress({ cwd: stagingDir });
+    if (
+      finalIngress.projectId !== ingress.projectId ||
+      finalIngress.serviceId !== ingress.serviceId ||
+      finalIngress.environmentId !== ingress.environmentId
+    )
+      throw new RailwayDeploymentPolicyError(
+        "Railway target changed during deployment; metadata was not written.",
+      );
+    assertRailwayIngress(profile, finalIngress, existingCloud);
+    const common = {
       name,
-      url,
-      projectId,
-      serviceId,
-      volumeId: `${name}-data`,
+      projectId: ingress.projectId,
+      serviceId: ingress.serviceId,
+      volumeId,
       health,
+      readiness,
     };
-    setCloudForDir(agentDir, {
-      version: 1,
+    const result: DeployResult =
+      profile.kind === "none"
+        ? { ...common, profile, url: null }
+        : { ...common, profile, url: url! };
+    if ((await opts.cli.inspectVolume({ cwd: stagingDir, target: ingress })) !== volumeId)
+      throw new Error(
+        "Railway volume binding changed during deployment; cloud metadata was not written.",
+      );
+    const cloudCommon = {
+      version: 2 as const,
       agentId: config.id,
-      provider: "railway",
+      provider: "railway" as const,
       projectId: result.projectId,
       serviceId: result.serviceId,
-      url: result.url,
       volumeId: result.volumeId,
       deployedAt: new Date().toISOString(),
-    });
+    };
+    setCloudForDir(
+      agentDir,
+      profile.kind === "none"
+        ? { ...cloudCommon, profile, url: null }
+        : { ...cloudCommon, profile, url: url! },
+    );
 
     return result;
   } finally {
     try {
       rmSync(stagingDir, { recursive: true, force: true });
+      rmSync(cleanupRoot, { recursive: true, force: true });
     } catch (error) {
       try {
         opts.logger.warn(
@@ -686,24 +886,6 @@ export async function runDeploy(
 
 function assertRailwayDeploySafeConfig(configPath: string): ReturnType<typeof parseConfig> {
   const config = parseConfig(configPath);
-  const webTransport = config.augments.find((augment) => augment.type === "webTransport");
-  const webPort = webTransport?.options?.port;
-  if (webPort !== 8080) {
-    throw new Error(
-      [
-        "Deploy preflight failed:",
-        `webTransport must listen on port 8080 for Railway deploys (found ${webPort ?? "unset"}).`,
-        "",
-        "Auggy's generated Railway Dockerfile exposes port 8080. A different",
-        "webTransport port can boot successfully inside the container while Railway",
-        "still returns 502 because the proxy cannot reach the app.",
-        "",
-        "Fix:",
-        "  - Set `port: 8080` under config in augments/webTransport/augment.yaml.",
-      ].join("\n"),
-    );
-  }
-
   assertRailwayDatabasePaths(config);
 
   const visitorAuth = config.augments.find((augment) => augment.type === "visitorAuth");
@@ -914,10 +1096,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function ensureTrailingSlash(url: string): string {
-  return url.endsWith("/") ? url : `${url}/`;
-}
-
 function withProgress<T>(opts: DeployOptions, message: string, run: () => Promise<T>): Promise<T> {
   return opts.logger.task ? opts.logger.task(message, run) : run();
 }
@@ -965,115 +1143,268 @@ async function listProjectsForWorkspace(
   }
 }
 
+/** A directory's one cloud record is always bound to its canonical agent.yaml. */
+function assertCanonicalDeploymentIdentity(configPath: string, selectedId: unknown): void {
+  try {
+    if (typeof selectedId !== "string") throw new Error();
+    assertImmutableAgentId(selectedId);
+  } catch {
+    throw new RailwayDeploymentPolicyError(
+      "Railway deployment requires a valid literal immutable agent id in the selected configuration.",
+    );
+  }
+  const canonicalPath = join(dirname(configPath), "agent.yaml");
+  if (configPath === canonicalPath) return;
+  let canonicalId: unknown;
+  try {
+    const snapshot = readFileSnapshot(canonicalPath, DEPLOYMENT_LIMITS.documentBytes);
+    if (!snapshot.exists) throw new Error();
+    const value = asRecord(
+      parseYaml(decodeSnapshotText(snapshot.bytes), {
+        maxAliasCount: 0,
+        prettyErrors: false,
+        logLevel: "silent",
+      }),
+    );
+    canonicalId = value?.id;
+    if (typeof canonicalId !== "string") throw new Error();
+    assertImmutableAgentId(canonicalId);
+  } catch {
+    throw new RailwayDeploymentPolicyError(
+      "Railway deployment requires an adjacent canonical agent.yaml with a valid immutable agent id. Each agent directory owns one identity and one cloud record; restore agent.yaml before deploying an alternate configuration.",
+    );
+  }
+  if (selectedId !== canonicalId)
+    throw new RailwayDeploymentPolicyError(
+      "The selected configuration must use the same immutable agent id as adjacent agent.yaml. Use a separate agent project directory for a different identity.",
+    );
+}
+
+function assertNoRailwayProjectOverrides(root: string): void {
+  const directory = opendirSync(root);
+  let entries = 0;
+  try {
+    for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
+      if (++entries > DEPLOYMENT_LIMITS.visitedEntries)
+        throw new Error("Railway source preflight exceeds the supported entry bound.");
+      if (
+        ["railway.json", "railway.toml", ".railwayignore", ".ignore"].includes(
+          entry.name.toLowerCase(),
+        )
+      )
+        throw new RailwayDeploymentPolicyError(
+          "Managed Railway deployment does not accept railway.json, railway.toml, .railwayignore or .ignore overrides. Review/archive that configuration or deploy the exported Docker context manually.",
+        );
+    }
+  } finally {
+    directory.closeSync();
+  }
+}
+
+/** The Railway uploader uses ignore::WalkBuilder, including parent ignores. */
+function assertRailwayUploadIgnoresAbsent(stagingDir: string): void {
+  let visited = 0;
+  const inspect = (path: string, ancestor: boolean): string[] => {
+    const children: string[] = [];
+    const directory = opendirSync(path);
+    try {
+      for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
+        if (++visited > DEPLOYMENT_LIMITS.visitedEntries)
+          throw new RailwayDeploymentPolicyError(
+            "Railway upload preflight exceeds the supported entry bound.",
+          );
+        const name = entry.name.toLowerCase();
+        if (name === ".railwayignore" || name === ".ignore" || (ancestor && name === ".git"))
+          throw new RailwayDeploymentPolicyError(
+            "Railway upload ignore files or ancestor Git metadata could omit generated application files. Review/remove the ignore input or choose a temporary directory outside that ancestor before deploying; no input was rewritten.",
+          );
+        if (!ancestor && entry.isDirectory()) children.push(join(path, entry.name));
+      }
+    } finally {
+      directory.closeSync();
+    }
+    return children;
+  };
+  const pending = [stagingDir];
+  while (pending.length) pending.push(...inspect(pending.pop()!, false));
+  for (let path = dirname(stagingDir); ; path = dirname(path)) {
+    inspect(path, true);
+    if (dirname(path) === path) break;
+  }
+}
+
+function assertRailwayIngress(
+  profile: DeploymentProfile,
+  ingress: RailwayIngress,
+  cloud: CloudRecord,
+): void {
+  if (ingress.replicas !== 1)
+    throw new Error(
+      "Railway deployment requires exactly one replica for SQLite state. Review the service topology before deploying.",
+    );
+  if (profile.kind === "none") {
+    const historicalHttp = cloud && normalizeCloudRecord(cloud).profile.kind === "http";
+    if (
+      historicalHttp ||
+      ingress.domains.length ||
+      ingress.httpVariables.length ||
+      ingress.healthPath !== null
+    ) {
+      throw new Error(
+        "This Railway target has existing HTTP ingress, variables, a health check or saved HTTP deployment metadata. Review/remove these explicitly and clear the reviewed local deployment record, or choose a new worker service. Auggy will not delete existing ingress silently.",
+      );
+    }
+    return;
+  }
+  if (ingress.domains.some((domain) => domain.targetPort !== profile.port))
+    throw new Error(
+      "Existing Railway domain target ports do not match the selected HTTP listener. Review/update domain routing in Railway or choose a new service before deploying.",
+    );
+  if (ingress.healthPath !== null && ingress.healthPath !== profile.healthPath)
+    throw new Error(
+      "Existing Railway health check differs from the selected profile. Review/update it in Railway or choose a new service before deploying.",
+    );
+}
+
 type RailwayDeploymentWaitResult =
-  | { state: "ready"; status: unknown; statusText: string }
-  | { state: "failed"; status: unknown; statusText: string }
-  | { state: "unknown"; status?: unknown; reason: string };
+  | { state: "ready" | "failed"; statusText: string }
+  | { state: "timed-out" }
+  | { state: "unverified"; reason: "status-unavailable" };
+
+function validateDeployWaitOptions(options: DeployWaitOptions | false | undefined): void {
+  if (options === false) return;
+  for (const value of [
+    options?.timeoutMs ?? DEPLOYMENT_READINESS_DEFAULTS.railwayTimeoutMs,
+    options?.intervalMs ?? DEPLOYMENT_READINESS_DEFAULTS.railwayIntervalMs,
+  ]) {
+    if (
+      !Number.isFinite(value) ||
+      value <= 0 ||
+      value > DEPLOYMENT_READINESS_DEFAULTS.railwayTimeoutMs
+    )
+      throw new Error(
+        "Railway polling durations must be finite positive milliseconds, at most ten minutes.",
+      );
+  }
+  if (options?.now) {
+    let current: number;
+    try {
+      current = options.now();
+    } catch {
+      throw new Error("Railway polling clock must be finite and monotonic.");
+    }
+    if (
+      !Number.isFinite(current) ||
+      current < 0 ||
+      !Number.isSafeInteger(
+        Math.ceil(current + (options.timeoutMs ?? DEPLOYMENT_READINESS_DEFAULTS.railwayTimeoutMs)),
+      )
+    )
+      throw new Error("Railway polling clock must be finite and monotonic.");
+  }
+}
 
 async function waitForRailwayDeployment(
   opts: DeployOptions,
   stagingDir: string,
+  target: RailwayIngress,
 ): Promise<RailwayDeploymentWaitResult> {
-  const wait: DeployWaitOptions = opts.deployWait === false ? {} : (opts.deployWait ?? {});
-  const sleep =
-    wait.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const now = wait.now ?? (() => Date.now());
-  const timeoutMs = wait.timeoutMs ?? DEFAULT_DEPLOY_WAIT_TIMEOUT_MS;
-  const intervalMs = wait.intervalMs ?? DEFAULT_DEPLOY_WAIT_INTERVAL_MS;
-  const deadline = now() + timeoutMs;
-  let lastStatus: unknown;
-  let lastStatusText: string | null = null;
-
-  while (true) {
-    const status = await opts.cli.status({ cwd: stagingDir });
-    lastStatus = status;
-    const statusText = findRailwayStatusValue(status);
-    if (!statusText) {
-      return { state: "unknown", status, reason: "Railway CLI did not report deployment status" };
+  const wait = opts.deployWait === false ? {} : (opts.deployWait ?? {});
+  const timeoutMs = wait.timeoutMs ?? DEPLOYMENT_READINESS_DEFAULTS.railwayTimeoutMs;
+  const intervalMs = wait.intervalMs ?? DEPLOYMENT_READINESS_DEFAULTS.railwayIntervalMs;
+  const now = wait.now ?? (() => performance.now());
+  let last = now();
+  if (!Number.isFinite(last) || last < 0 || !Number.isSafeInteger(Math.ceil(last + timeoutMs)))
+    throw new Error("Railway polling clock must be finite and monotonic.");
+  const deadline = last + timeoutMs;
+  const wallDeadline = performance.now() + timeoutMs;
+  const remaining = () => {
+    const current = now();
+    if (!Number.isFinite(current) || current < last)
+      throw new Error("Railway polling clock must remain finite and monotonic.");
+    last = current;
+    return Math.max(0, Math.min(deadline - current, wallDeadline - performance.now()));
+  };
+  const bounded = async <T>(
+    operation: Promise<T>,
+    ms: number,
+    abort: () => void,
+  ): Promise<T | null> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => {
+            abort();
+            resolve(null);
+          }, ms);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
-    lastStatusText = statusText;
-    const category = categorizeRailwayDeploymentStatus(statusText);
-    if (category === "ready") return { state: "ready", status, statusText };
-    if (category === "failed") return { state: "failed", status, statusText };
-
-    if (now() >= deadline) {
-      return {
-        state: "unknown",
-        status: lastStatus,
-        reason: `timed out waiting for terminal status; last status ${lastStatusText}`,
-      };
+  };
+  while (remaining() > 0) {
+    const controller = new AbortController();
+    let status: RailwayStatus | null;
+    try {
+      const time = remaining();
+      status = await bounded(
+        Promise.resolve().then(() =>
+          opts.cli.status({
+            cwd: stagingDir,
+            target,
+            timeoutMs: Math.min(time, DEPLOYMENT_READINESS_DEFAULTS.railwayStatusRequestTimeoutMs),
+            signal: controller.signal,
+          }),
+        ),
+        time,
+        () => controller.abort(),
+      );
+    } catch (error) {
+      if (
+        error instanceof RailwaySubprocessCleanupError ||
+        error instanceof RailwayDeploymentPolicyError
+      )
+        throw error;
+      if (remaining() <= 0) return { state: "timed-out" };
+      return { state: "unverified", reason: "status-unavailable" };
+    } finally {
+      controller.abort();
     }
-
-    await sleep(intervalMs);
-  }
-}
-
-function categorizeRailwayDeploymentStatus(status: string): "ready" | "failed" | "pending" {
-  const normalized = status
-    .trim()
-    .toUpperCase()
-    .replace(/[\s-]+/g, "_");
-  if (["SUCCESS", "SUCCEEDED", "DEPLOYED", "HEALTHY", "READY", "ACTIVE"].includes(normalized)) {
-    return "ready";
-  }
-  if (
-    ["FAILED", "FAILURE", "CRASHED", "REMOVED", "CANCELED", "CANCELLED", "ERROR"].includes(
-      normalized,
+    // An adapter that did not settle by its deadline has not proved process cleanup.
+    if (!status) throw new RailwaySubprocessCleanupError();
+    if (remaining() <= 0) return { state: "timed-out" };
+    const deployment = status.deployment;
+    if (
+      !deployment?.id ||
+      !deployment.status ||
+      status.project?.id !== target.projectId ||
+      status.service?.id !== target.serviceId
     )
-  ) {
-    return "failed";
-  }
-  return "pending";
-}
-
-function formatRailwayServiceStatus(status: unknown, healthOk: boolean): string {
-  const deploymentStatus = findRailwayStatusValue(status);
-  if (deploymentStatus) return deploymentStatus;
-  return healthOk ? "healthy" : "not reported yet; build may still be deploying";
-}
-
-function findRailwayStatusValue(value: unknown): string | null {
-  if (!value || typeof value !== "object") return null;
-  const root = value as Record<string, unknown>;
-
-  for (const key of ["deployment", "latestDeployment", "activeDeployment"]) {
-    const found = statusField(root[key]);
-    if (found) return found;
-  }
-
-  const direct =
-    stringField(root.deploymentStatus) ??
-    stringField(root.deploymentState) ??
-    stringField(root.status) ??
-    stringField(root.state);
-  if (direct) return direct;
-
-  for (const key of ["deployments", "serviceInstances"]) {
-    const list = root[key];
-    if (!Array.isArray(list)) continue;
-    for (const item of list) {
-      const found = statusField(item);
-      if (found) return found;
+      return { state: "unverified", reason: "status-unavailable" };
+    const statusText = deployment.status.toUpperCase();
+    // A previous successful deployment cannot verify the newly queued build.
+    if (deployment.id !== target.latestDeploymentId) {
+      if (statusText === "SUCCESS") return { state: "ready", statusText };
+      if (["FAILED", "CRASHED", "REMOVED", "CANCELED", "CANCELLED", "SKIPPED"].includes(statusText))
+        return { state: "failed", statusText };
+      if (!["BUILDING", "DEPLOYING", "INITIALIZING", "QUEUED", "WAITING"].includes(statusText))
+        return { state: "unverified", reason: "status-unavailable" };
     }
+    const time = remaining();
+    if (time <= 0) break;
+    if (wait.sleep) {
+      const slept = await bounded(
+        Promise.resolve()
+          .then(() => wait.sleep!(Math.min(intervalMs, time)))
+          .then(() => true),
+        time,
+        () => {},
+      );
+      if (slept === null) return { state: "timed-out" };
+    } else await new Promise<void>((resolve) => setTimeout(resolve, Math.min(intervalMs, time)));
   }
-
-  const serviceStatus = statusField(root.service);
-  if (serviceStatus) return serviceStatus;
-
-  return null;
-}
-
-function statusField(value: unknown): string | null {
-  if (!value || typeof value !== "object") return null;
-  const obj = value as Record<string, unknown>;
-  return (
-    stringField(obj.status) ??
-    stringField(obj.state) ??
-    stringField(obj.deploymentStatus) ??
-    stringField(obj.deploymentState)
-  );
-}
-
-function stringField(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
+  return { state: "timed-out" };
 }

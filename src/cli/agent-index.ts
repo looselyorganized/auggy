@@ -29,6 +29,8 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { CloudRecord, IndexEntry } from "./types";
 import { readDurableJson, writeDurableJson } from "../lib/durable-json";
+import { validateCloudRecord } from "./deploy/cloud-record";
+export { validateCloudRecord, normalizeCloudRecord } from "./deploy/cloud-record";
 
 const CLOUD_FILENAME = ".auggy-cloud.json";
 
@@ -77,7 +79,10 @@ function readCloud(localDir: string): CloudRecord {
   const path = cloudPath(localDir);
   if (!existsSync(path)) return null;
   try {
-    return readDurableJson(path, "cloud deployment metadata", 64 * 1024) as CloudRecord;
+    return validateCloudRecord(
+      readDurableJson(path, "cloud deployment metadata", 64 * 1024),
+      cloudAgentId(localDir),
+    );
   } catch {
     return null;
   }
@@ -87,33 +92,22 @@ function readCloud(localDir: string): CloudRecord {
 export function readBoundCloudRecord(localDir: string, agentId: string): CloudRecord {
   const path = cloudPath(localDir);
   if (!existsSync(path)) return null;
-  let record: CloudRecord;
   try {
-    record = readDurableJson(path, "cloud deployment metadata", 64 * 1024) as CloudRecord;
+    return validateCloudRecord(
+      readDurableJson(path, "cloud deployment metadata", 64 * 1024),
+      agentId,
+    );
   } catch (error) {
-    throw new Error(`Invalid cloud deployment metadata at ${path}; refusing cloud mutation.`, {
-      cause: error,
-    });
-  }
-  if (
-    record?.version !== 1 ||
-    record.agentId !== agentId ||
-    record.provider !== "railway" ||
-    !record.projectId ||
-    !record.serviceId ||
-    !record.url ||
-    !record.volumeId ||
-    !Number.isFinite(Date.parse(record.deployedAt))
-  ) {
     throw new Error(
-      `Cloud deployment metadata at ${path} is legacy, malformed, or belongs to another immutable agent. Remove it explicitly only after verifying the Railway target.`,
+      `Invalid cloud deployment metadata at ${path}: record is legacy, malformed, or belongs to another immutable agent; refusing cloud mutation.`,
+      {
+        cause: error,
+      },
     );
   }
-  return record;
 }
 
-function writeCloud(localDir: string, record: NonNullable<CloudRecord>): void {
-  const path = cloudPath(localDir);
+function cloudAgentId(localDir: string): string {
   const parsed = parseYaml(readFileSync(join(localDir, "agent.yaml"), "utf8")) as Record<
     string,
     unknown
@@ -125,10 +119,12 @@ function writeCloud(localDir: string, record: NonNullable<CloudRecord>): void {
   ) {
     throw new Error("Cannot write cloud metadata without a valid immutable agent id");
   }
-  if (record.agentId !== undefined && record.agentId !== agentId) {
-    throw new Error("Cannot bind cloud metadata to a different immutable agent");
-  }
-  writeDurableJson(path, { ...record, version: 1, agentId }, "cloud deployment metadata");
+  return agentId;
+}
+
+function writeCloud(localDir: string, record: NonNullable<CloudRecord>): void {
+  const validated = validateCloudRecord(record, cloudAgentId(localDir));
+  writeDurableJson(cloudPath(localDir), validated, "cloud deployment metadata");
 }
 
 function deleteCloud(localDir: string): void {

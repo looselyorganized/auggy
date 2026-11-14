@@ -10,12 +10,22 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { stringify } from "yaml";
 import { getAgent, seedAgentForTest, setCloud } from "../../src/cli/agent-index";
 import { type DeployOptions, runDeploy } from "../../src/cli/commands/deploy";
 import { serializeEnv } from "../../src/cli/env-parse";
-import { RailwayWorkspaceRequiredError, type RailwayCli } from "../../src/cli/deploy/railway-cli";
+import {
+  RailwayWorkspaceRequiredError,
+  RailwayDeploymentPolicyError,
+  RailwaySubprocessCleanupError,
+  type RailwayCli,
+} from "../../src/cli/deploy/railway-cli";
+import {
+  generatePortableEntrypoint,
+  generateRailwayEntrypoint,
+} from "../../src/cli/deploy/dockerfile";
 import { getAuggyVersion } from "../../src/cli/scaffold-package-json";
 
 interface MockCliCalls {
@@ -29,6 +39,8 @@ interface MockCliCalls {
   generateDomain: number;
   addVolume: Array<{ name: string; mountPath: string }>;
   status: number;
+  inspectIngress: number;
+  domainPorts: Array<number | undefined>;
   destroyService: number;
   logs: number;
   createProject: Array<{ projectName: string; workspace?: string; cwd: string }>;
@@ -49,6 +61,8 @@ function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds:
     generateDomain: 0,
     addVolume: [],
     status: 0,
+    inspectIngress: 0,
+    domainPorts: [],
     destroyService: 0,
     logs: 0,
     createProject: [],
@@ -57,6 +71,9 @@ function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds:
     createService: [],
   };
   const capturedCwds: string[] = [];
+  let selectedProject = "proj_abc";
+  let selectedService = "svc_def";
+  let mountedVolume: string | null = null;
   const cli: RailwayCli = {
     async checkPresence() {
       calls.checkPresence++;
@@ -75,19 +92,25 @@ function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds:
       return [];
     },
     async link({ projectId, serviceName, cwd }) {
+      selectedProject = projectId;
+      mountedVolume = "volume-observed";
+      selectedService = serviceName.startsWith("svc_") ? serviceName : "svc_def";
       calls.link.push({ projectId, serviceName, cwd });
       capturedCwds.push(cwd);
     },
     async createProject({ projectName, workspace, cwd }) {
+      selectedProject = "proj_created";
       calls.createProject.push({ projectName, workspace, cwd });
       capturedCwds.push(cwd);
       return "proj_created";
     },
     async linkProject({ projectId, cwd }) {
+      selectedProject = projectId;
       calls.linkProject.push({ projectId, cwd });
       capturedCwds.push(cwd);
     },
     async linkService({ serviceName, cwd }) {
+      selectedService = serviceName.startsWith("svc_") ? serviceName : "svc_def";
       calls.linkService.push({ serviceName, cwd });
       capturedCwds.push(cwd);
     },
@@ -101,19 +124,38 @@ function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds:
     async up() {
       calls.up++;
     },
-    async generateDomain() {
+    async generateDomain({ port }) {
+      calls.domainPorts.push(port);
       calls.generateDomain++;
       return "https://zip-production-abcd.up.railway.app";
     },
+    async inspectVolume() {
+      return mountedVolume;
+    },
     async addVolume({ name, mountPath }) {
+      mountedVolume = "volume-observed";
       calls.addVolume.push({ name, mountPath });
+    },
+    async inspectIngress() {
+      calls.inspectIngress++;
+      return {
+        projectId: selectedProject,
+        serviceId: selectedService,
+        serviceName: "zip",
+        environmentId: "env-production",
+        domains: [],
+        httpVariables: [],
+        healthPath: null,
+        replicas: 1,
+        latestDeploymentId: null,
+      };
     },
     async status() {
       calls.status++;
       return {
-        project: { id: "proj_abc", name: "lorf" },
-        service: { id: "svc_def", name: "zip" },
-        deployment: { status: "SUCCESS" },
+        project: { id: selectedProject, name: "lorf" },
+        service: { id: selectedService, name: "zip" },
+        deployment: { id: "deployment-new", status: "SUCCESS" },
       };
     },
     async destroyService() {
@@ -148,12 +190,12 @@ function baseDeployOptions(
     healthCheck: {
       fetch: async () => new Response(null, { status: 200 }),
       sleep: async () => {},
-      timeoutMs: 1,
+      timeoutMs: 100,
       intervalMs: 1,
     },
     deployWait: {
       sleep: async () => {},
-      timeoutMs: 1,
+      timeoutMs: 100,
       intervalMs: 1,
     },
     ...opts,
@@ -243,6 +285,7 @@ describe("runDeploy", () => {
         },
       })}\n`,
     );
+    writeFixtureLock(agentDir);
     mkdirSync(join(agentDir, "node_modules", "auggy", "src"), { recursive: true });
     writeFileSync(
       join(agentDir, "node_modules", "auggy", "package.json"),
@@ -260,6 +303,274 @@ describe("runDeploy", () => {
       rmSync(auggyDir, { recursive: true, force: true });
     } catch {}
   });
+
+  function expectNoHostedMutation(calls: MockCliCalls): void {
+    expect(calls.createProject).toHaveLength(0);
+    expect(calls.createService).toHaveLength(0);
+    expect(calls.addVolume).toHaveLength(0);
+    expect(calls.setVariable).toHaveLength(0);
+    expect(calls.generateDomain).toBe(0);
+    expect(calls.up).toBe(0);
+    expect(existsSync(join(agentDir, ".auggy-cloud.json"))).toBe(false);
+  }
+
+  test.each(["RAILWAY_PROJECT_ID", "RAILWAY_SERVICE_ID", "RAILWAY_ENVIRONMENT_ID"])(
+    "rejects ambient %s before any Railway call, including empty selectors",
+    async (key) => {
+      const previous = process.env[key];
+      const source = readFileSync(join(agentDir, "agent.yaml"), "utf8");
+      try {
+        for (const value of ["PRIVATE_TARGET_SENTINEL", ""]) {
+          process.env[key] = value;
+          const { cli, calls } = mockRailwayCli();
+          await expect(
+            runDeploy("zip", baseDeployOptions(cli, auggyDir, { projectName: "must-not-create" })),
+          ).rejects.toThrow(`Unset ${key} before deploying`);
+          expect(calls).toEqual(mockRailwayCli().calls);
+          expectNoHostedMutation(calls);
+          expect(readFileSync(join(agentDir, "agent.yaml"), "utf8")).toBe(source);
+        }
+      } finally {
+        if (previous === undefined) delete process.env[key];
+        else process.env[key] = previous;
+      }
+    },
+  );
+
+  test.each(["mismatched", "missing", "malformed"])(
+    "rejects alternate config with %s canonical identity before any Railway call",
+    async (variant) => {
+      const canonicalPath = join(agentDir, "agent.yaml");
+      const selectedPath = join(agentDir, "production.yaml");
+      const source = readFileSync(canonicalPath, "utf8");
+      const selected =
+        variant === "mismatched" ? source.replace("aug1_a3f7c2e1", "aug1_b3f7c2e1") : source;
+      writeFileSync(selectedPath, selected);
+      if (variant === "missing") rmSync(canonicalPath);
+      else if (variant === "malformed") writeFileSync(canonicalPath, "id: [PRIVATE_SENTINEL\n");
+      const { cli, calls } = mockRailwayCli();
+      await expect(
+        runDeploy(
+          "zip",
+          baseDeployOptions(cli, auggyDir, {
+            config: selectedPath,
+            projectName: "must-not-create",
+          }),
+        ),
+      ).rejects.toThrow(
+        variant === "mismatched" ? /same immutable agent id/ : /adjacent canonical agent.yaml/,
+      );
+      expect(calls).toEqual(mockRailwayCli().calls);
+      expectNoHostedMutation(calls);
+      expect(readFileSync(selectedPath, "utf8")).toBe(selected);
+      if (variant === "mismatched") expect(readFileSync(canonicalPath, "utf8")).toBe(source);
+      else if (variant === "missing") expect(existsSync(canonicalPath)).toBe(false);
+      else expect(readFileSync(canonicalPath, "utf8")).toBe("id: [PRIVATE_SENTINEL\n");
+    },
+  );
+
+  test("alternate config sharing the canonical immutable identity uploads that config and writes its bound record", async () => {
+    const canonicalPath = join(agentDir, "agent.yaml");
+    const source = readFileSync(canonicalPath, "utf8");
+    const selectedPath = join(agentDir, "production.yaml");
+    const selected = `${source}# Production selection\n`;
+    writeFileSync(selectedPath, selected);
+    const { cli, calls } = mockRailwayCli();
+    cli.up = async ({ cwd }) => {
+      calls.up++;
+      expect(readFileSync(join(cwd, "production.yaml"), "utf8")).toBe(selected);
+      expect(readFileSync(join(cwd, "agent.yaml"), "utf8")).toBe(source);
+      expect(JSON.parse(readFileSync(join(cwd, "auggy-deployment.json"), "utf8")).configPath).toBe(
+        "production.yaml",
+      );
+      expect(readFileSync(join(cwd, "Dockerfile"), "utf8")).toContain("/app/production.yaml");
+    };
+    await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, { config: selectedPath, projectName: "valid-alternate" }),
+    );
+    expect(calls.createProject).toHaveLength(1);
+    expect(calls.up).toBe(1);
+    expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
+      version: 2,
+      agentId: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+    });
+    expect(readFileSync(canonicalPath, "utf8")).toBe(source);
+    expect(readFileSync(selectedPath, "utf8")).toBe(selected);
+  });
+
+  test.each([
+    "railway.json",
+    "railway.toml",
+    "RAILWAY.JSON",
+    "RaIlWaY.ToMl",
+    ".railwayignore",
+    ".RAILWAYIGNORE",
+    ".ignore",
+    ".IGNORE",
+  ])("rejects root %s before project creation without changing source", async (filename) => {
+    const text = '{"deploy":{"startCommand":"sleep infinity","numReplicas":2}}';
+    const path = join(agentDir, filename);
+    writeFileSync(path, text);
+    const { cli, calls } = mockRailwayCli();
+    await expect(
+      runDeploy("zip", baseDeployOptions(cli, auggyDir, { projectName: "must-not-create" })),
+    ).rejects.toBeInstanceOf(RailwayDeploymentPolicyError);
+    expect(readFileSync(path, "utf8")).toBe(text);
+    expect(calls.checkPresence).toBe(0);
+    expectNoHostedMutation(calls);
+  });
+
+  test.each(["railway.json", ".railwayignore", ".ignore"])(
+    "rejects a root %s symbolic link without following it",
+    async (filename) => {
+      symlinkSync(join(auggyDir, "absent-target"), join(agentDir, filename));
+      const { cli, calls } = mockRailwayCli();
+      await expect(
+        runDeploy("zip", baseDeployOptions(cli, auggyDir, { projectName: "must-not-create" })),
+      ).rejects.toBeInstanceOf(RailwayDeploymentPolicyError);
+      expectNoHostedMutation(calls);
+    },
+  );
+
+  test.each([".ignore", ".RAILWAYIGNORE"])(
+    "rejects a nested upload %s before project creation",
+    async (filename) => {
+      mkdirSync(join(agentDir, "source"));
+      writeFileSync(join(agentDir, "source", filename), "*\n");
+      const { cli, calls } = mockRailwayCli();
+      await expect(
+        runDeploy("zip", baseDeployOptions(cli, auggyDir, { projectName: "must-not-create" })),
+      ).rejects.toThrow(/upload ignore/);
+      expectNoHostedMutation(calls);
+    },
+  );
+
+  test.each([".ignore", ".RAILWAYIGNORE", ".git", ".ignore-link"])(
+    "rejects temporary-directory ancestor %s input before project creation",
+    async (variant) => {
+      const temporaryParent = join(auggyDir, "upload-parent");
+      mkdirSync(temporaryParent);
+      const marker = variant === ".ignore-link" ? ".ignore" : variant;
+      const path = join(temporaryParent, marker);
+      if (variant === ".ignore-link") symlinkSync(join(temporaryParent, "absent"), path);
+      else writeFileSync(path, "*\n");
+      const previous = process.env.TMPDIR;
+      process.env.TMPDIR = temporaryParent;
+      const { cli, calls } = mockRailwayCli();
+      try {
+        await expect(
+          runDeploy("zip", baseDeployOptions(cli, auggyDir, { projectName: "must-not-create" })),
+        ).rejects.toThrow(/upload ignore/);
+        expectNoHostedMutation(calls);
+      } finally {
+        if (previous === undefined) delete process.env.TMPDIR;
+        else process.env.TMPDIR = previous;
+      }
+    },
+  );
+
+  test("gitignore cannot remove generated deployment files from the upload context", async () => {
+    const ignore = "Dockerfile\nauggy-entrypoint.sh\nauggy-deployment.json\nagent.yaml\n";
+    writeFileSync(join(agentDir, ".gitignore"), ignore);
+    const { cli, calls } = mockRailwayCli();
+    cli.up = async ({ cwd }) => {
+      calls.up++;
+      for (const file of [
+        "Dockerfile",
+        "auggy-entrypoint.sh",
+        "auggy-deployment.json",
+        "agent.yaml",
+      ])
+        expect(existsSync(join(cwd, file))).toBe(true);
+      expect(readFileSync(join(cwd, ".gitignore"), "utf8")).toBe(ignore);
+    };
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+    expect(calls.up).toBe(1);
+    expect(readFileSync(join(agentDir, ".gitignore"), "utf8")).toBe(ignore);
+  });
+
+  test.each([
+    "PORT",
+    "AUGGY_DATA_DIR",
+    "AUGGY_DEPLOYMENT_MANIFEST",
+    "RAILWAY_PROJECT_ID",
+    "RAILWAY_VOLUME_MOUNT_PATH",
+    "RAILWAY_DOCKERFILE_PATH",
+    "RAILPACK_START_CMD",
+    "NIXPACKS_BUILD_CMD",
+    "RAILWAY_RUN_UID",
+  ])("refuses local %s before creating a remote project", async (key) => {
+    if (key === "PORT") configureTelegram();
+    const path = join(agentDir, ".env");
+    const source = `${readFileSync(path, "utf8")}${key}=PRIVATE_OVERRIDE\n`;
+    writeFileSync(path, source);
+    const { cli, calls } = mockRailwayCli();
+    const previous = process.env[key];
+    try {
+      await expect(
+        runDeploy("zip", baseDeployOptions(cli, auggyDir, { projectName: "must-not-create" })),
+      ).rejects.toThrow();
+      expect(calls.checkPresence).toBe(0);
+      expectNoHostedMutation(calls);
+      expect(readFileSync(path, "utf8")).toBe(source);
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+  });
+
+  test("an existing target with effective overrides fails before hosted mutation", async () => {
+    const { cli, calls } = mockRailwayCli();
+    cli.inspectIngress = async () => {
+      throw new RailwayDeploymentPolicyError("Service overrides require review.");
+    };
+    await expect(
+      runDeploy(
+        "zip",
+        baseDeployOptions(cli, auggyDir, { project: "proj_abc", service: "svc_def" }),
+      ),
+    ).rejects.toBeInstanceOf(RailwayDeploymentPolicyError);
+    expectNoHostedMutation(calls);
+  });
+
+  test.each(["cleanup", "policy", "final-inspection"])(
+    "fatal %s uncertainty cannot become an unverified success or write cloud metadata",
+    async (variant) => {
+      const { cli } = mockRailwayCli();
+      let fetches = 0;
+      const error =
+        variant === "cleanup"
+          ? new RailwaySubprocessCleanupError()
+          : new RailwayDeploymentPolicyError("Effective settings changed.");
+      if (variant === "final-inspection") {
+        const inspect = cli.inspectIngress;
+        let calls = 0;
+        cli.inspectIngress = async (args) => {
+          if (++calls > 1) throw error;
+          return inspect(args);
+        };
+      } else
+        cli.status = async () => {
+          throw error;
+        };
+      await expect(
+        runDeploy(
+          "zip",
+          baseDeployOptions(cli, auggyDir, {
+            healthCheck: {
+              fetch: async () => {
+                fetches++;
+                return new Response(null, { status: 200 });
+              },
+            },
+          }),
+        ),
+      ).rejects.toBe(error);
+      if (variant !== "final-inspection") expect(fetches).toBe(0);
+      expect(existsSync(join(agentDir, ".auggy-cloud.json"))).toBe(false);
+    },
+  );
 
   test("first deploy: links project, creates service, addsVolume, generates domain, pushes secrets + AUGGY_PUBLIC_URL, runs up, writes CloudRecord", async () => {
     const { cli, calls } = mockRailwayCli();
@@ -280,6 +591,7 @@ describe("runDeploy", () => {
       "AUGGY_AGENT_ID",
       "AUGGY_PUBLIC_URL",
       "AUGGY_WEB_TOKEN",
+      "PORT",
     ]);
     expect(calls.setVariable.find((v) => v.key === "AUGGY_AGENT_ID")?.value).toBe(
       "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
@@ -292,7 +604,7 @@ describe("runDeploy", () => {
     expect(result.name).toBe("zip");
     expect(result.url).toBe("https://zip-production-abcd.up.railway.app");
     expect(result.serviceId).toBe("svc_def");
-    expect(result.volumeId).toBe("zip-data");
+    expect(result.volumeId).toBe("volume-observed");
     expect(result.health).toMatchObject({
       ok: true,
       url: "https://zip-production-abcd.up.railway.app/health",
@@ -304,7 +616,7 @@ describe("runDeploy", () => {
       projectId: "proj_abc",
       serviceId: "svc_def",
       url: "https://zip-production-abcd.up.railway.app",
-      volumeId: "zip-data",
+      volumeId: "volume-observed",
     });
   });
 
@@ -398,6 +710,7 @@ describe("runDeploy", () => {
       if (!workspace) {
         throw new RailwayWorkspaceRequiredError("--workspace required");
       }
+      await cli.linkProject({ projectId: "proj_created_workspace", cwd });
       return "proj_created_workspace";
     };
 
@@ -646,6 +959,7 @@ describe("runDeploy", () => {
           },
         }),
       );
+      writeFixtureLock(projectDir);
       mkdirSync(join(projectDir, "node_modules", "auggy"), { recursive: true });
       writeFileSync(
         join(projectDir, "node_modules", "auggy", "package.json"),
@@ -663,7 +977,7 @@ describe("runDeploy", () => {
         baseDeployOptions(cli, auggyDir, { cwd: projectDir }),
       );
 
-      expect(calls.linkProject[0]?.cwd).toContain("auggy-deploy-project-");
+      expect(calls.linkProject[0]?.cwd).toContain("auggy-railway-");
       expect(result.name).toBe("project");
       expect(result.serviceId).toBe("svc_def");
       expect(
@@ -745,10 +1059,14 @@ describe("runDeploy", () => {
         "zip",
         baseDeployOptions(cli, auggyDir, {
           yes: false,
+          projectName: "must-not-create",
           promptConfirm: async () => false,
         }),
       ),
     ).rejects.toThrow(/aborted/i);
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.createProject).toHaveLength(0);
+    expect(calls.createService).toHaveLength(0);
     expect(calls.up).toBe(0);
     expect(calls.setVariable).toEqual([]);
     expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
@@ -802,28 +1120,18 @@ describe("runDeploy", () => {
     expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
   });
 
-  test("aborts before Railway calls when webTransport is not on port 8080", async () => {
+  test("deploys the actual configured HTTP port without rewriting source", async () => {
     writeAugmentMetadata(agentDir, "webTransport", {
       type: "webTransport",
-      config: {
-        port: 18080,
-        auth: {
-          type: "bearer",
-          token: "${AUGGY_WEB_TOKEN}",
-        },
-      },
+      config: { port: 18080, auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" } },
     });
+    const before = readFileSync(join(agentDir, "augments/webTransport/augment.yaml"), "utf8");
     const { cli, calls } = mockRailwayCli();
-
-    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
-      /webTransport must listen on port 8080 for Railway deploys \(found 18080\)/,
-    );
-
-    expect(calls.checkPresence).toBe(0);
-    expect(calls.checkAuth).toBe(0);
-    expect(calls.link).toEqual([]);
-    expect(calls.up).toBe(0);
-    expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
+    const result = await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+    expect(result.profile).toMatchObject({ kind: "http", port: 18080 });
+    expect(calls.domainPorts).toEqual([18080]);
+    expect(calls.setVariable).toContainEqual({ key: "PORT", value: "18080" });
+    expect(readFileSync(join(agentDir, "augments/webTransport/augment.yaml"), "utf8")).toBe(before);
   });
 
   test("aborts before Railway calls when visitorAuth uses console mail for deploy", async () => {
@@ -1272,7 +1580,7 @@ describe("runDeploy", () => {
     expect(taskMessages).toContain("Creating Railway service zip");
     expect(taskMessages).toContain("Mounting Railway volume");
     expect(taskMessages).toContain("Generating public Railway URL");
-    expect(taskMessages).toContain("Pushing 4 env var(s)");
+    expect(taskMessages).toContain("Pushing 5 env var(s)");
     expect(taskMessages).toContain("Starting Railway build");
     expect(taskMessages).toContain("Waiting for Railway deployment");
     expect(taskMessages).toContain("Verifying deployment health");
@@ -1297,7 +1605,7 @@ describe("runDeploy", () => {
             let ticks = 0;
             return () => ticks++;
           })(),
-          timeoutMs: 1,
+          timeoutMs: 100,
           intervalMs: 1,
         },
       }),
@@ -1309,7 +1617,7 @@ describe("runDeploy", () => {
       url: "https://zip-production-abcd.up.railway.app/health",
     });
     expect(infos.join("\n")).toMatch(/Deployment health is pending/);
-    expect(infos.join("\n")).toMatch(/Railway may still be building/);
+    expect(result.readiness.http.state).toBe("timed-out");
     expect(warnings).toHaveLength(0);
     expect(calls.status).toBe(1);
     expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
@@ -1327,7 +1635,7 @@ describe("runDeploy", () => {
       return {
         project: { id: "proj_abc", name: "lorf" },
         service: { id: "svc_def", name: "zip" },
-        deployment: { status },
+        deployment: { id: "deployment-new", status },
       };
     };
 
@@ -1341,13 +1649,13 @@ describe("runDeploy", () => {
             let ticks = 0;
             return () => ticks++;
           })(),
-          timeoutMs: 10,
+          timeoutMs: 100,
           intervalMs: 1,
         },
       }),
     );
 
-    expect(result.health.ok).toBe(true);
+    expect(result.health?.ok).toBe(true);
     expect(calls.status).toBe(3);
     expect(infos.join("\n")).toMatch(/Railway deployment finished: SUCCESS/);
   });
@@ -1357,7 +1665,7 @@ describe("runDeploy", () => {
     cli.status = async () => ({
       project: { id: "proj_abc", name: "lorf" },
       service: { id: "svc_def", name: "zip" },
-      deployment: { status: "FAILED" },
+      deployment: { id: "deployment-new", status: "FAILED" },
     });
 
     await expect(
@@ -1366,7 +1674,7 @@ describe("runDeploy", () => {
         baseDeployOptions(cli, auggyDir, {
           deployWait: {
             sleep: async () => {},
-            timeoutMs: 1,
+            timeoutMs: 100,
             intervalMs: 1,
           },
         }),
@@ -1398,26 +1706,24 @@ describe("runDeploy", () => {
             let ticks = 0;
             return () => ticks++;
           })(),
-          timeoutMs: 1,
+          timeoutMs: 100,
           intervalMs: 1,
         },
       }),
     );
 
     expect(result.health).toMatchObject({ ok: false, status: 404 });
-    expect(result.serviceId).toBe("zip");
-    expect(infos.join("\n")).toMatch(
-      /Service status: not reported yet; build may still be deploying/,
-    );
+    expect(result.serviceId).toBe("svc_def");
+    expect(infos.join("\n")).toMatch(/Platform readiness: unverified/);
     expect(infos.join("\n")).toMatch(/Deployment health is pending/);
     expect(warnings).toHaveLength(0);
     expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
-      serviceId: "zip",
+      serviceId: "svc_def",
       url: "https://zip-production-abcd.up.railway.app",
     });
   });
 
-  test("healthy deploy with missing Railway deployment status reports clean success", async () => {
+  test("healthy HTTP with missing Railway status remains platform unverified", async () => {
     const infos: string[] = [];
     const { cli } = mockRailwayCli();
     cli.status = async () => ({
@@ -1438,12 +1744,14 @@ describe("runDeploy", () => {
 
     const output = infos.join("\n");
     expect(output).toContain("Deployment health verified");
-    expect(output).toContain("Service status: healthy.");
+    expect(output).toContain(
+      "Platform readiness: unverified; HTTP readiness: ready; channel: unverified.",
+    );
     expect(output).not.toContain("Railway deployment status not final yet");
     expect(output).not.toContain("new build status was not reported yet");
   });
 
-  test("reads Railway deployment status from alternate CLI shapes", async () => {
+  test("unrecognized CLI status shape cannot verify the selected deployment", async () => {
     const infos: string[] = [];
     const { cli } = mockRailwayCli();
     cli.status = async () =>
@@ -1464,7 +1772,393 @@ describe("runDeploy", () => {
       }),
     );
 
-    expect(infos.join("\n")).toMatch(/Service status: DEPLOYING/);
+    expect(infos.join("\n")).toContain("Platform readiness: unverified");
+  });
+
+  function configureTelegram(mode: "polling" | "webhook" = "polling") {
+    writeFileSync(
+      join(agentDir, "agent.yaml"),
+      readFileSync(join(agentDir, "agent.yaml"), "utf8").replace(
+        "  - webTransport",
+        "  - telegramTransport",
+      ),
+    );
+    writeAugmentMetadata(agentDir, "telegramTransport", {
+      type: "telegramTransport",
+      config: {
+        botToken: "${TELEGRAM_BOT_TOKEN}",
+        auth: { creatorUserIds: [1234] },
+        inbound:
+          mode === "polling"
+            ? { mode }
+            : {
+                mode,
+                webhook: {
+                  publicUrl: "https://agent.example/telegram",
+                  secretToken: "test-secret",
+                },
+              },
+      },
+    });
+    writeFileSync(
+      join(agentDir, ".env"),
+      "ANTHROPIC_API_KEY=sk-test\nTELEGRAM_BOT_TOKEN=test-bot-token\n",
+    );
+  }
+
+  test("Telegram polling first deploy and redeploy stay workers with no HTTP artifacts or requests", async () => {
+    configureTelegram();
+    const originalYaml = readFileSync(join(agentDir, "agent.yaml"), "utf8");
+    const originalLock = readFileSync(join(agentDir, "bun.lock"), "utf8");
+    const { cli, calls } = mockRailwayCli();
+    const inspect = cli.inspectIngress;
+    cli.inspectIngress = async (args) => {
+      const dockerfile = readFileSync(join(args.cwd, "Dockerfile"), "utf8");
+      expect(dockerfile).not.toMatch(/(?:ENV PORT=|EXPOSE|HEALTHCHECK)/);
+      expect(dockerfile).toContain("RUN bun install --frozen-lockfile");
+      expect(readFileSync(join(args.cwd, "auggy-entrypoint.sh"), "utf8")).toContain(
+        "--internal-mode railway",
+      );
+      return inspect(args);
+    };
+    const options = baseDeployOptions(cli, auggyDir, {
+      healthCheck: {
+        fetch: async () => {
+          throw new Error("worker must not fetch HTTP");
+        },
+      },
+    });
+    const first = await runDeploy("zip", options);
+    const second = await runDeploy("zip", options);
+    for (const result of [first, second])
+      expect(result).toMatchObject({
+        profile: { kind: "none" },
+        url: null,
+        health: null,
+        readiness: {
+          platform: "ready",
+          http: { state: "not-applicable", reason: "no-ingress" },
+          channel: { state: "unverified" },
+        },
+      });
+    expect(calls.generateDomain).toBe(0);
+    expect(calls.setVariable.some(({ key }) => ["PORT", "AUGGY_PUBLIC_URL"].includes(key))).toBe(
+      false,
+    );
+    expect(calls.addVolume).toHaveLength(1);
+    expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
+      version: 2,
+      profile: { kind: "none" },
+      url: null,
+      serviceId: "svc_def",
+    });
+    expect(readFileSync(join(agentDir, "agent.yaml"), "utf8")).toBe(originalYaml);
+    expect(readFileSync(join(agentDir, "bun.lock"), "utf8")).toBe(originalLock);
+  });
+
+  test("Telegram webhook uses its own 8081 listener with no invented health or Console", async () => {
+    configureTelegram("webhook");
+    const { cli, calls } = mockRailwayCli();
+    const result = await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        healthCheck: {
+          fetch: async () => {
+            throw new Error("no health route");
+          },
+        },
+      }),
+    );
+    expect(result).toMatchObject({
+      profile: { kind: "http", port: 8081, healthPath: null, consolePath: null },
+      health: null,
+      readiness: { http: { state: "not-configured" }, channel: { state: "unverified" } },
+    });
+    expect(calls.domainPorts).toEqual([8081]);
+  });
+
+  test.each(["domain", "variable", "health", "replicas", "unknown"])(
+    "existing worker target rejects %s before any hosted mutation",
+    async (variant) => {
+      configureTelegram();
+      const { cli, calls } = mockRailwayCli();
+      const inspect = cli.inspectIngress;
+      cli.inspectIngress = async (args) => {
+        const value = await inspect(args);
+        if (variant === "unknown") throw new Error("metadata unavailable");
+        if (variant === "domain")
+          value.domains = [{ domain: "existing.example", targetPort: 8080 }];
+        if (variant === "variable") value.httpVariables = ["PORT"];
+        if (variant === "health") value.healthPath = "/health";
+        if (variant === "replicas") value.replicas = 2;
+        return value;
+      };
+      await expect(
+        runDeploy("zip", baseDeployOptions(cli, auggyDir, { service: "existing-worker" })),
+      ).rejects.toThrow();
+      expect(calls.createProject).toHaveLength(0);
+      expect(calls.createService).toHaveLength(0);
+      expect(calls.setVariable).toHaveLength(0);
+      expect(calls.addVolume).toHaveLength(0);
+      expect(calls.generateDomain).toBe(0);
+      expect(calls.up).toBe(0);
+      expect(existsSync(join(agentDir, ".auggy-cloud.json"))).toBe(false);
+    },
+  );
+
+  test("legacy HTTP target cannot silently become a worker; record remains byte-identical", async () => {
+    configureTelegram();
+    setCloud(
+      "zip",
+      {
+        version: 1,
+        agentId: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+        provider: "railway",
+        projectId: "proj_abc",
+        serviceId: "svc_def",
+        volumeId: "original-volume",
+        url: "https://existing.example",
+        deployedAt: "2026-05-10T00:00:00.000Z",
+      },
+      { auggyDir },
+    );
+    const before = readFileSync(join(agentDir, ".auggy-cloud.json"), "utf8");
+    const { cli, calls } = mockRailwayCli();
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(/saved HTTP/);
+    expect(readFileSync(join(agentDir, ".auggy-cloud.json"), "utf8")).toBe(before);
+    expect(calls.setVariable).toHaveLength(0);
+    expect(calls.up).toBe(0);
+  });
+
+  test("historical service-name records resolve to actual service and volume IDs on explicit deploy", async () => {
+    setCloud(
+      "zip",
+      {
+        version: 1,
+        agentId: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+        provider: "railway",
+        projectId: "proj_abc",
+        serviceId: "zip",
+        volumeId: "original-volume",
+        url: "https://existing.example",
+        deployedAt: "2026-05-10T00:00:00.000Z",
+      },
+      { auggyDir },
+    );
+    const { cli } = mockRailwayCli();
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+    expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
+      version: 2,
+      serviceId: "svc_def",
+      volumeId: "volume-observed",
+    });
+  });
+
+  test.each(["domain", "health"])(
+    "HTTP profile cannot silently overwrite conflicting existing %s settings",
+    async (variant) => {
+      const { cli, calls } = mockRailwayCli();
+      const inspect = cli.inspectIngress;
+      cli.inspectIngress = async (args) => ({
+        ...(await inspect(args)),
+        ...(variant === "domain"
+          ? { domains: [{ domain: "existing.example", targetPort: 9999 }] }
+          : { healthPath: "/other" }),
+      });
+      await expect(
+        runDeploy("zip", baseDeployOptions(cli, auggyDir, { service: "existing" })),
+      ).rejects.toThrow(/Existing Railway/);
+      expect(calls.addVolume).toHaveLength(0);
+      expect(calls.setVariable).toHaveLength(0);
+      expect(calls.generateDomain).toBe(0);
+    },
+  );
+
+  test("disabled checks carry explicit reasons without calling status or health", async () => {
+    const { cli, calls } = mockRailwayCli();
+    const result = await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, { deployWait: false, healthCheck: false }),
+    );
+    expect(result.readiness).toEqual({
+      platform: "unverified",
+      platformReason: "wait-disabled",
+      http: { state: "not-checked", reason: "check-disabled" },
+      channel: { state: "unverified" },
+    });
+    expect(result.health).toBeNull();
+    expect(calls.status).toBe(0);
+  });
+
+  test("prior successful deployment cannot prove the newly queued deployment ready", async () => {
+    const { cli, calls } = mockRailwayCli();
+    const inspect = cli.inspectIngress;
+    cli.inspectIngress = async (args) => ({
+      ...(await inspect(args)),
+      latestDeploymentId: "deployment-new",
+    });
+    let now = 0;
+    const result = await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        deployWait: {
+          now: () => now,
+          timeoutMs: 100,
+          intervalMs: 50,
+          sleep: async (ms) => {
+            now += ms;
+          },
+        },
+        healthCheck: {
+          fetch: async () => {
+            throw new Error("platform not ready");
+          },
+        },
+      }),
+    );
+    expect(result.readiness).toMatchObject({
+      platform: "timed-out",
+      http: { state: "not-attempted", reason: "platform-not-ready" },
+    });
+    expect(calls.status).toBe(2);
+    expect(result.health).toBeNull();
+  });
+
+  test("never-settling status is aborted and unknown cleanup blocks the deployment record", async () => {
+    const { cli } = mockRailwayCli();
+    let signal: AbortSignal | undefined;
+    cli.status = async (args) => {
+      signal = args.signal;
+      return new Promise(() => {});
+    };
+    await expect(
+      runDeploy(
+        "zip",
+        baseDeployOptions(cli, auggyDir, { deployWait: { timeoutMs: 25, intervalMs: 5 } }),
+      ),
+    ).rejects.toBeInstanceOf(RailwaySubprocessCleanupError);
+    expect(signal?.aborted).toBe(true);
+    expect(existsSync(join(agentDir, ".auggy-cloud.json"))).toBe(false);
+  });
+
+  test.each(["unknown", "wrong-service", "wrong-environment-query"])(
+    "status cannot claim ready without the selected target: %s",
+    async (variant) => {
+      const { cli } = mockRailwayCli();
+      cli.status = async ({ target }) => {
+        expect(target?.environmentId).toBe("env-production");
+        if (variant === "wrong-environment-query") throw new Error("target changed");
+        return {
+          project: { id: "proj_abc" },
+          service: { id: variant === "wrong-service" ? "svc_other" : "svc_def" },
+          deployment: {
+            id: "deployment-new",
+            status: variant === "unknown" ? "READY_SOMEDAY" : "SUCCESS",
+          },
+        };
+      };
+      const result = await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+      expect(result.readiness).toMatchObject({
+        platform: "unverified",
+        platformReason: "status-unavailable",
+        channel: { state: "unverified" },
+      });
+    },
+  );
+
+  test.each([NaN, Infinity, 0, -1])(
+    "invalid polling options cannot reach Railway: %s",
+    async (timeoutMs) => {
+      const { cli, calls } = mockRailwayCli();
+      await expect(
+        runDeploy("zip", baseDeployOptions(cli, auggyDir, { deployWait: { timeoutMs } })),
+      ).rejects.toThrow(/durations/);
+      expect(calls.checkPresence).toBe(0);
+    },
+  );
+
+  test("explicit empty config and incompatible ingress cannot trigger fallback or deployment", async () => {
+    const { cli, calls } = mockRailwayCli();
+    await expect(
+      runDeploy("zip", baseDeployOptions(cli, auggyDir, { config: "" })),
+    ).rejects.toThrow(/non-empty/);
+    await expect(
+      runDeploy("zip", baseDeployOptions(cli, auggyDir, { ingress: "none" })),
+    ).rejects.toThrow();
+    expect(calls.checkPresence).toBe(0);
+  });
+
+  test("Railway adaptation changes only the generated entrypoint hash and preserves source/lock bytes", async () => {
+    const { cli } = mockRailwayCli();
+    const paths = ["package.json", "bun.lock", "agent.yaml"];
+    const before = new Map(paths.map((path) => [path, readFileSync(join(agentDir, path), "utf8")]));
+    const originalInspect = cli.inspectIngress;
+    cli.inspectIngress = async (args) => {
+      const manifest = JSON.parse(readFileSync(join(args.cwd, "auggy-deployment.json"), "utf8"));
+      const entry = manifest.generatedFiles.find(
+        (file: { path: string }) => file.path === "auggy-entrypoint.sh",
+      );
+      const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+      expect(entry.sha256).toBe(hash(generateRailwayEntrypoint()));
+      expect(entry.sha256).not.toBe(hash(generatePortableEntrypoint()));
+      for (const path of paths) {
+        expect(readFileSync(join(args.cwd, path), "utf8")).toBe(before.get(path)!);
+        expect(
+          manifest.sourceFiles.find((file: { path: string }) => file.path === path).sha256,
+        ).toBe(hash(before.get(path)!));
+      }
+      return originalInspect(args);
+    };
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+    for (const path of paths)
+      expect(readFileSync(join(agentDir, path), "utf8")).toBe(before.get(path)!);
+  });
+
+  test("a missing created volume blocks variables, upload and v2 metadata", async () => {
+    const { cli, calls } = mockRailwayCli();
+    cli.inspectVolume = async () => null;
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /did not verify the new/,
+    );
+    expect(calls.addVolume).toHaveLength(1);
+    expect(calls.setVariable).toHaveLength(0);
+    expect(calls.up).toBe(0);
+    expect(existsSync(join(agentDir, ".auggy-cloud.json"))).toBe(false);
+  });
+
+  test("v2 volume identity mismatch blocks redeploy before hosted changes", async () => {
+    const { cli, calls } = mockRailwayCli();
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+    const before = readFileSync(join(agentDir, ".auggy-cloud.json"), "utf8");
+    const previousMutations = calls.setVariable.length;
+    cli.inspectVolume = async () => "replacement-volume";
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /volume identity differs/,
+    );
+    expect(calls.setVariable).toHaveLength(previousMutations);
+    expect(calls.up).toBe(1);
+    expect(readFileSync(join(agentDir, ".auggy-cloud.json"), "utf8")).toBe(before);
+  });
+
+  test("a changed volume after deployment cannot replace the saved cloud record", async () => {
+    const { cli } = mockRailwayCli();
+    let reads = 0;
+    cli.inspectVolume = async () => (++reads === 1 ? "volume-first" : "volume-replaced");
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /volume binding changed/,
+    );
+    expect(existsSync(join(agentDir, ".auggy-cloud.json"))).toBe(false);
+  });
+
+  test("invalid injected clocks fail before Railway access", async () => {
+    const { cli, calls } = mockRailwayCli();
+    await expect(
+      runDeploy("zip", baseDeployOptions(cli, auggyDir, { deployWait: { now: () => NaN } })),
+    ).rejects.toThrow(/clock/);
+    await expect(
+      runDeploy("zip", baseDeployOptions(cli, auggyDir, { healthCheck: { now: () => Infinity } })),
+    ).rejects.toThrow(/clock/);
+    expect(calls.checkPresence).toBe(0);
   });
 
   test("rejects unknown providers", async () => {
@@ -1485,6 +2179,8 @@ describe("runDeploy", () => {
     setCloud(
       "zip",
       {
+        version: 1,
+        agentId: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
         provider: "railway",
         projectId: "proj_existing",
         serviceId: "svc_existing",
@@ -1520,6 +2216,8 @@ describe("runDeploy", () => {
     setCloud(
       "zip",
       {
+        version: 1,
+        agentId: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
         provider: "railway",
         projectId: "proj_existing",
         serviceId: "svc_existing",
@@ -1555,6 +2253,8 @@ describe("runDeploy", () => {
     setCloud(
       "zip",
       {
+        version: 1,
+        agentId: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
         provider: "railway",
         projectId: "proj_existing",
         serviceId: "svc_old",
@@ -1584,6 +2284,8 @@ describe("runDeploy", () => {
     setCloud(
       "zip",
       {
+        version: 1,
+        agentId: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
         provider: "railway",
         projectId: "proj_old",
         serviceId: "svc_old",
@@ -1625,7 +2327,7 @@ describe("runDeploy", () => {
     expect(calls.link).toEqual([]);
     expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
       projectId: "proj_new",
-      serviceId: "svc_def",
+      serviceId: "svc_new",
     });
   });
 
@@ -1633,6 +2335,8 @@ describe("runDeploy", () => {
     setCloud(
       "zip",
       {
+        version: 1,
+        agentId: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
         provider: "railway",
         projectId: "proj_old",
         serviceId: "svc_old",
@@ -1665,6 +2369,8 @@ describe("runDeploy", () => {
     setCloud(
       "zip",
       {
+        version: 1,
+        agentId: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
         provider: "railway",
         projectId: "proj_existing",
         serviceId: "svc_existing",
@@ -1686,6 +2392,8 @@ describe("runDeploy", () => {
     setCloud(
       "zip",
       {
+        version: 1,
+        agentId: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
         provider: "railway",
         projectId: "proj_existing",
         serviceId: "missing-service",
@@ -1698,6 +2406,7 @@ describe("runDeploy", () => {
     const warnings: string[] = [];
     const { cli, calls } = mockRailwayCli();
     cli.link = async ({ projectId, serviceName, cwd }) => {
+      await cli.linkProject({ projectId, cwd });
       calls.link.push({ projectId, serviceName, cwd });
       throw new Error(
         `railway service link ${serviceName} exited 1: Service "${serviceName}" not found.`,
@@ -1729,6 +2438,8 @@ describe("runDeploy", () => {
     setCloud(
       "zip",
       {
+        version: 1,
+        agentId: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
         provider: "railway",
         projectId: "proj_existing",
         serviceId: "svc_existing",
@@ -1740,6 +2451,7 @@ describe("runDeploy", () => {
     );
     const { cli, calls } = mockRailwayCli();
     cli.link = async ({ projectId, serviceName, cwd }) => {
+      await cli.linkProject({ projectId, cwd });
       calls.link.push({ projectId, serviceName, cwd });
       throw new Error(
         `railway service link ${serviceName} exited 1: Service "${serviceName}" not found.`,
@@ -1766,10 +2478,10 @@ describe("runDeploy", () => {
     };
     await runDeploy("zip", baseDeployOptions(cli, auggyDir));
     expect(stagingDir).toBeDefined();
-    expect(stagedDockerfile).toMatch(/ENTRYPOINT \["\/app\/auggy-entrypoint\.sh", "zip"\]/);
-    expect(stagedEntrypoint).toMatch(
-      /exec bun "\$runtime_cli" dev "\$1" --config \/app\/agent\.yaml --internal-mode railway/,
+    expect(stagedDockerfile).toContain(
+      'ENTRYPOINT ["/app/auggy-entrypoint.sh","zip","/app/agent.yaml"]',
     );
+    expect(stagedEntrypoint).toMatch(/dev "\$1" --config "\$2" --internal-mode railway/);
     expect(existsSync(stagingDir!)).toBe(false);
   });
 
@@ -1916,7 +2628,7 @@ describe("runDeploy", () => {
     expect(stagedTarball).toBe(false);
     const original = JSON.parse(readFileSync(join(agentDir, "package.json"), "utf8"));
     expect(stagedAuggyDependency).toBe(original.dependencies.auggy);
-    expect(stagedDockerfile).not.toContain(`COPY ${tarballName} /app/`);
+    expect(stagedDockerfile).not.toContain(`COPY ["${tarballName}","/app/${tarballName}"]`);
     expect(existsSync(stagingDir!)).toBe(false);
   });
 
@@ -1977,9 +2689,11 @@ describe("runDeploy", () => {
     expect(stagingDir).toBeDefined();
     expect(stagedTarball).toBe(true);
     expect(stagedAuggyDependency).toBe(`file:./${tarballName}`);
-    expect(stagedDockerfile!.indexOf(`COPY ${tarballName} /app/`)).toBeGreaterThan(-1);
+    expect(
+      stagedDockerfile!.indexOf(`COPY ["${tarballName}","/app/${tarballName}"]`),
+    ).toBeGreaterThan(-1);
     expect(stagedDockerfile!.indexOf("RUN bun install")).toBeGreaterThan(
-      stagedDockerfile!.indexOf(`COPY ${tarballName} /app/`),
+      stagedDockerfile!.indexOf(`COPY ["${tarballName}","/app/${tarballName}"]`),
     );
     expect(existsSync(stagingDir!)).toBe(false);
   });
@@ -2026,3 +2740,18 @@ describe("runDeploy", () => {
     expect(leaked).toEqual([]);
   });
 });
+
+function writeFixtureLock(dir: string): void {
+  const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+  writeFileSync(
+    join(dir, "bun.lock"),
+    JSON.stringify({
+      lockfileVersion: 1,
+      workspaces: { "": { name: manifest.name, dependencies: manifest.dependencies } },
+      packages: {
+        auggy: ["auggy@0.3.1", "", {}, "sha512-fixture"],
+        "@auggy/anthropic": ["@auggy/anthropic@0.3.1", "", {}, "sha512-fixture"],
+      },
+    }),
+  );
+}

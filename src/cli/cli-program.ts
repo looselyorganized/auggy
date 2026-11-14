@@ -255,6 +255,10 @@ export function buildCli(): Command {
         service?: string;
         workspace?: string;
         yes?: boolean;
+        config?: string;
+        ingress?: "auto" | "none" | "http";
+        port?: number;
+        healthPath?: string;
       },
     ) => {
       try {
@@ -266,6 +270,10 @@ export function buildCli(): Command {
         const result = await runDeploy(name, {
           to: opts.to as "railway",
           yes: opts.yes ?? false,
+          config: opts.config,
+          ingress: opts.ingress,
+          port: opts.port,
+          healthPath: opts.healthPath,
           project: opts.project,
           projectName: opts.projectName,
           service: opts.service,
@@ -528,37 +536,44 @@ export function formatDeployResultMessage(
   opts: { nameArg?: string | undefined } = {},
 ): string {
   const rerun = opts.nameArg ? `auggy deploy ${opts.nameArg} --yes` : "auggy deploy --yes";
-  const chatUrl = new URL("/console/chat", result.url).toString();
-  const consoleUrl = new URL("/console", result.url).toString();
-  const healthSuffix = result.health.ok ? "" : " (pending)";
-  const appSuffix = result.health.ok ? "" : " (when healthy)";
+  const { readiness } = result;
   const lines = [
     "",
-    result.health.ok
-      ? `${result.name} is live on Railway.`
-      : `Railway build submitted for ${result.name}.`,
+    `Railway deployment submitted for ${result.name}.`,
     "",
-    `  Chat:     ${chatUrl}${appSuffix}`,
-    `  Console:  ${consoleUrl}${appSuffix}`,
-    `  Health:   ${result.health.url}${healthSuffix}`,
-    `  Home:     ${result.url}`,
-    "",
-    result.health.ok ? "Manage it:" : "Next:",
-    `  auggy console ${result.name}`,
-    "  auggy logs",
+    `  Platform: ${readiness.platform}`,
+    `  HTTP:     ${readiness.http.state}`,
+    `  Channel:  ${readiness.channel.state}`,
+  ];
+  if (result.profile.kind === "none") {
+    lines.push("  Ingress:  none (worker)");
+  } else if (result.url !== null) {
+    lines.push(`  Home:     ${result.url}`);
+    if (result.profile.consolePath !== null) {
+      const consoleUrl = new URL(result.profile.consolePath, result.url).toString();
+      lines.push(`  Console:  ${consoleUrl}`);
+      if (result.profile.consolePath === "/console")
+        lines.push(`  Chat:     ${new URL("/console/chat", result.url).toString()}`);
+    }
+    if (result.health) lines.push(`  Health:   ${result.health.url}`);
+  }
+  lines.push("", "Manage it:");
+  if (result.profile.kind === "http" && result.profile.consolePath !== null)
+    lines.push(`  auggy console ${result.name}`);
+  lines.push(
+    `  auggy logs ${result.name}`,
     `  ${rerun.padEnd(24)} Redeploy`,
     "",
     "Details:",
     `  Project:  ${result.projectId}`,
     `  Service:  ${result.serviceId}`,
     `  Volume:   ${result.volumeId} (mounted at /app/data)`,
-    `  Sign-in:  username auggy, password AUGGY_WEB_TOKEN from .env`,
-  ];
-
-  if (!result.health.ok) {
-    lines.push("");
-    lines.push("Health is pending. Check `auggy logs`, then redeploy after fixing the service.");
-  }
+  );
+  if (readiness.platform !== "ready")
+    lines.push("", "Platform readiness is unconfirmed. Inspect `auggy logs` and Railway status.");
+  if (["failed", "timed-out"].includes(readiness.http.state))
+    lines.push("", "HTTP health did not pass. Inspect `auggy logs` before sending requests.");
+  lines.push("", "A channel turn has not been verified by this deployment command.");
 
   return lines.join("\n");
 }

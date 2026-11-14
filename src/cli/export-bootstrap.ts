@@ -1,7 +1,7 @@
 import { Command, CommanderError, InvalidArgumentError, Option } from "commander";
 import type { ExportDockerOptions, ExportDockerResult } from "./deploy/contracts";
 
-function portArgument(value: string): number {
+export function portArgument(value: string): number {
   if (!/^\d+$/.test(value))
     throw new InvalidArgumentError("port must be an integer from 1 to 65535");
   const port = Number(value);
@@ -14,7 +14,7 @@ export type DockerExportHandler = (options: ExportDockerOptions) => Promise<Expo
 const exportDocker: DockerExportHandler = async (options) =>
   (await import("./commands/export")).exportDocker(options);
 
-function rejectConflictingOptions(command: Command): void {
+export function rejectConflictingOptions(command: Command): void {
   for (const option of command.options) {
     const parse = option.parseArg;
     option.argParser<unknown>((raw, previous) => {

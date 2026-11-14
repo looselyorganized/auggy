@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { consoleCommand, runConsole, type ConsoleOpts } from "../../../src/cli/commands/console";
@@ -9,6 +9,10 @@ import type { PidManifest } from "../../../src/cli/types";
 const AGENT_ID = "aug1_11111111-1111-4111-8111-111111111111";
 const originalWebToken = process.env.AUGGY_WEB_TOKEN;
 const tempRoots: string[] = [];
+
+beforeEach(() => {
+  delete process.env.AUGGY_WEB_TOKEN;
+});
 
 afterEach(() => {
   if (originalWebToken === undefined) delete process.env.AUGGY_WEB_TOKEN;
@@ -176,5 +180,62 @@ describe("auggy console", () => {
     expect(warnings[0]).not.toContain("Automatic sign-in was unavailable");
     expect(logs).toContain("Password: AUGGY_WEB_TOKEN in my-agent/.env");
     expect(logs).toContain("Console: http://localhost:8080/console");
+  });
+  test.each(["worker", "http-without-console"])(
+    "cloud %s reports an actionable absence before resolving credentials or opening a URL",
+    async (kind) => {
+      const root = makeRoot();
+      const dir = writeAgent(root, "my-agent", "https://agent.example");
+      const cloudPath = join(dir, ".auggy-cloud.json");
+      const old = JSON.parse(readFileSync(cloudPath, "utf8"));
+      writeFileSync(
+        cloudPath,
+        JSON.stringify({
+          ...old,
+          version: 2,
+          url: kind === "worker" ? null : old.url,
+          profile:
+            kind === "worker"
+              ? { kind: "none" }
+              : { kind: "http", port: 8081, healthPath: null, consolePath: null },
+        }),
+      );
+      const before = readFileSync(cloudPath, "utf8");
+      writeFileSync(join(dir, "agent.yaml"), `id: ${AGENT_ID}\nname: my-agent\naugments: []\n`);
+      let opened = false;
+      await expect(
+        runConsole(
+          "my-agent",
+          { cwd: root, cloud: true },
+          {
+            openConsole: async () => {
+              opened = true;
+              throw new Error("must not open");
+            },
+          },
+        ),
+      ).rejects.toThrow(/No Railway Console.*auggy logs/);
+      expect(opened).toBe(false);
+      expect(readFileSync(cloudPath, "utf8")).toBe(before);
+    },
+  );
+
+  test("malformed cloud profile cannot authorize a Console request", async () => {
+    const root = makeRoot();
+    const dir = writeAgent(root, "my-agent", "https://agent.example");
+    const cloudPath = join(dir, ".auggy-cloud.json");
+    const cloud = JSON.parse(readFileSync(cloudPath, "utf8"));
+    writeFileSync(cloudPath, JSON.stringify({ ...cloud, version: 2, profile: { kind: "none" } }));
+    await expect(
+      runConsole(
+        "my-agent",
+        { cwd: root, cloud: true },
+        {
+          openConsole: async () => {
+            throw new Error("must not open");
+          },
+        },
+      ),
+    ).rejects.toThrow(/metadata/);
   });
 });

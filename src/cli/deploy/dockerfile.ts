@@ -161,6 +161,25 @@ export interface PortableDockerOptions {
 
 /** Generic image generation has no Railway bootstrap and never creates a durable root. */
 export function generatePortableDockerfile(options: PortableDockerOptions): string {
+  return generateProfiledDockerfile(options, true);
+}
+
+/** Explicit legacy tarball compatibility: pinned image, but install remains unfrozen. */
+export function generateRailwayCompatibilityDockerfile(
+  options: Omit<PortableDockerOptions, "dependencyTarballs"> & {
+    readonly runtimeTarballName?: string;
+  },
+): string {
+  return generateProfiledDockerfile(
+    {
+      ...options,
+      dependencyTarballs: options.runtimeTarballName ? [options.runtimeTarballName] : [],
+    },
+    false,
+  );
+}
+
+function generateProfiledDockerfile(options: PortableDockerOptions, frozen: boolean): string {
   validateDeploymentProfile(options.profile);
   validateBundleRelativePath(options.configPath);
   if (options.configPath.includes("$"))
@@ -182,24 +201,32 @@ export function generatePortableDockerfile(options: PortableDockerOptions): stri
   return `FROM ${DEPLOYMENT_TOOLCHAIN.image}@${DEPLOYMENT_TOOLCHAIN.imageDigest}
 
 WORKDIR /app
-COPY ["package.json", "bun.lock", "/app/"]
-${copies.length ? `${copies.join("\n")}\n` : ""}RUN bun install --frozen-lockfile
+${frozen ? 'COPY ["package.json", "bun.lock", "/app/"]' : 'COPY ["package.json", "/app/"]\nCOPY bun.loc[k] /app/'}
+${copies.length ? `${copies.join("\n")}\n` : ""}${frozen ? "RUN bun install --frozen-lockfile" : "# Legacy external archive compatibility; not a portable frozen-build certification.\nRUN bun install"}
 
 COPY . /app
 ENV AUGGY_DATA_DIR=/app/data
-ENV ${DEPLOYMENT_MANIFEST_ENV}=/app/auggy-deployment.json
+${frozen ? `ENV ${DEPLOYMENT_MANIFEST_ENV}=/app/auggy-deployment.json\n` : ""}\
 ${options.profile.kind === "http" ? `ENV PORT=${options.profile.port}\nEXPOSE ${options.profile.port}\n` : ""}
 ENTRYPOINT ${JSON.stringify(["/app/auggy-entrypoint.sh", options.agentName, `/app/${options.configPath}`])}
 `;
 }
 
 export function generatePortableEntrypoint(): string {
+  return generateForegroundEntrypoint("generic");
+}
+
+export function generateRailwayEntrypoint(): string {
+  return generateForegroundEntrypoint("railway");
+}
+
+function generateForegroundEntrypoint(platform: "generic" | "railway"): string {
   return `#!/bin/sh
-# Foreground generic launch. Provision durable storage before starting the image.
+# Foreground ${platform} launch. Provision durable storage before starting the image.
 # Runtime admission validates ownership, identity and leases before any factory.
 set -eu
 umask 077
-runtime_cli="$(bun -e '
+runtime_cli="$(bun --no-env-file --no-install --config=/dev/null -e '
   const fs = require("node:fs");
   const path = require("node:path");
   const root = fs.realpathSync("/app/node_modules/auggy");
@@ -215,6 +242,6 @@ runtime_cli="$(bun -e '
   if (!rel || rel === ".." || rel.startsWith("../") || path.isAbsolute(rel)) throw new Error("Invalid local Auggy CLI");
   process.stdout.write(entry);
 ')"
-exec bun "$runtime_cli" dev "$1" --config "$2"
+exec bun --no-env-file --no-install --config=/dev/null "$runtime_cli" dev "$1" --config "$2"${platform === "railway" ? " --internal-mode railway" : ""}
 `;
 }

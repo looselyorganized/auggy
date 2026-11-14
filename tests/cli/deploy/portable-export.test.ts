@@ -114,7 +114,9 @@ describe("pure portable Docker export", () => {
     );
     expect(dockerfile).not.toMatch(/EXPOSE|ENV PORT=|HEALTHCHECK|VOLUME|USER /);
     const entrypoint = fs.readFileSync(join(out, "auggy-entrypoint.sh"), "utf8");
-    expect(entrypoint).toContain('exec bun "$runtime_cli" dev "$1" --config "$2"');
+    expect(entrypoint).toContain(
+      'exec bun --no-env-file --no-install --config=/dev/null "$runtime_cli" dev "$1" --config "$2"',
+    );
     expect(entrypoint).not.toMatch(/RAILWAY|mkdir|chmod|bunx/);
     expect(result.sourceBytes).toBe(
       [...metadata.sourceFiles, ...metadata.dependencyTarballs].reduce(
