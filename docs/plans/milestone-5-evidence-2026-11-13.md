@@ -403,3 +403,96 @@ parity review; 134 local links/anchors, five actual CLI help surfaces, Markdown
 structure and diff checks passed. Root clarified separate capability/provider
 package upgrade ownership. These checkpoints enable the clean committed run;
 they do not pre-accept its result.
+
+
+### Artifact checks and integrated review after the first checkpoint
+
+The tracked runtime/console run on `fcfd194` passed 5,755 tests with zero
+failures; its 13 local PostgreSQL skips were covered by actual PostgreSQL 17 CI.
+On `74249c1`, all 13 registered database cases completed against server 170010
+(14 tests /60 assertions including the registration check). The separate company
+app CI gate passed after the narrow browser-fetch typing repair `157132a`.
+
+CI run 43560679799 failed and is not accepted. Its operator shard exposed two
+scheduler assumptions: health polling could begin a second attempt before timer
+rounding exhausted the wall deadline, and a wrapper timeout could legitimately
+expire before its native child wrote a PID. `fe97c60` makes the former assertion
+use an injected clock advanced by the real abort, and checks every actually
+started process in the timeout case. Abort and overflow variants still require
+both processes. Production deadlines and process-group cleanup remain unchanged.
+Root's related focused run passed 117 tests /296 assertions; independent review
+accepted these changes.
+
+Generic storage-recovery containers passed on macOS and Linux, including the
+physical recovery directory versus final runtime mount fix. The aggregate's
+canonical scenario identity was corrected in `74249c1`; historical artifacts
+were not rewritten. App/browser certification remains open. A local diagnostic
+rerun passed all three application rows, but did not explain away the earlier
+failure. New bounded sanitized diagnostics identified Linux's subsequent failure
+as the browser driver's shared writable Node executable. Runtime selection repair `c7e56c2` is independently accepted: safe native
+installations retain their relative library layout, while shared writable
+executables are copied into the private workspace with the same verified hash.
+Actual native Node execution and the focused controls passed. A fresh complete artifact run is still required.
+
+`eaa76e5` adds the separately required actual polling-container row to A12.
+Independent real Docker runs observed the normal result (two authorized effects,
+zero duplicates/unauthorized effects), a rejected replay-bypass mutation with one
+duplicate effect, and a rejected recognized-user-to-creator mutation with one
+unauthorized effect. All owned images, containers and volumes were cleaned.
+Replacement uses a new protocol journal and must observe actual duplicate delivery
+followed by a later acknowledgement; persisted TGRP identity, claims and namespace
+are read after writer shutdown. Violation counters use the independently expected
+delivery phase, not runtime-reported trust or a successful-run total. This scoped
+acceptance does not substitute for the final aggregate or hosted run.
+
+Preliminary integrated product review found a private-state leak in the explicitly
+unfrozen external-runtime-archive deployment branch. Custom extensionless managed
+replay/idempotency stores and nonempty mutable memory could enter its upload
+context. The repair shares portable export's raw declaration inventory and staged
+source checks; focused regressions cover stores, sidecars, logs, writable mounts,
+empty/nonempty seeds and changes during staging. Independent review accepted the repair after 166 tests /1,085 assertions and
+a separate actual `runDeploy` counterexample: the mocked upload contains no
+extensionless idempotency database or sidecars, original files remain unchanged,
+and nonempty mutable memory refuses before any Railway access. No hosted upload
+was used in reproduction. This integrated source finding is closed.
+
+`39ee525` repairs stale passive-inspection teaching in the public docs, generated
+README and all three starter-skill copies. The shell helper disables Bun local
+configuration preloads as well as environment loading and automatic installation.
+A real CLI preload trap passes. The cloud-record example now validates as version2
+with immutable agent identity and explicit ingress profile. Independent review
+accepted this teaching/test repair (21 tests /215 assertions including cloud-record
+checks).
+
+Full branch CodeQL run 43560734516 on `74249c1` completed analysis 2166381175:
+103 rules, five results, no analysis errors or warnings. Four previously dismissed
+findings remain unchanged. New alert130 (`js/insecure-temporary-file`) flags the
+source read in `src/cli/deploy/bundle.ts`: it uses `O_RDONLY | O_NOFOLLOW |
+O_NONBLOCK`, with no creation/truncation/write flag. Destination creation separately
+uses `O_WRONLY | O_CREAT | O_EXCL` and0600. Root and independent review triage this
+as a false positive; no flag was weakened and no alert was dismissed. Final-head
+analysis remains required. See [alert130](https://github.com/looselyorganized/auggy/security/code-scanning/130).
+
+### Hosted gate remains open
+
+Read-only Railway discovery failed because the existing login expired. Root asked
+the operator to renew login without sharing credentials; authentication does not
+authorize hosted changes. No project/environment target has been selected and no
+hosted resource was changed. Independent preparation also identified real remaining
+engineering: private fixture/control connectivity, exact environment binding,
+quiescent backup/restore maintenance, ancillary-resource approval binding, and
+recording the actual remote image identity when Railway builds approved source.
+The current hosted helper validates proposals/approval; it is not a hosted executor.
+
+The final proposal must bind exact target IDs, source and artifact hashes, named
+resources, verified CPU/memory/volume limits, deadlines, cost enforcement, retention
+and cleanup. A monitored project spending target is not a provider hard cap;
+workspace-wide billing limits cannot be changed under project-only approval.
+Accepted local/container evidence and a reviewable concrete action manifest must
+precede the separate hosted approval request. A13, M5-07, M5-09 and M5-10 remain
+unaccepted. Draft [PR230](https://github.com/looselyorganized/auggy/pull/230) is not
+ready to merge or publish.
+
+Root strict typecheck, repository lint (767 files) and tracked test inventory
+(372 runtime, 34 console, 8 isolated external tests across 17 shards) pass on
+the settled repair source. No dependency lock or package version changed.
