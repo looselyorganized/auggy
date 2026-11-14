@@ -1,17 +1,18 @@
 # Milestone 5 — portable, independently deployed agents
 
-Status: implementation in progress; M5-00 contracts independently accepted.
-M4 PR #229 was separately authorized and merged at
-`c39b746b4b743e5c29dab61a677026c10626d8b8`. G0 is accepted: resulting-main CI,
-PostgreSQL 17 and full CodeQL findings passed. M5-00 is accepted at
-`e0ecbf767a8c4c26a022f8a59d59c257d7a217a2` after strict compilation, lint and independent
-review. M5-01 storage is accepted at `d7d80695e00cf4e8bbcde8fbebb5721c47c6eefe`.
-M5-02 packaging is accepted at `17359c6d137f44d148f322e069c4ba18e2902696` and
-M5-04 managed replay at `9408736bac4a758decc038156c1972eac4599cdc`.
-M5-03 deployment is accepted at `e35cafb`; the additive recovery-mount repair is
-accepted at `d82af27`. M5-05/06 source and provisional installed execution have
-independent review. M5-08 teaching is accepted after independent parity review. Final committed installed,
-browser, container and hosted acceptance remain separate gates.
+Status: implementation in progress. M4 PR #229 was separately authorized and
+merged at `c39b746b4b743e5c29dab61a677026c10626d8b8`; G0 is accepted. Contracts,
+storage, packaging, deployment, durable replay, optional application integration,
+standalone channels and teaching have independent acceptance for their scopes.
+G3 passed all six actual local/browser/container rows on `515cf79` with audited
+artifact identities and cleanup. All required Linux CI and release rehearsal
+passed on `a5aa966`, including the six integration rows and all 13 PostgreSQL 17
+cases. Supplemental scaffold diagnostics and an Alpine atomic-publication repair
+require final-head checks. Hosted G4 still needs target discovery, remaining
+execution/recovery engineering and concrete approval. M5-07, M5-09 and M5-10 remain
+open; draft PR #230 is not ready to merge or publish. See the
+[task ledger](./milestone-5-tasks.json) and
+[evidence](./milestone-5-evidence-2026-11-13.md) for exact accepted revisions.
 
 ## Outcome and preserved boundaries
 

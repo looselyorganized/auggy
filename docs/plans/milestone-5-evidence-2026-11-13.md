@@ -621,3 +621,70 @@ current CLI omits existing safe publication diagnostics, and sanitized artifacts
 correctly exclude private receipts. An authoring specialist is investigating the
 cause and bounded failure visibility; no retry or waiver is being counted as
 acceptance. The earlier staging-prefix repair remains independently accepted.
+
+### Linux certification on a5aa966 and scaffold diagnostics
+
+All required checks passed on `a5aa966c031211dbce0ececb168856f2a1ad65d8`:
+[CI 43563713875](https://github.com/looselyorganized/auggy/actions/runs/43563713875),
+[release rehearsal 43563713863](https://github.com/looselyorganized/auggy/actions/runs/43563713863),
+and PR CodeQL 43563713860. Independent review accepted the actual Linux artifacts
+from merge revision `6dacd1dcbb6bf97dbd9c2e99b60279f6b209e80d`, tree
+`3e85a33cbbe62047a155214accb79aa44123beea`. All six integration rows passed with
+complete scenario and workspace cleanup. Nine distinct scenario artifact hashes
+and all five archive hashes matched. Aggregate SHA-256 is
+`459a318926228e5cb8eae1b92c81bb940acf0d0632e6e3f830614978e8efaf2c`.
+
+Actual Chromium and its driver exited successfully without timeout, overflow,
+orphan or forced-termination flags. Direct streaming, fresh assertions, same-key
+retry and interruption completion passed; no application cookie or creator
+credential was sent to the agent. Desktop and mobile layouts had no overflow.
+Effects were production 0, HTTP 1, browser 1, installed Telegram 2, generic
+container 4 and Telegram container 2, with zero duplicate or unauthorized effects.
+The CI AppArmor opt-in was active, and the successful shell result requires both
+profile installation and removal confirmation. No separate named profile receipt
+was emitted. PostgreSQL 17 completed all 13 registered required cases, server
+170010 (14 tests / 60 assertions, zero failures).
+
+Release rehearsal passed every provider plus application, inspection, migration,
+ownership and deployment checks. Generated ownership creation exited successfully
+in 619 ms with cleanup confirmed. Actual deployment staging verified 25 sources,
+changed/missing-source controls and private-state canaries. Linux launchd remained
+truthfully unavailable. Full branch
+[CodeQL 43563741606](https://github.com/looselyorganized/auggy/actions/runs/43563741606)
+produced analysis 2166475521 on the exact head: 103 rules, five previously triaged
+results and no analysis errors or warnings. Alert states remain unchanged.
+
+The older `515cf79` Ubuntu publication rollback remains unexplained. The successful
+`a5aa966` release predates both diagnostic and Alpine repairs; neither repair is
+claimed to explain it. Bounded reproduction passed 30 fresh native macOS creates
+and 30 fresh Debian/glibc Linux amd64 creates from verified package bytes. That
+investigation is closed without a causal claim, waiver or broader retry campaign.
+
+`c1c991f` adds the existing controlled publication diagnostic code and message to
+create/init failures, preserving operation identity and recovery instructions.
+It bounds diagnostic count and text, and excludes paths, private receipts and raw
+native exceptions. Producer verification passed 57 tests / 476 assertions;
+independent diagnostic review passed 5 tests / 29 assertions. Strict typecheck and
+repository lint passed. New-head certification is still required.
+
+The same Linux investigation found a separate reproducible Alpine/musl defect:
+libc does not export `renameat2`, so atomic scaffold publication always refuses.
+`eb9b362` adds an independently accepted fallback for the verified Linux x64 and
+arm64 syscall ABIs, preserving atomic no-replace behavior and refusal on unsupported
+platforms, filesystems and errors. Native bindings remain first, and native errors
+are never retried through the fallback. It uses neither overwrite nor check-then-
+rename. Independent verification passed 21 tests / 119 assertions, including
+collisions, symlinks and competing publishers. Producer verification passed 65
+Darwin publication/POSIX tests. Root strict typecheck and repository lint passed.
+
+Actual pinned Alpine execution passed nine tests / 72 assertions on each of arm64
+and amd64; amd64 ran under Docker Desktop emulation. The arm64 experiment also
+passed 30 fresh CLI creates. It verified all 415 original archive files before
+applying only the explicitly recorded create/POSIX overlays. This is scoped repair
+proof, not final-package certification. The amd64 member was verified against the
+frozen image index. Owned containers and diagnostic image references were removed;
+the shared base was preserved. Source SHA-256 is
+`fa4c98eab981a05d605978a424fc7e0d1088ab06edaed2c7c72269dcfc1813e8`; test SHA-256 is
+`332e9d7fa3b5b84c50325402478af6a396da3b1f326b64faf86ee8bb2f3e17cd`.
+Final-head CI, release and one actual final-archive Alpine create remain required.
+No dependency lock or package version changed.

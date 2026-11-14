@@ -75,7 +75,7 @@
         "concrete hosted execution approval"
       ],
       "pending": [
-        "Final required CI/browser/release verification: targeted AppArmor setup f4b0e21 is independently accepted; a separate scaffolding rollback in release rehearsal is being diagnosed (local/container G3 accepted on515cf79)",
+        "Required CI, all six Linux integration rows and release rehearsal accepted on a5aa966; supplemental safe scaffold diagnostics and confirmed Alpine publication repair require new-head verification",
         "Renewed Railway authentication for read-only target discovery; current login is expired",
         "Exact isolated workspace/project/environment and verified resource limits",
         "Reviewed loopback fixture control via exact Railway SSH instance, environment binding, per-generation durable journal seal/export and maintenance/recovery operations",
@@ -289,7 +289,8 @@
         "3363581 Linux actual HTTP storage-recovery and Telegram polling container rows both passed with cleanup. macOS polling default CLI lookup was unavailable under isolated PATH;59a5f3d independently accepted with actual fresh default-binary Docker proof.",
         "Release rehearsal found stale bundler prefix oracle. Ownership repairfc3d6b3 independently accepted; actual packed336 consumer verifies25sourcefiles, private exclusions and complete cleanup.",
         "3363581 aggregate remains failed: browser supervisor race on macOS, pinned Linux Chromium executable exceeds inherited256MiB bound. Repairsd99b53c/89cbf00 preserve shutdown/reap and non-browser limits; new final artifact run required.",
-        "G3 accepted on515cf79: all six actual local/container rows passed and all27 owned Docker resources plus temporary runtime/build workspaces removed. Independent full source/packed/installed/hash/behavior/bounds/privacy audit accepted. Linux CI requires targeted AppArmor userns support; G4 hosted remains open."
+        "G3 accepted on515cf79: all six actual local/container rows passed and all27 owned Docker resources plus temporary runtime/build workspaces removed. Independent full source/packed/installed/hash/behavior/bounds/privacy audit accepted. Linux CI requires targeted AppArmor userns support; G4 hosted remains open.",
+        "Required CI43563713875 and release43563713863 passed on a5aa966. Independently audited all six actual Linux rows, exact source/artifact identities, browser effects and complete cleanup; PostgreSQL17 completed all13 required cases. New scaffold diagnostics and Alpine no-replace repair remain supplemental verification work."
       ]
     },
     {
@@ -360,16 +361,15 @@
     }
   ],
   "activeOwnership": {
-    "root": "Accepted local evidence, Linux CI repair integration, ledger and PR230; Railway target discovery awaits login",
-    "m5_deployment_review": "Read-only new-head CI, PostgreSQL, release and full-CodeQL review",
-    "m5_freeze_review": "Independent privileged profile ownership/cleanup and CI script review",
-    "m5_authoring_failure": "Diagnose actual generated-ownership publication rollback; narrow safe CLI diagnostics if needed"
+    "root": "Maintain accepted repair evidence, draft PR230 and final-head verification; Railway discovery awaits renewed login",
+    "m5_final_ci_review": "Independent final-head CI, PostgreSQL, release, full-CodeQL and final-archive Alpine audit",
+    "m5_freeze_review": "Completed independent POSIX ABI, atomic-publication and pinned Alpine experiment acceptance"
   },
   "notes": [
     "Each company owns a separate deployment; no managed platform or shared-company tenancy.",
     "Channels are optional; Next.js and HTTP are not runtime requirements.",
     "Only root changes gate/task acceptance; producers cannot accept themselves.",
-    "G0/G1/G3 and M5-00/01/02/03/04/05/06/08 accepted for their scopes. M5-07 final required CI and hosted G4 remain open; M5-09/10 await those gates."
+    "G0/G1/G3 and M5-00/01/02/03/04/05/06/08 accepted for their scopes. All required CI/release passed on a5aa966; supplemental repairs require final-head verification. Hosted G4, M5-07 and final M5-09/10 acceptance remain open."
   ],
   "preparation": {
     "status": "accepted",
@@ -420,12 +420,12 @@
     "initialLocalDocker": "unavailable: configured socket absent"
   },
   "verificationCheckpoint": {
-    "revision": "515cf793526f18f5355fc31015b3b9cfe075e881",
-    "tree": "0c638856689de20a6b593c9cf43182ee2ee13400",
-    "ci": 43562375625,
-    "ciConclusion": "all constituent jobs passed except portable browser: Ubuntu AppArmor blocks Chromium sandbox creation; targeted CI setup in progress",
-    "fullCodeQL": 43562421107,
-    "analysis": 2166435521,
+    "revision": "a5aa966c031211dbce0ececb168856f2a1ad65d8",
+    "tree": "3e85a33cbbe62047a155214accb79aa44123beea",
+    "ci": 43563713875,
+    "ciConclusion": "success",
+    "fullCodeQL": 43563741606,
+    "analysis": 2166475521,
     "codeQLRules": 103,
     "codeQLResults": 5,
     "openAlertTriage": {
@@ -435,7 +435,41 @@
     },
     "draftPR": "https://github.com/looselyorganized/auggy/pull/230",
     "milestoneComplete": false,
-    "release": 43562375614,
-    "releaseConclusion": "failure: generated-ownership create returned controlled publication rollback; underlying cause omitted from CLI output and under investigation"
+    "release": 43563713863,
+    "releaseConclusion": "success: all providers, application, inspection, migration, ownership and deployment passed",
+    "testedMergeRevision": "6dacd1dcbb6bf97dbd9c2e99b60279f6b209e80d",
+    "postgreSQL": {
+      "registered": 13,
+      "completed": 13,
+      "serverVersion": 170010
+    },
+    "portableIntegration": {
+      "status": "passed",
+      "scenarios": 6,
+      "workspaceCleanup": "complete",
+      "aggregateSHA256": "459a318926228e5cb8eae1b92c81bb940acf0d0632e6e3f830614978e8efaf2c"
+    },
+    "supplementalVerification": "New-head checks required after accepted c1c991f controlled diagnostics and eb9b362 Alpine atomic publication repair"
+  },
+  "supplementalRepairs": {
+    "diagnostics": {
+      "commit": "c1c991fccebde338c2eeb613c5bafe8607be60ed",
+      "status": "accepted_source",
+      "independentTests": 5,
+      "independentAssertions": 29
+    },
+    "alpinePublication": {
+      "commit": "eb9b362",
+      "status": "accepted_source_and_explicit_overlay_experiment",
+      "sourceSHA256": "fa4c98eab981a05d605978a424fc7e0d1088ab06edaed2c7c72269dcfc1813e8",
+      "testsSHA256": "332e9d7fa3b5b84c50325402478af6a396da3b1f326b64faf86ee8bb2f3e17cd",
+      "independentTests": 21,
+      "independentAssertions": 119,
+      "alpineArm64Tests": 9,
+      "alpineX64Tests": 9,
+      "alpineArm64FreshCreates": 30,
+      "finalArchiveProof": "pending",
+      "originalUbuntu515Cause": "unexplained"
+    }
   }
 }
