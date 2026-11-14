@@ -1,7 +1,9 @@
 # Milestone 5 execution evidence
 
-Status: M4 merge and resulting-main verification complete; G0 accepted. M5-00 is
-ready for interface/ownership freeze. No M5 product acceptance is claimed.
+Current status: G0/G1 and M5-00/01/02/04 accepted. M5-03/05/06 implementation
+continues; M5-07 helper mechanics have independent preparation review. Final
+installed/browser/container/hosted acceptance remains open. Earlier entries below
+record historical gate states; the task ledger is the current source of status.
 
 ## Preservation and entry checks
 
@@ -294,3 +296,34 @@ review passed 75 tests /527 assertions plus host preflight; these counts overlap
 The nested local-tarball fixture performs a real offline frozen Bun install and
 preserves lock bytes. Export truthfully reports `buildVerified: false`; actual
 Linux image, container and Railway acceptance remain open.
+
+### M5-07 preparation mechanics and integration review
+
+The bounded consumer, browser, Docker, hosted-plan and evidence helpers passed
+31 tests /146 assertions. Independent review repaired and rechecked Docker work
+cancellation, in-flight resource reservations and a separate cleanup quota. Browser
+ownership uses a directly supervised Chromium group and a separate CDP driver.
+These mechanics do not certify an application or platform.
+
+Actual CLI-created Telegram acceptance then exercised the packed HTTP client,
+Anthropic adapter, tool execution and durable SQLite replay. Independent adversarial
+review demonstrated that the first harness could miss an anonymous-to-recognized
+identity mutation and count stale polls during replacement. Root repaired full
+identity/substate/thread assertions and correlated replacement delivery with a
+subsequent acknowledgement poll. The independent reviewer reran a normal packed
+worker (two authorized effects, zero duplicates/unauthorized effects), the broken
+identity runtime (correct failure), and the stale-history control (correct failure).
+All process groups were reaped. Evidence remains provisional against recorded
+snapshot artifacts; the final committed-artifact run is still required.
+
+The optional application passed independent source/security review, 14 tests /264
+assertions, strict checks, a real Node production build and method/origin/verifier
+HTTP checks. Fixture identities were absent from emitted production JavaScript.
+Two isolated application consumers now use the exact packed pure `auggy/auth`
+entrypoint, generated locks, frozen installs and clean audits. Their 77 selected
+installed-file hashes per copy and lock hashes were independently verified.
+Actual browser and generic-container acceptance are in progress, not accepted.
+
+Docker Desktop was already installed but stopped. Root started it for authorized
+local verification; its real server reports29.1.3. This updates the initial daemon
+unavailability observation without claiming image, container or Railway success.

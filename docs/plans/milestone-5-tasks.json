@@ -139,14 +139,14 @@
       "id": "M5-02",
       "title": "Pure Docker export",
       "specialist": "Packaging engineer",
-      "status": "review",
+      "status": "accepted",
       "dependsOn": [
         "M5-00",
         "M5-01"
       ],
       "blockedBy": [],
       "acceptanceDependsOn": [],
-      "acceptedCommit": null,
+      "acceptedCommit": "17359c6d137f44d148f322e069c4ba18e2902696",
       "evidence": [
         "Independent m5_freeze_review accepted final source candidate without blockers",
         "Exact staged M5-02 snapshot: 96 tests /685 assertions; strict typecheck; repository lint (736 files) passed",
@@ -157,17 +157,18 @@
       "id": "M5-03",
       "title": "Channel-aware Railway deployment",
       "specialist": "Deployment engineer",
-      "status": "blocked",
+      "status": "review",
       "dependsOn": [
         "M5-01",
         "M5-02"
       ],
-      "blockedBy": [
-        "M5-02"
-      ],
+      "blockedBy": [],
       "acceptanceDependsOn": [],
       "acceptedCommit": null,
-      "evidence": []
+      "evidence": [
+        "Producer197focusedtests627assertions; fulltypecheck/format passed",
+        "Independent deployment review in progress; nohostedexecution"
+      ]
     },
     {
       "id": "M5-04",
@@ -191,7 +192,7 @@
       "id": "M5-05",
       "title": "Optional application integration",
       "specialist": "Application integration engineer",
-      "status": "in_progress",
+      "status": "review",
       "dependsOn": [
         "M5-00",
         "M5-04"
@@ -199,23 +200,28 @@
       "blockedBy": [],
       "acceptanceDependsOn": [],
       "acceptedCommit": null,
-      "evidence": []
+      "evidence": [
+        "Independent source/security review found no blocker;14tests264assertions",
+        "Actual Nodeproductionbuild/routes and bundlefixtureexclusion passed; actualbrowser and installedHTTP runner in progress"
+      ]
     },
     {
       "id": "M5-06",
       "title": "Standalone channel acceptance",
       "specialist": "Channel harness engineer",
-      "status": "blocked",
+      "status": "review",
       "dependsOn": [
         "M5-00",
         "M5-02"
       ],
-      "blockedBy": [
-        "M5-02"
-      ],
+      "blockedBy": [],
       "acceptanceDependsOn": [],
       "acceptedCommit": null,
-      "evidence": []
+      "evidence": [
+        "Independent actual installed normalworker passed2authorizedeffects0duplicates0unauthorized",
+        "Two harness findings repaired; mutatedanonymous-to-recognized runtime and stale-poll controls correctlyfail with cleanprocesscleanup",
+        "Final committedartifact rerun remains pending"
+      ]
     },
     {
       "id": "M5-07",
@@ -237,7 +243,9 @@
       ],
       "acceptedCommit": null,
       "evidence": [
-        "Released after accepted M5-00; no product acceptance claimed"
+        "Five preparation mechanics suites: 31 tests /146 assertions; independent m5_storage_freeze accepted mechanics only",
+        "Exact-artifact dependency materializer exercised by actual installed Telegram runner; independent integrated review pending",
+        "Actual browser/container/hosted acceptance not claimed"
       ]
     },
     {
@@ -254,9 +262,7 @@
         "M5-06"
       ],
       "blockedBy": [
-        "M5-02",
         "M5-03",
-        "M5-04",
         "M5-05",
         "M5-06"
       ],
@@ -280,9 +286,7 @@
         "M5-08"
       ],
       "blockedBy": [
-        "M5-02",
         "M5-03",
-        "M5-04",
         "M5-05",
         "M5-06",
         "M5-07",
@@ -313,18 +317,17 @@
     }
   ],
   "activeOwnership": {
-    "root": "Shared config/host/web transport and restore/inventory integration; package/CLI registration/manifests; harness evidence and ledger acceptance",
-    "m5_storage_freeze": "M5-04 producer complete; independent READ-ONLY M5-07 helper preparation review",
-    "m5_deployment_freeze": "M5-02: src/cli/deploy/profile.ts, portable-export.ts, portable-dependencies.ts, bundle.ts, dockerfile.ts, commands/export.ts and matching tests/cli only",
-    "m5_acceptance_engineer": "M5-07 Docker helper repairs: integration-container.ts and matching test only",
-    "m5_freeze_review": "Independent READ-ONLY M5-02 packaging review; M5-04 final review accepted",
-    "m5_app_integration": "M5-05 examples/company-app source/UI/tests/ingredients; root owns manifest/lock/shared contracts"
+    "root": "Shared CLI/public auth/app manifest/lock/materializers; top acceptance suite, CI, docs/evidence/ledger and commits",
+    "m5_deployment_review": "Independent read-only M5-03 deployment/shared CLI review",
+    "m5_integration_review": "Independent M5-05/06/materializers review complete; both Telegram harness findings independently verified fixed",
+    "m5_app_acceptance": "M5 actual standalone HTTP and Next/browser runner plus application fixture driver and tests",
+    "m5_container_acceptance": "M5 Docker utility/status helpers and actual container storage/recovery suite; root releases existing helpers after checkpoint"
   },
   "notes": [
     "Each company owns a separate deployment; no managed platform or shared-company tenancy.",
     "Channels are optional; Next.js and HTTP are not runtime requirements.",
     "Only root changes gate/task acceptance; producers cannot accept themselves.",
-    "G0/G1, M5-01 and M5-04 accepted. M5-02 in independent review; M5-05 ready; M5-07 helper preparation in independent review. Installed/container/hosted acceptance remains open."
+    "G0/G1 and M5-01/02/04 accepted. M5-03/05/06 in progress. M5-07 helpers independently reviewed; actual installed/browser/container/hosted acceptance remains open."
   ],
   "preparation": {
     "status": "accepted",

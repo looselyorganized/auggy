@@ -6,9 +6,11 @@ M4 PR #229 was separately authorized and merged at
 PostgreSQL 17 and full CodeQL findings passed. M5-00 is accepted at
 `e0ecbf767a8c4c26a022f8a59d59c257d7a217a2` after strict compilation, lint and independent
 review. M5-01 storage is accepted at `d7d80695e00cf4e8bbcde8fbebb5721c47c6eefe`.
-M5-02 packaging and M5-04 managed replay implementation are under independent
-review; M5-07 harness preparation continues. Other producers follow their recorded
-dependencies.
+M5-02 packaging is accepted at `17359c6d137f44d148f322e069c4ba18e2902696` and
+M5-04 managed replay at `9408736bac4a758decc038156c1972eac4599cdc`.
+M5-03 deployment, M5-05 application integration and M5-06 channel acceptance are
+in progress. M5-07 mechanics have independent preparation review; installed,
+browser, container and hosted acceptance remain separate gates.
 
 ## Outcome and preserved boundaries
 
