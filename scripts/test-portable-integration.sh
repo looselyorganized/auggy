@@ -2,6 +2,11 @@
 set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$repository_root/scripts/ci-chromium-userns.sh"
+trap auggy_ci_userns_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 build_directory="$(mktemp -d "${TMPDIR:-/tmp}/auggy-m5-build.XXXXXX")"
 mkdir -m 700 "$build_directory/packs"
 if [[ -n "${AUGGY_INTEGRATION_EVIDENCE_DIR:-}" ]]; then
@@ -29,6 +34,7 @@ fi
 bun node_modules/playwright/cli.js install "${browser_options[@]}"
 chromium_path="$(bun -e 'import { chromium } from "playwright"; console.log(chromium.executablePath());')"
 chromium_sha256="$(bun -e 'console.log(new Bun.CryptoHasher("sha256").update(await Bun.file(process.argv[1]).arrayBuffer()).digest("hex"));' "$chromium_path")"
+auggy_ci_userns_prepare "$build_directory" "$chromium_path" "$chromium_sha256"
 
 cd "$repository_root"
 bun scripts/release-smoke/integration-suite.ts \
@@ -45,4 +51,5 @@ bun scripts/release-smoke/integration-suite.ts \
 
 # Successful suite evidence contains the exact archives. Failed runs retain build
 # inputs for inspection; the suite owns and reports runtime resource cleanup.
+auggy_ci_userns_cleanup
 rm -rf "$build_directory"

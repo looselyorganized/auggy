@@ -191,6 +191,7 @@ jobs:
       - name: Verify packed browser and Docker integrations
         env:
           AUGGY_INTEGRATION_EVIDENCE_DIR: ${{ runner.temp }}/auggy-integration-evidence
+          AUGGY_INTEGRATION_CI_USERNS: "1"
         run: bun run smoke:integration
 
       - name: Preserve sanitized integration evidence
