@@ -113,7 +113,8 @@
     "format": "bunx --bun @biomejs/biome@2.5.5 format --write",
     "test:inspectable-example": "bash scripts/test-inspectable-example.sh",
     "test:company-app": "bash scripts/test-company-app.sh",
-    "smoke:authoring": "bun scripts/release-smoke/authoring-suite.ts"
+    "smoke:authoring": "bun scripts/release-smoke/authoring-suite.ts",
+    "smoke:integration": "bash scripts/test-portable-integration.sh"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.94.0",

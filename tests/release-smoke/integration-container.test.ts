@@ -17,6 +17,11 @@ import {
   probeIntegrationDocker,
   withIntegrationDocker,
 } from "../../scripts/release-smoke/integration-container";
+import {
+  assertContainerAdmission,
+  readContainerEffectJournal,
+  summarizeContainerEffects,
+} from "../../scripts/release-smoke/integration-container-suite";
 
 const paths: string[] = [];
 afterEach(() => {
@@ -33,6 +38,11 @@ const file = process.env.M5_COMMAND_STATE;
 appendFileSync(file + ".commands", JSON.stringify(args) + "\\n");
 if (process.env.M5_DAEMON_UNAVAILABLE) process.exit(1);
 if (args[0] === "info") { console.log(JSON.stringify("28.0.0")); process.exit(0); }
+if (args[0] === "build" && process.env.M5_BUILD_FAILURE) {
+ console.error(process.env.M5_BUILD_FAILURE === "frozen" ? "error: lockfile had changes, but lockfile is frozen" : "error: unrelated image build failure");
+ process.exit(1);
+}
+if (args[0] === "image" && args[1] === "ls") process.exit(0);
 const directory = file + ".resources";
 mkdirSync(directory, { recursive: true });
 const all = () => readdirSync(directory).map((name) => ({ file: join(directory, name), value: JSON.parse(readFileSync(join(directory, name), "utf8")) }));
@@ -57,7 +67,11 @@ if ((args[0] === "volume" && args[1] === "create") || args[0] === "build" || arg
 if (["volume", "image", "container"].includes(args[0]) && args[1] === "inspect") {
  const resource = find(args[0], args.at(-1));
  if (!resource) process.exit(1);
- console.log(JSON.stringify(resource.value.labels)); process.exit(0);
+ const template = args[args.indexOf("--format") + 1];
+ if (template === "{{json .State}}") console.log(JSON.stringify({ Running: true, ExitCode: 0 }));
+ else if (template === "{{json .Config}}") console.log(JSON.stringify({ User: "", Env: ["AUGGY_DATA_DIR=/app/data"], ExposedPorts: null }));
+ else console.log(JSON.stringify(resource.value.labels));
+ process.exit(0);
 }
 if (["volume", "image", "container"].includes(args[0]) && args[1] === "rm") {
  if (process.env.M5_ASSERT_CREATE_REAPED) {
@@ -75,7 +89,15 @@ if (["volume", "image", "container"].includes(args[0]) && args[1] === "rm") {
 if (["start", "stop", "exec"].includes(args[0])) {
  const id = args[0] === "stop" ? args.at(-1) : args[1];
  if (!find("container", id)) process.exit(1);
+ if (args[0] === "exec" && process.env.M5_EXEC_FAILURE) { console.error("Synthetic command failure " + process.env.M5_EXEC_FAILURE); process.exit(1); }
  console.log(args[0] === "exec" ? "fixture-command-complete" : id); process.exit(0);
+}
+if (args[0] === "logs") {
+ if (!find("container", args.at(-1))) process.exit(1);
+ if (process.env.M5_LOG_FLOOD) { await Bun.write(Bun.stdout, "x".repeat(3 * 1024 * 1024)); process.exit(0); }
+ let lines = ["container-proof:factory", "container-proof:effect:00000000-0000-4000-8000-000000000001", ...Array.from({length: 150}, (_, index) => "noise " + index), "Error: runtime data root must have mode 0700"];
+ if (args.includes("--tail")) lines = lines.slice(-Number(args[args.indexOf("--tail") + 1]));
+ console.log(lines.join("\\n")); process.exit(0);
 }
 process.exit(1);
 `;
@@ -118,6 +140,145 @@ function context(input: ReturnType<typeof options>) {
 }
 
 describe("Docker supervision controls; no real Docker claim", () => {
+  test("complete noisy log history cannot conceal an earlier factory or unauthorized effect", async () => {
+    const input = options();
+    const result = await withIntegrationDocker({ ...input, timeoutMs: 5000 }, async (scope) => {
+      const image = await scope.build(context(input));
+      const volume = await scope.createVolume();
+      const utility = await scope.startUtility({ imageId: image.imageId, volume, env: {} });
+      const logs = await scope.logs(utility.containerId);
+      expect(logs.split("\n").length).toBeGreaterThan(150);
+      expect(() => assertContainerAdmission(logs, "mode")).toThrow("reached augment construction");
+      expect(summarizeContainerEffects([], readContainerEffectJournal(logs))).toEqual({
+        effectCount: 1,
+        duplicateEffectCount: 0,
+        unauthorizedEffectCount: 1,
+      });
+    });
+    expect(result.status).toBe("passed");
+    expect(result.cleanup.status).toBe("complete");
+  }, 10_000);
+
+  test("log output beyond the byte ceiling fails instead of accepting a truncated suffix", async () => {
+    const input = options({ M5_LOG_FLOOD: "1" });
+    const result = await withIntegrationDocker({ ...input, timeoutMs: 5000 }, async (scope) => {
+      const image = await scope.build(context(input));
+      const volume = await scope.createVolume();
+      const utility = await scope.startUtility({ imageId: image.imageId, volume, env: {} });
+      await scope.logs(utility.containerId);
+    });
+    expect(result.status).toBe("failed");
+    expect(result.cleanup.status).toBe("complete");
+    expect(
+      "commands" in result &&
+        result.commands?.some(
+          (command) => command.label === "container-logs" && command.status === "failed",
+        ),
+    ).toBe(true);
+  }, 10_000);
+
+  test("caller cancellation kills and reaps an active command before exact resource cleanup", async () => {
+    const input = options({ M5_VOLUME_CREATE_DELAY_MS: "30000", M5_ASSERT_CREATE_REAPED: "1" });
+    const controller = new AbortController();
+    const result = await withIntegrationDocker(
+      { ...input, timeoutMs: 30_000, signal: controller.signal },
+      async (scope) => {
+        const creation = scope.createVolume();
+        void creation.catch(() => {});
+        const deadline = performance.now() + 2000;
+        while (!existsSync(`${input.env.M5_COMMAND_STATE}.started`)) {
+          if (performance.now() >= deadline) throw new Error("Fixture create did not start");
+          await Bun.sleep(5);
+        }
+        controller.abort();
+        await creation;
+      },
+    );
+    expect(result.status).toBe("failed");
+    expect(result.cleanup.status).toBe("complete");
+    expect(readFileSync(`${input.env.M5_COMMAND_STATE}.cleanup-checks`, "utf8")).toBe(
+      '{"live":false}\n',
+    );
+    expect(readdirSync(`${input.env.M5_COMMAND_STATE}.resources`)).toHaveLength(0);
+  }, 10_000);
+
+  test("failed owned commands retain only bounded redacted diagnostics", async () => {
+    const secret = "synthetic-container-secret";
+    const input = options({ M5_EXEC_FAILURE: secret });
+    const result = await withIntegrationDocker(
+      { ...input, secrets: [secret], timeoutMs: 5000 },
+      async (scope) => {
+        const image = await scope.build(context(input));
+        const volume = await scope.createVolume();
+        const utility = await scope.startUtility({ imageId: image.imageId, volume, env: {} });
+        await scope.exec(utility.containerId, ["fixture-command"]);
+      },
+    );
+    expect(result.status).toBe("failed");
+    expect(result.cleanup.status).toBe("complete");
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(
+      "commands" in result &&
+        result.commands?.some((command) =>
+          command.failureDiagnostic?.includes("Synthetic command failure"),
+        ),
+    ).toBe(true);
+  }, 10_000);
+
+  test("operator utility mounts only exact owned volumes and never provisions them implicitly", async () => {
+    const input = options();
+    const result = await withIntegrationDocker({ ...input, timeoutMs: 5000 }, async (scope) => {
+      const image = await scope.build(context(input));
+      const volume = await scope.createVolume(),
+        restoreVolume = await scope.createVolume();
+      await expect(
+        scope.startUtility({
+          imageId: image.imageId,
+          volume,
+          restoreVolume: "unowned-volume",
+          env: {},
+        }),
+      ).rejects.toThrow("created by this run");
+      const utility = await scope.startUtility({
+        imageId: image.imageId,
+        volume,
+        restoreVolume,
+        env: {},
+      });
+      expect((await scope.status(utility.containerId)).running).toBe(true);
+      expect(await scope.imageMetadata(image.imageId)).toEqual({
+        user: "",
+        exposedPorts: [],
+        hasPortEnvironment: false,
+      });
+      const creation = commands(input).filter((args) => args[0] === "create");
+      expect(creation).toHaveLength(1);
+      expect(creation[0]).toContain(`type=volume,src=${restoreVolume},dst=/restore`);
+      expect(creation[0]).toContain("--entrypoint");
+      expect(creation[0]).toContain("setInterval(() => {}, 1000)");
+      expect(creation[0]!.join(" ")).not.toContain("chmod");
+      expect(creation[0]!.join(" ")).not.toContain("mkdir");
+    });
+    expect(result.status).toBe("passed");
+    expect(result.cleanup.status).toBe("complete");
+  }, 10_000);
+
+  test("negative build accepts only actual frozen-lock exit and verifies no tagged image remains", async () => {
+    const input = options({ M5_BUILD_FAILURE: "frozen" });
+    const result = await withIntegrationDocker({ ...input, timeoutMs: 5000 }, async (scope) => {
+      await scope.assertFrozenLockFailure(context(input));
+    });
+    expect(result.status).toBe("passed");
+    expect(result.cleanup.status).toBe("complete");
+    expect(commands(input).some((args) => args[0] === "image" && args[1] === "ls")).toBe(true);
+    const wrong = options({ M5_BUILD_FAILURE: "unrelated" });
+    const rejected = await withIntegrationDocker({ ...wrong, timeoutMs: 5000 }, async (scope) => {
+      await scope.assertFrozenLockFailure(context(wrong));
+    });
+    expect(rejected.status).toBe("failed");
+    expect(commands(wrong).some((args) => args[0] === "image" && args[1] === "ls")).toBe(false);
+  }, 10_000);
+
   test("an early observer failure kills and reaps an active create before ownership cleanup", async () => {
     const input = options({ M5_VOLUME_CREATE_DELAY_MS: "30000", M5_ASSERT_CREATE_REAPED: "1" });
     let creation: Promise<unknown> | undefined;

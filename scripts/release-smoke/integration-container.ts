@@ -67,12 +67,25 @@ export async function probeIntegrationDocker(options: DockerOptions) {
 export interface IntegrationDockerScope {
   createVolume(): Promise<string>;
   build(options: { context: string; exportSHA256: string }): Promise<{ imageId: string }>;
+  assertFrozenLockFailure(options: { context: string; exportSHA256: string }): Promise<void>;
   start(options: {
     imageId: string;
     volume: string;
     profile: DeploymentProfile;
     env: Readonly<Record<string, string>>;
   }): Promise<{ containerId: string; origin: string | null }>;
+  /** Explicit operator workspace; does not start Auggy or repair permissions implicitly. */
+  startUtility(options: {
+    imageId: string;
+    volume: string;
+    restoreVolume?: string;
+    env: Readonly<Record<string, string>>;
+  }): Promise<{ containerId: string }>;
+  status(containerId: string): Promise<{ running: boolean; exitCode: number }>;
+  logs(containerId: string): Promise<string>;
+  imageMetadata(
+    imageId: string,
+  ): Promise<{ user: string; exposedPorts: string[]; hasPortEnvironment: boolean }>;
   stop(containerId: string): Promise<void>;
   /** Only bounded explicit commands inside this run's container; caller owns recovery semantics. */
   exec(containerId: string, arguments_: readonly string[]): Promise<{ stdout: string }>;
@@ -83,7 +96,7 @@ export interface IntegrationDockerScope {
  * Local Docker proof and Railway proof remain independent; this scope never contacts Railway.
  */
 export async function withIntegrationDocker<T>(
-  options: DockerOptions & { runId: string; timeoutMs?: number },
+  options: DockerOptions & { runId: string; timeoutMs?: number; signal?: AbortSignal },
   observe: (scope: IntegrationDockerScope) => Promise<T>,
 ) {
   check(
@@ -100,10 +113,14 @@ export async function withIntegrationDocker<T>(
         remainingOwnedIds: [] as string[],
       },
     };
-  const budget = createIntegrationBudget(options.timeoutMs ?? INTEGRATION_LIMITS.phaseBuildMs);
+  const budget = createIntegrationBudget(
+    options.timeoutMs ?? INTEGRATION_LIMITS.phaseBuildMs,
+    options.signal,
+  );
   const directory = mkdtempSync(join(realpathSync(options.cwd), ".m5-docker-"));
   const resources: Resource[] = [];
   const candidates: Resource[] = [];
+  const confirmedAbsent = new Set<Resource>();
   const commands: {
     label: string;
     status: "passed" | "failed";
@@ -111,6 +128,7 @@ export async function withIntegrationDocker<T>(
     cleanupUnknown: boolean;
     stdoutSHA256: string;
     stderrSHA256: string;
+    failureDiagnostic?: string;
   }[] = [];
   let workCalls = 0;
   let cleanupCalls = 0;
@@ -119,7 +137,12 @@ export async function withIntegrationDocker<T>(
   let cleanupBudget: ReturnType<typeof createIntegrationBudget> | undefined;
   const pendingCommands = new Set<ReturnType<typeof withIntegrationChild>>();
   const binary = options.binary ?? "docker";
-  const execute = async (label: string, args: readonly string[], cleanup = false) => {
+  const execute = async (
+    label: string,
+    args: readonly string[],
+    cleanup = false,
+    frozenFailure = false,
+  ) => {
     check(cleanup || (active && !budget.signal.aborted), "Docker phase has ended");
     if (cleanup)
       check(++cleanupCalls <= CLEANUP_COMMANDS, "Docker cleanup command count exceeded bound");
@@ -161,12 +184,30 @@ export async function withIntegrationDocker<T>(
       cleanupUnknown: !result.process.cleanupConfirmed,
       stdoutSHA256: applicationHash(stdout),
       stderrSHA256: applicationHash(stderr),
+      ...(result.status === "failed" && !frozenFailure
+        ? { failureDiagnostic: stderr.slice(-2048) }
+        : {}),
     });
-    check(
-      result.status === "passed" && result.process.cleanupConfirmed,
-      "Docker integration command failed",
-    );
-    return stdout.trim();
+    if (frozenFailure) {
+      check(
+        result.status === "failed" &&
+          result.process.cleanupConfirmed &&
+          result.process.exitCode !== null &&
+          result.process.exitCode > 0 &&
+          !result.process.spawnFailed &&
+          !result.process.timedOut &&
+          !result.process.exceededOutput &&
+          !result.process.forced &&
+          !result.process.orphanedGroup &&
+          `${stdout}\n${stderr}`.includes("lockfile had changes, but lockfile is frozen"),
+        "Expected a normally exited frozen-lock build rejection",
+      );
+    } else
+      check(
+        result.status === "passed" && result.process.cleanupConfirmed,
+        "Docker integration command failed",
+      );
+    return (label === "container-logs" ? `${stdout}\n${stderr}` : stdout).trim();
   };
   const owned = async (resource: Resource, cleanup: boolean) => {
     const template = resource.kind === "volume" ? "{{json .Labels}}" : "{{json .Config.Labels}}";
@@ -200,6 +241,94 @@ export async function withIntegrationDocker<T>(
     // Keep the reservation until final cleanup even if command output never confirms creation.
     candidates.push(candidate);
     return candidate;
+  };
+  const startOwnedContainer = async (input: {
+    imageId: string;
+    volume: string;
+    profile: DeploymentProfile;
+    env: Readonly<Record<string, string>>;
+    utility?: boolean;
+    restoreVolume?: string;
+  }) => {
+    await owned(requireResource("image", input.imageId), false);
+    await owned(requireResource("volume", input.volume), false);
+    if (input.restoreVolume) {
+      check(input.utility && input.restoreVolume !== input.volume, "Invalid utility restore mount");
+      await owned(requireResource("volume", input.restoreVolume), false);
+    }
+    assertIntegrationEnvironment(input.env);
+    check(
+      Object.entries(input.env).every(([key, value]) => !/[\r\n]/.test(key + value)),
+      "Docker env file values must be single-line",
+    );
+    if (input.profile.kind === "http")
+      check(
+        Number.isSafeInteger(input.profile.port) &&
+          input.profile.port > 0 &&
+          input.profile.port <= 65535,
+        "Docker HTTP profile has an invalid port",
+      );
+    const name = `auggy-m5-${options.runId}-${randomUUID()}`;
+    reserve("container", name);
+    const envFile = join(directory, `${randomUUID()}.env`);
+    writeFileSync(
+      envFile,
+      `${Object.entries(input.env)
+        .map(([key, value]) => `${key}=${value}`)
+        .join("\n")}\n`,
+      { flag: "wx", mode: 0o600 },
+    );
+    let containerId: string;
+    try {
+      containerId = await execute("create-container", [
+        "create",
+        "--name",
+        name,
+        "--label",
+        `${OWNER_LABEL}=${options.runId}`,
+        "--mount",
+        `type=volume,src=${input.volume},dst=/app/data`,
+        ...(input.restoreVolume
+          ? ["--mount", `type=volume,src=${input.restoreVolume},dst=/restore`]
+          : []),
+        "--env-file",
+        envFile,
+        ...(input.profile.kind === "http" ? ["--publish", `127.0.0.1::${input.profile.port}`] : []),
+        ...(input.utility ? ["--entrypoint", "bun"] : []),
+        input.imageId,
+        ...(input.utility
+          ? [
+              "--no-env-file",
+              "--no-install",
+              "--config=/dev/null",
+              "-e",
+              "setInterval(() => {}, 1000)",
+            ]
+          : []),
+      ]);
+    } finally {
+      rmSync(envFile, { force: true });
+    }
+    check(/^[a-f0-9]{64}$/.test(containerId), "Docker container identity is invalid");
+    const resource = { kind: "container" as const, id: containerId };
+    await owned(resource, false);
+    resources.push(resource);
+    await execute("start-container", ["start", containerId]);
+    let origin: string | null = null;
+    if (input.profile.kind === "http") {
+      const mapping = await execute("read-container-port", [
+        "port",
+        containerId,
+        `${input.profile.port}/tcp`,
+      ]);
+      const match = /^127\.0\.0\.1:(\d+)$/.exec(mapping);
+      check(
+        match && Number(match[1]) > 0 && Number(match[1]) <= 65535,
+        "Container port mapping is not loopback",
+      );
+      origin = `http://127.0.0.1:${match[1]}`;
+    }
+    return { containerId, origin };
   };
   const scope: IntegrationDockerScope = {
     async createVolume() {
@@ -244,71 +373,102 @@ export async function withIntegrationDocker<T>(
       resources.push({ kind: "image", id: imageId });
       return { imageId };
     },
-    async start(input) {
-      requireResource("image", input.imageId);
-      requireResource("volume", input.volume);
-      assertIntegrationEnvironment(input.env);
+    async assertFrozenLockFailure(input) {
+      const context = realpathSync(input.context);
+      const manifest = readIntegrationFile(context, "auggy-deployment.json", 4 * 1024 * 1024);
       check(
-        Object.entries(input.env).every(([key, value]) => !/[\r\n]/.test(key + value)),
-        "Docker env file values must be single-line",
+        /^[a-f0-9]{64}$/.test(input.exportSHA256) &&
+          applicationHash(manifest) === input.exportSHA256,
+        "Docker export identity mismatch",
       );
-      if (input.profile.kind === "http")
-        check(
-          Number.isSafeInteger(input.profile.port) &&
-            input.profile.port > 0 &&
-            input.profile.port <= 65535,
-          "Docker HTTP profile has an invalid port",
-        );
-      const name = `auggy-m5-${options.runId}-${randomUUID()}`;
-      reserve("container", name);
-      const envFile = join(directory, `${randomUUID()}.env`);
-      writeFileSync(
-        envFile,
-        `${Object.entries(input.env)
-          .map(([key, value]) => `${key}=${value}`)
-          .join("\n")}\n`,
-        { flag: "wx", mode: 0o600 },
+      const tag = `auggy-m5:${options.runId}-${randomUUID()}`;
+      const candidate = reserve("image", tag);
+      await execute(
+        "reject-stale-frozen-lock",
+        ["build", "--label", `${OWNER_LABEL}=${options.runId}`, "--tag", tag, context],
+        false,
+        true,
       );
-      let containerId: string;
-      try {
-        containerId = await execute("create-container", [
-          "create",
-          "--name",
-          name,
-          "--label",
-          `${OWNER_LABEL}=${options.runId}`,
-          "--mount",
-          `type=volume,src=${input.volume},dst=/app/data`,
-          "--env-file",
-          envFile,
-          ...(input.profile.kind === "http"
-            ? ["--publish", `127.0.0.1::${input.profile.port}`]
-            : []),
-          input.imageId,
-        ]);
-      } finally {
-        rmSync(envFile, { force: true });
-      }
-      check(/^[a-f0-9]{64}$/.test(containerId), "Docker container identity is invalid");
-      const resource = { kind: "container" as const, id: containerId };
-      await owned(resource, false);
-      resources.push(resource);
-      await execute("start-container", ["start", containerId]);
-      let origin: string | null = null;
-      if (input.profile.kind === "http") {
-        const mapping = await execute("read-container-port", [
-          "port",
+      const residue = await execute("verify-failed-image-absent", [
+        "image",
+        "ls",
+        "--format",
+        "{{.ID}}",
+        "--filter",
+        `reference=${tag}`,
+      ]);
+      check(residue === "", "Rejected build left an unexpected image");
+      confirmedAbsent.add(candidate);
+    },
+    start: startOwnedContainer,
+    async startUtility(input) {
+      const result = await startOwnedContainer({
+        ...input,
+        utility: true,
+        profile: { kind: "none" },
+      });
+      return { containerId: result.containerId };
+    },
+    async status(containerId) {
+      await owned(requireResource("container", containerId), false);
+      const state = JSON.parse(
+        await execute("container-status", [
+          "container",
+          "inspect",
+          "--format",
+          "{{json .State}}",
           containerId,
-          `${input.profile.port}/tcp`,
-        ]);
-        const match = /^127\.0\.0\.1:(\d+)$/.exec(mapping);
-        check(
-          match && Number(match[1]) > 0 && Number(match[1]) <= 65535,
-          "Container port mapping is not loopback",
-        );
-        origin = `http://127.0.0.1:${match[1]}`;
-      }
-      return { containerId, origin };
+        ]),
+      ) as Record<string, unknown>;
+      check(
+        state && typeof state.Running === "boolean" && Number.isSafeInteger(state.ExitCode),
+        "Invalid container process state",
+      );
+      return { running: state.Running, exitCode: state.ExitCode as number };
+    },
+    async logs(containerId) {
+      await owned(requireResource("container", containerId), false);
+      // Acceptance needs complete history: truncation can hide a factory or unauthorized effect.
+      // The existing process output ceiling fails the observation instead of accepting a suffix.
+      return execute("container-logs", ["logs", containerId]);
+    },
+    async imageMetadata(imageId) {
+      await owned(requireResource("image", imageId), false);
+      const config = JSON.parse(
+        await execute("image-metadata", [
+          "image",
+          "inspect",
+          "--format",
+          "{{json .Config}}",
+          imageId,
+        ]),
+      ) as Record<string, unknown>;
+      check(
+        config &&
+          (config.User === undefined || typeof config.User === "string") &&
+          Array.isArray(config.Env) &&
+          config.Env.length <= 128 &&
+          config.Env.every((value: unknown) => typeof value === "string"),
+        "Invalid image metadata",
+      );
+      const ports = config.ExposedPorts;
+      check(
+        ports === null ||
+          ports === undefined ||
+          (typeof ports === "object" && !Array.isArray(ports)),
+        "Invalid image ports",
+      );
+      const exposedPorts = Object.keys((ports ?? {}) as object);
+      check(
+        exposedPorts.length <= 128 &&
+          exposedPorts.every((port) => /^\d{1,5}\/(?:tcp|udp)$/.test(port)),
+        "Invalid image port inventory",
+      );
+      return {
+        user: (config.User as string | undefined) ?? "",
+        exposedPorts,
+        hasPortEnvironment: (config.Env as string[]).some((value) => value.startsWith("PORT=")),
+      };
     },
     async stop(containerId) {
       await owned(requireResource("container", containerId), false);
@@ -327,7 +487,7 @@ export async function withIntegrationDocker<T>(
     value = await budget.run(INTEGRATION_LIMITS.phaseBuildMs, () => observe(scope));
     passed = true;
   } catch {
-    // Details remain in private per-command hashes, not raw credential-bearing exceptions.
+    // Details remain in bounded, redacted private command diagnostics, never raw exceptions.
   } finally {
     active = false;
     // Disposal aborts every live work command, whose supervisor kills its owned process group.
@@ -352,6 +512,7 @@ export async function withIntegrationDocker<T>(
     // Candidate names recover resources created just before a CLI timeout. Verify exact label first.
     const cleanupResources = [...candidates].reverse();
     for (const resource of cleanupResources) {
+      if (confirmedAbsent.has(resource)) continue;
       try {
         check(drained, "Docker command cleanup remains unknown");
         await owned(resource, true);

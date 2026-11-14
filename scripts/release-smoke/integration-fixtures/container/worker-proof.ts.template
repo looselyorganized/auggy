@@ -1,0 +1,18 @@
+import { defineAugment } from "auggy";
+
+// An owned worker capability keeps the process alive without any network listener.
+export default function containerWorkerProof() {
+  console.log("container-worker:factory");
+  let timer: ReturnType<typeof setInterval> | undefined;
+  return defineAugment({
+    name: "container-worker-proof",
+    async onBoot() {
+      timer = setInterval(() => {}, 1000);
+      console.log("container-worker:ready");
+    },
+    async onShutdown() {
+      if (timer) clearInterval(timer);
+      console.log("container-worker:stopped");
+    },
+  });
+}

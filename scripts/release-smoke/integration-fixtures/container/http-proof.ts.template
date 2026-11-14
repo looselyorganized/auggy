@@ -1,0 +1,26 @@
+import { defineAugment, defineRoute, json } from "auggy";
+import { z } from "zod";
+
+// Project-owned observation only. Replay persistence is the installed web transport's SQLite store.
+export default function containerProof() {
+  console.log("container-proof:factory");
+  let acceptedRequests = 0;
+  return defineAugment({
+    name: "container-proof",
+    httpRoutes: [defineRoute.get("/container-proof", {
+      auth: "visitor.required",
+      requires: { scope: "container.probe" },
+      response: z.object({ marker: z.literal("container-proof:authorized"), acceptedRequests: z.number().int(), subject: z.string() }),
+      handler: ({ auth, request }) => {
+        if (auth.mode !== "visitor" || auth.state !== "recognized" ||
+            auth.principal.trustLevel !== "public" || auth.externalAuth?.subject !== "container-fixture")
+          return json({ error: "forbidden" }, 403);
+        const observation = request.headers.get("x-container-observation");
+        if (!observation || !/^[a-f0-9-]{36}$/.test(observation)) throw Error("Missing owned fixture observation");
+        acceptedRequests++;
+        console.log(`container-proof:effect:${observation}`);
+        return json({ marker: "container-proof:authorized", acceptedRequests, subject: auth.externalAuth.subject });
+      },
+    })],
+  });
+}

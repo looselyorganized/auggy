@@ -31,6 +31,7 @@ import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const profile = process.argv.find((arg) => arg.startsWith("--user-data-dir="))?.split("=")[1];
 if (!profile) process.exit(1);
+if (!process.argv.includes("--password-store=basic") || !process.argv.includes("--use-mock-keychain")) process.exit(74);
 const path = "/devtools/browser/owned-process-fixture";
 const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
  return Response.json({ Browser: "HeadlessChrome/fixture", webSocketDebuggerUrl: "ws://127.0.0.1:" + server.port + path });

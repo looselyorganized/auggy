@@ -138,6 +138,10 @@ export async function withIntegrationChromium<T>(
           `--user-data-dir=${profile}`,
           "--no-first-run",
           "--no-default-browser-check",
+          // Match Playwright's automation defaults: this private fixture profile
+          // must never prompt for, read, or write the operator's macOS keychain.
+          "--password-store=basic",
+          "--use-mock-keychain",
           "about:blank",
         ],
         cwd: parent,
@@ -256,6 +260,8 @@ export async function withIntegrationChromium<T>(
 export async function runIntegrationBrowser(
   options: IntegrationBrowserInput & {
     chromium: { path: string; sha256: string };
+    /** Explicit supported runtime for the browser API (normally a resolved Node executable). */
+    driverRuntime?: { path: string; sha256: string };
     env: IntegrationChildOptions["env"];
     secrets: readonly string[];
     signal?: AbortSignal;
@@ -263,6 +269,29 @@ export async function runIntegrationBrowser(
   },
 ) {
   const selected = inspectIntegrationBrowser(options);
+  let driverExecutable = process.execPath;
+  if (options.driverRuntime) {
+    check(
+      isAbsolute(options.driverRuntime.path) && /^[a-f0-9]{64}$/.test(options.driverRuntime.sha256),
+      "Browser driver runtime needs an absolute path and exact hash",
+    );
+    driverExecutable = realpathSync(options.driverRuntime.path);
+    const stat = lstatSync(driverExecutable);
+    check(
+      stat.isFile() && (stat.mode & 0o111) !== 0 && (stat.mode & 0o022) === 0,
+      "Browser driver runtime must be an ordinary executable",
+    );
+    check(
+      applicationHash(
+        readIntegrationFile(
+          dirname(driverExecutable),
+          basename(driverExecutable),
+          256 * 1024 * 1024,
+        ),
+      ) === options.driverRuntime.sha256,
+      "Browser driver runtime hash mismatch",
+    );
+  }
   const result = await withIntegrationChromium(
     {
       executable: options.chromium,
@@ -276,7 +305,7 @@ export async function runIntegrationBrowser(
       const driver = await withIntegrationChild(
         {
           label: "optional-app-browser",
-          command: [process.execPath, selected.driver],
+          command: [driverExecutable, selected.driver],
           cwd: selected.app,
           env: { ...options.env, AUGGY_FIXTURE_BROWSER_CDP_ENDPOINT: endpoint },
           secrets: options.secrets,
@@ -295,7 +324,11 @@ export async function runIntegrationBrowser(
               !ended.orphanedGroup,
             "Browser driver failed or left unconfirmed descendants",
           );
-          return { driverSHA256: options.driver.sha256, playwrightVersion: selected.version };
+          return {
+            driverSHA256: options.driver.sha256,
+            playwrightVersion: selected.version,
+            ...(options.driverRuntime ? { driverRuntimeSHA256: options.driverRuntime.sha256 } : {}),
+          };
         },
       );
       check(driver.status === "passed", "Browser driver did not complete with confirmed cleanup");

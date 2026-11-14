@@ -14,6 +14,7 @@ interface WorkflowStep {
   run?: string;
   uses?: string;
   env?: Record<string, string>;
+  with?: Record<string, unknown>;
 }
 
 interface WorkflowJob {
@@ -267,12 +268,26 @@ describe("tracked test-surface workflow enforcement", () => {
     expect(requireStep(companyApp, "Verify the optional application reference").run).toBe(
       "bun run test:company-app",
     );
+    const portable = requireJob(jobs, "portable_integration");
+    expect(requireStep(portable, "Verify packed browser and Docker integrations").run).toBe(
+      "bun run smoke:integration",
+    );
+    const integrationEvidence = requireStep(portable, "Preserve sanitized integration evidence");
+    expect(integrationEvidence.if).toBe("always()");
+    expect(integrationEvidence.with?.["retention-days"]).toBe(14);
     const aggregate = requireJob(jobs, "test");
     expect(normalizedNeeds(aggregate)).toContain("inventory");
     expect(normalizedNeeds(aggregate)).toContain("postgres_coordination");
     expect(normalizedNeeds(aggregate)).toContain("temporal_example");
     expect(normalizedNeeds(aggregate)).toContain("inspectable_example");
     expect(normalizedNeeds(aggregate)).toContain("company_app");
+    expect(normalizedNeeds(aggregate)).toContain("portable_integration");
+    expect(
+      requireStep(aggregate, "Verify constituent gates").env?.PORTABLE_INTEGRATION_RESULT,
+    ).toBe("${{ needs.portable_integration.result }}");
+    expect(requireStep(aggregate, "Verify constituent gates").run).toContain(
+      '"$PORTABLE_INTEGRATION_RESULT" != "success"',
+    );
     expect(requireStep(aggregate, "Verify constituent gates").env?.COMPANY_APP_RESULT).toBe(
       "${{ needs.company_app.result }}",
     );
