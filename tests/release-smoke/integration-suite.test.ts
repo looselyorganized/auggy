@@ -48,8 +48,10 @@ test("suite parser cannot silently omit browser prerequisites or enter a hosted 
 
 // Minimal row fixtures test the aggregate gate only, not installed product behavior.
 const row = (scenarioId: string, status = "passed", cleanup = "complete") => {
-  const container = scenarioId === "container-storage-recovery";
-  const worker = scenarioId === "telegram-installed-worker";
+  const storage = scenarioId === "container-storage-recovery";
+  const polling = scenarioId === "telegram-polling-container";
+  const container = storage || polling;
+  const worker = scenarioId === "telegram-installed-worker" || polling;
   const production = scenarioId === "application-production-reference";
   const browser = scenarioId === "application-browser-integration";
   return {
@@ -63,8 +65,8 @@ const row = (scenarioId: string, status = "passed", cleanup = "complete") => {
     profile: { kind: worker ? "none" : "http" },
     execution: {
       startup: "ready",
-      channel: container || production ? "unverified" : "verified",
-      effectCount: container ? 4 : worker ? 2 : production ? 0 : 1,
+      channel: storage || production ? "unverified" : "verified",
+      effectCount: storage ? 4 : worker ? 2 : production ? 0 : 1,
       duplicateEffectCount: 0,
       unauthorizedEffectCount: 0,
     },
@@ -92,22 +94,43 @@ test("aggregate refuses missing rows, duplicate identities, unavailability and u
     "duplicated",
   );
   expect(() =>
-    assertIntegrationStages("container", [row("container-storage-recovery", "unavailable")]),
+    assertIntegrationStages("container", [
+      row("container-storage-recovery", "unavailable"),
+      row("telegram-polling-container"),
+    ]),
   ).toThrow("did not pass");
   expect(() =>
-    assertIntegrationStages("container", [row("container-storage-recovery", "passed", "failed")]),
+    assertIntegrationStages("container", [
+      row("container-storage-recovery", "passed", "failed"),
+      row("telegram-polling-container"),
+    ]),
   ).toThrow("cleanup");
 });
 
 test("a renamed local row cannot impersonate container proof, and platform identities are required", () => {
   const local = row("standalone-http-policy");
   local.scenarioId = "container-storage-recovery";
-  expect(() => assertIntegrationStages("container", [local])).toThrow("metadata");
+  const polling = row("telegram-polling-container");
+  expect(() => assertIntegrationStages("container", [local, polling])).toThrow("metadata");
   const container = row("container-storage-recovery");
-  expect(() => assertIntegrationStages("container", [container])).not.toThrow();
+  expect(() => assertIntegrationStages("container", [container, polling])).not.toThrow();
   container.platform.imageDigest = null;
-  expect(() => assertIntegrationStages("container", [container])).toThrow("tested image");
+  expect(() => assertIntegrationStages("container", [container, polling])).toThrow("tested image");
   const wrongEffects = row("container-storage-recovery");
   wrongEffects.execution.unauthorizedEffectCount = 1;
-  expect(() => assertIntegrationStages("container", [wrongEffects])).toThrow("observations");
+  expect(() => assertIntegrationStages("container", [wrongEffects, polling])).toThrow(
+    "observations",
+  );
+});
+
+test("container certification requires actual polling-channel and replacement proof", () => {
+  const storage = row("container-storage-recovery");
+  const polling = row("telegram-polling-container");
+  expect(() => assertIntegrationStages("container", [storage])).toThrow("incomplete");
+  expect(() => assertIntegrationStages("container", [storage, polling])).not.toThrow();
+  polling.execution.channel = "unverified";
+  expect(() => assertIntegrationStages("container", [storage, polling])).toThrow("observations");
+  polling.execution.channel = "verified";
+  polling.execution.duplicateEffectCount = 1;
+  expect(() => assertIntegrationStages("container", [storage, polling])).toThrow("observations");
 });

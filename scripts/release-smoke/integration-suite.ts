@@ -19,11 +19,13 @@ import { readIntegrationFile } from "./integration-consumer";
 import { runContainerIntegration } from "./integration-container-suite";
 import {
   CONTAINER_STORAGE_SCENARIO,
+  TELEGRAM_CONTAINER_SCENARIO,
   type IntegrationScenarioEvidence,
   type IntegrationSourceIdentity,
 } from "./integration-contracts";
 import { parseIntegrationEvidence } from "./integration-evidence";
 import { runTelegramIntegration } from "./integration-telegram";
+import { runTelegramContainerIntegration } from "./integration-telegram-container";
 import { verifyIntegrationArtifactSource } from "./integration-artifact-source";
 
 const PROVIDERS = ["anthropic", "openai", "openrouter", "ollama"] as const;
@@ -222,7 +224,7 @@ export function assertIntegrationStages(
           "application-browser-integration",
         ]
       : []),
-    ...(stage !== "local" ? [CONTAINER_STORAGE_SCENARIO] : []),
+    ...(stage !== "local" ? [CONTAINER_STORAGE_SCENARIO, TELEGRAM_CONTAINER_SCENARIO] : []),
   ];
   check(
     records.length === required.length &&
@@ -247,6 +249,7 @@ export function assertIntegrationStages(
       ],
       "application-browser-integration": ["local", "fixture-auth", "http", "verified", 1],
       [CONTAINER_STORAGE_SCENARIO]: ["container", "standalone-fixture", "http", "unverified", 4],
+      [TELEGRAM_CONTAINER_SCENARIO]: ["container", "standalone-fixture", "none", "verified", 2],
     } as const;
     const [expectedStage, build, profile, channel, effects] = expected[id as keyof typeof expected];
     check(
@@ -429,8 +432,13 @@ export async function runIntegrationSuite(options: IntegrationSuiteOptions) {
       });
       app.evidence.forEach(collect);
     }
-    if (options.stage !== "local")
+    if (options.stage !== "local") {
       collect((await runContainerIntegration(optionsFor("container-integration"))).evidence);
+      collect(
+        (await runTelegramContainerIntegration(optionsFor("telegram-container-integration")))
+          .evidence,
+      );
+    }
     assertIntegrationStages(options.stage, records);
     const finalSource = sourceIdentity(repo);
     check(

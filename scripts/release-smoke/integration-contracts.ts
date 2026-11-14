@@ -25,6 +25,7 @@ export const INTEGRATION_OVERLAYS = Object.freeze({
 
 export type IntegrationStage = "local" | "container" | "hosted";
 export const CONTAINER_STORAGE_SCENARIO = "container-storage-recovery";
+export const TELEGRAM_CONTAINER_SCENARIO = "telegram-polling-container";
 export type IntegrationBuildKind = "production-reference" | "fixture-auth" | "standalone-fixture";
 
 export interface HashedIntegrationFile {
