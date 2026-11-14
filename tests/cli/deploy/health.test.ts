@@ -96,13 +96,24 @@ describe("waitForHealth", () => {
     let signal: AbortSignal | undefined;
     let resolveResponse!: (response: Response) => void;
     let cancelled = false;
+    let now = 0;
     const start = performance.now();
     const result = await waitForHealth("https://agent.example", {
+      now: () => now,
       timeoutMs: 40,
       requestTimeoutMs: 15,
       intervalMs: 30,
       fetch: async (_, init) => {
         signal = init?.signal ?? undefined;
+        // The real request timer still aborts ignored I/O. Advance the injected
+        // overall clock on that abort so scheduler rounding cannot start a retry.
+        signal?.addEventListener(
+          "abort",
+          () => {
+            now = 40;
+          },
+          { once: true },
+        );
         return new Promise<Response>((resolve) => {
           resolveResponse = resolve;
         });

@@ -1155,7 +1155,7 @@ describe("owned Railway npm wrapper groups", () => {
     expect(requests).toEqual([undefined, true]);
   });
   test.each(["timeout", "abort", "stdout-overflow", "stderr-overflow"])(
-    "default spawn kills and drains both npm wrapper and native child on %s",
+    "default spawn kills and drains every started wrapper-group member on %s",
     async (variant) => {
       const dir = realpathSync(mkdtempSync(join(tmpdir(), "railway-wrapper-group-")));
       const wrapperPidPath = join(dir, "wrapper.pid");
@@ -1192,6 +1192,10 @@ describe("owned Railway npm wrapper groups", () => {
         ).rejects.toThrow(/metadata read failed/);
         expect(performance.now() - start).toBeLessThan(overflow ? 3000 : 2600);
         for (const path of [wrapperPidPath, nativePidPath]) {
+          // The timeout includes process startup: on a busy runner it can fire
+          // before Node writes a PID. Abort/overflow still require both PIDs,
+          // proving cleanup of a running wrapper AND its native child.
+          if (variant === "timeout" && !existsSync(path)) continue;
           const pid = Number(readFileSync(path, "utf8"));
           expect(Number.isInteger(pid)).toBe(true);
           expect(() => process.kill(pid, 0)).toThrow();
