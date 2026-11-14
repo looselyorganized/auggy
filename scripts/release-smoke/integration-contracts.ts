@@ -12,6 +12,9 @@ export const INTEGRATION_LIMITS = Object.freeze({
   fixtureJournalBytes: 2 * 1024 * 1024,
   evidenceBytes: 4 * 1024 * 1024,
   browserNavigationMs: 30_000,
+  // The pinned Linux Chrome 159 executable is 311,672,136 bytes. This is
+  // browser-only; source/archive/Node limits remain unchanged.
+  chromiumExecutableBytes: 512 * 1024 * 1024,
   fixtureRequestMs: 10_000,
   phaseBuildMs: 10 * 60_000,
 } as const);

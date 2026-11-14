@@ -26,6 +26,15 @@ and child-process bounds remain authoritative; builds receive a separate bounded
 10-minute phase, browser navigation 30 seconds and fixture requests 10 seconds.
 Every subdeadline remains inside its containing phase/scenario budget.
 
+Linux artifact execution exposed a browser-specific size requirement: the pinned
+Chrome for Testing 159.0.8154.6 archive contains a 311,672,136-byte executable,
+larger than the inherited 256 MiB file ceiling. Root assigns Chromium executable
+verification its own 512 MiB ceiling. A stable no-follow ordinary-file read,
+executable permissions and exact SHA256 remain mandatory. Source, package archive,
+Node runtime, output and process deadlines retain their existing bounds. Sparse
+file controls cover the observed binary size, wrong hash and over-limit refusal;
+actual pinned Linux browser execution remains the acceptance oracle.
+
 ## Exact fixture overlays
 
 - The optional app's production composition is

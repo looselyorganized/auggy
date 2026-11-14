@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -21,6 +22,7 @@ import { applicationHash } from "../../scripts/release-smoke/application-consume
 import {
   assertProductionFixtureExclusion,
   inspectIntegrationBrowser,
+  inspectIntegrationChromiumExecutable,
   runIntegrationBrowser,
   stageIntegrationBrowserRuntime,
   withIntegrationChromium,
@@ -52,6 +54,25 @@ process.on("SIGTERM", async () => {
 `;
 
 describe("browser preflight controls; not A05 browser execution", () => {
+  test("browser-specific binary bound admits the pinned Linux size and rejects excess before execution", () => {
+    const root = mkdtempSync(join(tmpdir(), "auggy-m5-chromium-size-"));
+    paths.push(root);
+    const path = join(root, "chromium-size-fixture");
+    const bytes = 311_672_136;
+    writeFileSync(path, "", { mode: 0o700 });
+    truncateSync(path, bytes);
+    const hash = createHash("sha256");
+    const zeroes = Buffer.alloc(64 * 1024);
+    for (let remaining = bytes; remaining > 0; remaining -= zeroes.length)
+      hash.update(zeroes.subarray(0, Math.min(remaining, zeroes.length)));
+    const input = { path, sha256: hash.digest("hex") };
+    expect(inspectIntegrationChromiumExecutable(input)).toBe(realpathSync(path));
+    expect(() =>
+      inspectIntegrationChromiumExecutable({ ...input, sha256: "0".repeat(64) }),
+    ).toThrow("hash mismatch");
+    truncateSync(path, 512 * 1024 * 1024 + 1);
+    expect(() => inspectIntegrationChromiumExecutable(input)).toThrow("bounded size limit");
+  });
   test("the selected native Node runtime executes and retains its safe original location", () => {
     const root = mkdtempSync(join(tmpdir(), "auggy-m5-native-runtime-"));
     paths.push(root);

@@ -122,6 +122,25 @@ export function inspectIntegrationBrowser(input: IntegrationBrowserInput) {
   return { app, driver: join(app, input.driver.path), version: input.playwright.version };
 }
 
+/** Validate the actual browser binary without applying the smaller source/archive limit. */
+export function inspectIntegrationChromiumExecutable(input: {
+  path: string;
+  sha256: string;
+}): string {
+  check(
+    isAbsolute(input.path) && /^[a-f0-9]{64}$/.test(input.sha256),
+    "Chromium requires an absolute path and exact executable hash",
+  );
+  const executable = join(realpathSync(dirname(input.path)), basename(input.path));
+  const snapshot = readBoundedRegularFile(executable, INTEGRATION_LIMITS.chromiumExecutableBytes);
+  check(applicationHash(snapshot.bytes) === input.sha256, "Chromium executable hash mismatch");
+  check(
+    (snapshot.mode & 0o111) !== 0 && (snapshot.mode & 0o022) === 0,
+    "Chromium executable must be executable and not writable by group or others",
+  );
+  return executable;
+}
+
 /** Own Chromium directly: Playwright's ordinary launch detaches another POSIX process group. */
 export async function withIntegrationChromium<T>(
   options: {
@@ -134,25 +153,7 @@ export async function withIntegrationChromium<T>(
   },
   observe: (context: { endpoint: string; budget: IntegrationBudget }) => Promise<T>,
 ) {
-  const executable = join(
-    realpathSync(dirname(options.executable.path)),
-    basename(options.executable.path),
-  );
-  check(
-    /^[a-f0-9]{64}$/.test(options.executable.sha256),
-    "Chromium requires an exact executable hash",
-  );
-  check(
-    applicationHash(
-      readIntegrationFile(dirname(executable), basename(executable), 256 * 1024 * 1024),
-    ) === options.executable.sha256,
-    "Chromium executable hash mismatch",
-  );
-  const executableStat = lstatSync(executable);
-  check(
-    (executableStat.mode & 0o111) !== 0 && (executableStat.mode & 0o022) === 0,
-    "Chromium executable must be executable and not writable by group or others",
-  );
+  const executable = inspectIntegrationChromiumExecutable(options.executable);
   const parent = realpathSync(options.profileParent);
   const parentStat = lstatSync(parent);
   check(
