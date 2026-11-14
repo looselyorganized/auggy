@@ -1,10 +1,12 @@
 # Milestone 5 — portable, independently deployed agents
 
-Status: implementation authorized; preparation packet independently reviewed.
+Status: implementation in progress; M5-00 contracts independently accepted.
 M4 PR #229 was separately authorized and merged at
 `c39b746b4b743e5c29dab61a677026c10626d8b8`. G0 is accepted: resulting-main CI,
-PostgreSQL 17 and full CodeQL findings passed. M5-00 is ready to freeze and compile
-the contract interfaces; dependent producers remain blocked until that acceptance.
+PostgreSQL 17 and full CodeQL findings passed. M5-00 is accepted at
+`e0ecbf767a8c4c26a022f8a59d59c257d7a217a2` after strict compilation, lint and independent
+review. M5-01 storage implementation and M5-07 harness preparation are released;
+other producers follow their recorded dependencies.
 
 ## Outcome and preserved boundaries
 

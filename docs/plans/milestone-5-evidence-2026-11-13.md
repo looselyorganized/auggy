@@ -203,3 +203,41 @@ capability/recovery, fixture reachability, bounds, image evidence and compile-fi
 review, with no blocking findings. Root will record the immutable freeze commit
 before releasing dependent producers. Product, installed/container, hosted and
 final certification remain unaccepted.
+
+### M5-00 acceptance and first producer release
+
+Root accepted freeze commit `e0ecbf767a8c4c26a022f8a59d59c257d7a217a2` after independent review,
+strict typecheck and the completed repository lint check (713 files). G1 is
+accepted. M5-01 portable storage implementation and M5-07 harness preparation
+are released with exclusive file ownership. No runtime behavior or installed,
+container or hosted acceptance is implied by this contract acceptance.
+
+### M5-01 portable storage producer and integration review
+
+Implemented generic `AUGGY_DATA_DIR` admission and explicit Railway policy before
+provider/augment construction. Retained root and singleton descriptors back a
+private live capability; forged, copied, revoked and physically replaced roots or
+lock anchors fail closed. Generic roots remain operator-prepared; only existing,
+owned, empty Railway mounts may be narrowed to 0700.
+
+Independent review found and resolved launchd shell-environment loss, restart
+storage relocation, state/jobs operator root mismatch, singleton-leaf replacement,
+and directory enumeration errors being mistaken for empty EOF. Runtime manifests
+now record admitted storage policy; restart preserves it and refuses an unintended
+change before stop. State commands load the selected project's `.env` before root
+selection. Existing pre-upgrade manifests remain readable; ambiguous restarts with
+a new explicit environment require an explicit stop/start. Durability probe
+failures clean only their own partial files.
+
+Verification: 113 lifecycle tests /471 assertions; 76 resolver tests /212 assertions;
+91 storage, state bundle/inventory and POSIX tests /290 assertions. Total 280 tests
+and 973 assertions, all passed. Strict TypeScript and scoped Biome (25 source/test
+files) passed, as did whitespace checks. Lifecycle/resolver suites required local
+listener access unavailable in the default sandbox and passed with that access.
+The directory-read regression injects a null result with actual nonzero native
+errno; ordinary empty/bounded directory reads use libc.
+
+`m5_freeze_review` independently accepted the final candidate without blockers.
+M5-07 preparation remains separate: its three evidence-validator tests are excluded
+from these M5-01 totals, and its in-progress lint findings do not claim acceptance.
+Actual installed/container/Railway evidence is still required.

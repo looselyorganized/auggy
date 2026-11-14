@@ -72,7 +72,7 @@ import {
   scopedAgentNamespace,
 } from "./agent-isolation";
 import { compareOwnedStatePaths, resolveOwnedStatePath } from "./owned-state-path";
-import { RAILWAY_RUNTIME_DATA_ROOT } from "./runtime-volume";
+import type { RuntimeDataPlatform } from "../runtime-data-contracts";
 import { RAILWAY_INGRESS_PROXY_NETWORKS } from "../transports/console-request-security";
 
 // ---------------------------------------------------------------------------
@@ -454,7 +454,7 @@ function resolveWebIdempotencyOptions(
 
 /**
  * Explicit `trustedProxies` always wins. Inside the deploy-generated Railway
- * container (runtime data root leased at `/app/data`), default to Railway's
+ * container (explicit Railway launch policy), default to Railway's
  * internal ingress proxy network so forwarded headers — and therefore the
  * operator Console, caller IPs, and per-peer rate limits — work out of the box.
  * Elsewhere the default stays empty: forwarding headers are ignored unless the
@@ -462,10 +462,10 @@ function resolveWebIdempotencyOptions(
  */
 export function resolveTrustedProxies(
   configured: string[] | undefined,
-  runtimeDataRoot: string | undefined,
+  platform: RuntimeDataPlatform | undefined,
 ): string[] | undefined {
   if (configured !== undefined) return configured;
-  if (runtimeDataRoot !== RAILWAY_RUNTIME_DATA_ROOT) return undefined;
+  if (platform !== "railway") return undefined;
   console.log(
     "[web-transport] Railway runtime: trusting forwarded headers from Railway's ingress proxy network " +
       `(${RAILWAY_INGRESS_PROXY_NETWORKS.join(", ")}). Set webTransport.config.trustedProxies to override.`,
@@ -479,6 +479,7 @@ function resolveWebTransport(
   agentDir: string,
   overrideDir: string,
   runtimeDataRoot: string | undefined,
+  runtimeDataPlatform: RuntimeDataPlatform | undefined,
   creator: CreatorConfig | undefined,
   lateBindings: {
     revocationCheck: ((id: string) => boolean) | null;
@@ -522,7 +523,7 @@ function resolveWebTransport(
     publicFrontendUrl: opts.publicFrontendUrl as string | undefined,
     trustedProxies: resolveTrustedProxies(
       opts.trustedProxies as string[] | undefined,
-      runtimeDataRoot,
+      runtimeDataPlatform,
     ),
     consoleSecurity: opts.consoleSecurity as WebTransportOptions["consoleSecurity"],
     externalAuth: opts.externalAuth as WebTransportOptions["externalAuth"],
@@ -759,6 +760,8 @@ export async function resolveAugments(
     agentId?: string;
     /** Absolute root for deployment-owned durable state, such as a Railway volume. */
     runtimeDataRoot?: string;
+    /** Explicit launch policy; a durable directory never grants proxy trust. */
+    runtimeDataPlatform?: RuntimeDataPlatform;
     /** Package-private host binding; receives the same normalized YAML options. */
     webTransportFactory?: (options: WebTransportOptions, name: string) => Augment;
     onConstructionRollback?: (report: {
@@ -1063,6 +1066,7 @@ export async function resolveAugments(
             agentDir,
             overrideDir,
             ownedStateRoot,
+            resolverOpts.runtimeDataPlatform,
             resolverOpts.creator,
             lateBindings,
             resolverOpts.webTransportFactory

@@ -16,6 +16,7 @@ import {
   verifyRuntimeStateBundle,
 } from "../runtime-state-bundle";
 import { buildRuntimeStateInventory, type RuntimeStateInventory } from "../runtime-state-inventory";
+import { selectRuntimeDataRoot } from "../runtime-volume";
 
 export interface RuntimeStateCommandOptions {
   config?: string;
@@ -24,23 +25,46 @@ export interface RuntimeStateCommandOptions {
 }
 
 function requireRoot(options: RuntimeStateCommandOptions): string {
-  const configured = options.root ?? process.env.RAILWAY_VOLUME_MOUNT_PATH;
+  const configured = runtimeStateRoot(options);
   if (!configured) {
-    throw new Error("runtime state root is required (--root or RAILWAY_VOLUME_MOUNT_PATH)");
+    throw new Error(
+      "runtime state root is required (--root, AUGGY_DATA_DIR or RAILWAY_VOLUME_MOUNT_PATH)",
+    );
   }
-  return resolve(configured);
+  return configured;
+}
+
+function runtimeStateRoot(options: RuntimeStateCommandOptions): string | undefined {
+  if (options.root !== undefined) return resolve(options.root);
+  const selected = selectRuntimeDataRoot("foreground", {
+    auggyDataDir: process.env.AUGGY_DATA_DIR ?? process.env.RAILWAY_VOLUME_MOUNT_PATH,
+    railwayVolumeMountPath: undefined,
+  });
+  return selected.kind === "local" ? undefined : selected.runtimeDataRoot;
 }
 
 export function runRuntimeStateInventory(
   name: string | undefined,
   options: RuntimeStateCommandOptions = {},
 ): RuntimeStateInventory {
+  return runtimeStateContext(name, options, false).inventory;
+}
+
+function runtimeStateContext(
+  name: string | undefined,
+  options: RuntimeStateCommandOptions,
+  requireVolume: boolean,
+) {
   const configPath = resolveConfigPath(name, options.config, { cwd: options.cwd });
   const config = parseConfig(configPath);
-  return buildRuntimeStateInventory(config, {
+  // parseConfig loads the selected project's .env before storage selection,
+  // including when --config points outside the operator's working directory.
+  const root = requireVolume ? requireRoot(options) : runtimeStateRoot(options);
+  const inventory = buildRuntimeStateInventory(config, {
     agentDir: dirname(configPath),
-    ...(options.root ? { runtimeDataRoot: resolve(options.root) } : {}),
+    ...(root !== undefined ? { runtimeDataRoot: root } : {}),
   });
+  return { root, inventory };
 }
 
 export function runRuntimeStateBackup(
@@ -51,15 +75,14 @@ export function runRuntimeStateBackup(
     runtimeVolumeOnly: boolean;
   },
 ) {
-  const root = requireRoot(options);
-  const inventory = runRuntimeStateInventory(name, { ...options, root });
+  const { root, inventory } = runtimeStateContext(name, options, true);
   if (inventory.externalPrerequisites.length > 0 && !options.runtimeVolumeOnly) {
     throw new Error(
       "external recovery prerequisites exist; supply their matching recovery points or explicitly select --runtime-volume-only",
     );
   }
   return createRuntimeStateBundle({
-    sourceRoot: root,
+    sourceRoot: root!,
     bundlePath: resolve(options.out),
     inventory,
     confirmStopped: options.confirmStopped,
@@ -80,11 +103,10 @@ export function runRuntimeStateRestore(
       "bundle has external recovery prerequisites; restore their matching recovery points or explicitly select --runtime-volume-only",
     );
   }
-  const root = requireRoot(options);
-  const expectedInventory = runRuntimeStateInventory(name, { ...options, root });
+  const { root, inventory: expectedInventory } = runtimeStateContext(name, options, true);
   return restoreRuntimeStateBundle({
     bundlePath,
-    destinationRoot: root,
+    destinationRoot: root!,
     confirmStopped: options.confirmStopped,
     expectedInventory,
   });
@@ -105,12 +127,12 @@ export function runRuntimeStateRestoreResume(
       "bundle has external recovery prerequisites; restore their matching recovery points or explicitly select --runtime-volume-only",
     );
   }
-  const root = requireRoot(options);
+  const { root, inventory: expectedInventory } = runtimeStateContext(name, options, true);
   return resumeRuntimeStateRestore({
     bundlePath,
-    destinationRoot: root,
+    destinationRoot: root!,
     restoreId: options.restoreId,
-    expectedInventory: runRuntimeStateInventory(name, { ...options, root }),
+    expectedInventory,
     confirmStopped: options.confirmStopped,
   });
 }

@@ -68,6 +68,47 @@ function fixture(withCoordination = false) {
 }
 
 describe("runtime state command helpers", () => {
+  test("backup selects AUGGY_DATA_DIR from the chosen config's .env outside cwd", () => {
+    const paths = fixture();
+    const previous = process.env.AUGGY_DATA_DIR;
+    const railway = process.env.RAILWAY_VOLUME_MOUNT_PATH;
+    delete process.env.AUGGY_DATA_DIR;
+    process.env.RAILWAY_VOLUME_MOUNT_PATH = join(paths.root, "must-not-select");
+    writeFileSync(join(paths.agentDir, ".env"), `AUGGY_DATA_DIR=${paths.stateRoot}\n`, {
+      mode: 0o600,
+    });
+    try {
+      const manifest = runRuntimeStateBackup(undefined, {
+        config: join(paths.agentDir, "agent.yaml"),
+        cwd: paths.root,
+        out: join(paths.backups, "from-env.auggy-state"),
+        confirmStopped: true,
+        runtimeVolumeOnly: true,
+      });
+      expect(manifest.files.map((file) => file.path)).toContain("opaque-runtime-state.json");
+      expect(
+        runRuntimeStateInventory(undefined, {
+          config: join(paths.agentDir, "agent.yaml"),
+        }).stores.find((store) => store.id === "runtime-identity")?.backupPlane,
+      ).toBe("runtime-volume");
+      process.env.AUGGY_DATA_DIR = "";
+      expect(() =>
+        runRuntimeStateInventory(undefined, { config: join(paths.agentDir, "agent.yaml") }),
+      ).toThrow();
+      expect(() =>
+        runRuntimeStateInventory(undefined, {
+          config: join(paths.agentDir, "agent.yaml"),
+          root: paths.stateRoot,
+        }),
+      ).not.toThrow();
+    } finally {
+      if (previous === undefined) delete process.env.AUGGY_DATA_DIR;
+      else process.env.AUGGY_DATA_DIR = previous;
+      if (railway === undefined) delete process.env.RAILWAY_VOLUME_MOUNT_PATH;
+      else process.env.RAILWAY_VOLUME_MOUNT_PATH = railway;
+    }
+  });
+
   test("prints a secret-free inventory and performs a fenced restore rehearsal", () => {
     const paths = fixture();
     const inventory = runRuntimeStateInventory(undefined, {

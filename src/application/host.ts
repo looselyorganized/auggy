@@ -226,6 +226,7 @@ export function createApplicationHost(options: ApplicationHostOptions): OwnedApp
             {
               creator: config.creator,
               agentId: config.id,
+              runtimeDataPlatform: ownership.platform,
               ...(ownership.runtimeDataRoot ? { runtimeDataRoot: ownership.runtimeDataRoot } : {}),
               selfInspection: {
                 name: config.name,

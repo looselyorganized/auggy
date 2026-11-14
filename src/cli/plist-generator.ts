@@ -9,7 +9,7 @@
  */
 
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 export interface PlistOptions {
   /** Agent name (used in label and log file names). */
@@ -26,6 +26,8 @@ export interface PlistOptions {
   bunPath: string;
   /** Absolute path to the auggy CLI entrypoint (src/cli/index.ts). */
   cliEntryPoint: string;
+  /** Validated explicit storage root to preserve across launchd's clean environment. */
+  runtimeDataRoot?: string;
 }
 
 /** The launchd label for an agent. */
@@ -63,7 +65,16 @@ function escapeXml(s: string): string {
  * The plist runs `bun run <cliEntryPoint> dev <name> --config <configPath>`
  * with KeepAlive=true so launchd restarts on crash.
  */
+export function assertPlistRuntimeDataRoot(root: string | undefined): void {
+  if (root !== undefined && (!isAbsolute(root) || /\p{Cc}/u.test(root))) {
+    throw new Error(
+      "launchd runtime data root must be an absolute path without control characters",
+    );
+  }
+}
+
 export function generatePlist(opts: PlistOptions): string {
+  assertPlistRuntimeDataRoot(opts.runtimeDataRoot);
   const label = plistLabel(opts.agentId);
   const bunDir = dirname(opts.bunPath);
   const home = homedir();
@@ -116,6 +127,7 @@ export function generatePlist(opts: PlistOptions): string {
     <string>${escapeXml(home)}</string>
     <key>AUGGY_LAUNCH_GENERATION</key>
     <string>${escapeXml(opts.launchGeneration)}</string>
+    ${opts.runtimeDataRoot === undefined ? "" : `<key>AUGGY_DATA_DIR</key>\n    <string>${escapeXml(opts.runtimeDataRoot)}</string>`}
   </dict>
 </dict>
 </plist>

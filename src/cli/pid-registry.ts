@@ -189,6 +189,7 @@ function parseManifest(value: unknown, source: string): PidManifest {
     record.resourceClaims,
     record.resourceClaimStore,
     record.launchGeneration,
+    record.runtimeData,
   ];
   const hasModernField = modernFields.some((field) => field !== undefined);
   if (hasModernField) {
@@ -212,6 +213,20 @@ function parseManifest(value: unknown, source: string): PidManifest {
     ) {
       throw new Error(`Invalid Auggy runtime manifest at ${source}`);
     }
+  }
+  if (record.runtimeData !== undefined) {
+    const data = record.runtimeData as Record<string, unknown> | null;
+    if (
+      typeof data !== "object" ||
+      data === null ||
+      Array.isArray(data) ||
+      Object.keys(data).length !== 2 ||
+      (data.platform !== "generic" && data.platform !== "railway") ||
+      (data.root !== null &&
+        (typeof data.root !== "string" || !isAbsolute(data.root) || data.root.includes("\0"))) ||
+      (data.platform === "railway" && (data.root !== "/app/data" || record.mode !== "dev"))
+    )
+      throw new Error(`Invalid Auggy runtime manifest at ${source}`);
   }
   return record as unknown as PidManifest;
 }

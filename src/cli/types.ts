@@ -320,6 +320,8 @@ export interface PidManifest {
   startedAt: string;
   /** How the agent was started. */
   mode: "dev" | "launchd";
+  /** Admitted storage policy. Absent only on manifests from older runtimes. */
+  runtimeData?: { platform: "generic" | "railway"; root: string | null };
 }
 
 /**

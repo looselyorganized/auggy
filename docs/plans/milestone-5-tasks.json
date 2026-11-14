@@ -78,6 +78,16 @@
         "implementation and artifact evidence",
         "hosted execution inputs"
       ]
+    },
+    "G1": {
+      "status": "accepted",
+      "acceptedCommit": "e0ecbf767a8c4c26a022f8a59d59c257d7a217a2",
+      "evidence": [
+        "Actual C1-C4 interfaces and compile fixture pass strict typecheck",
+        "Repository lint passes (713 files); diff whitespace check passes",
+        "m5_freeze_review independently accepted without blockers",
+        "Pinned base image configs and layers verified; default UID/GID 0:0"
+      ]
     }
   },
   "contracts": {
@@ -97,32 +107,34 @@
       "id": "M5-00",
       "title": "Freeze accepted main and contracts",
       "specialist": "CTO / architect",
-      "status": "review",
+      "status": "accepted",
       "dependsOn": [],
       "blockedBy": [],
       "acceptanceDependsOn": [],
-      "acceptedCommit": null,
+      "acceptedCommit": "e0ecbf767a8c4c26a022f8a59d59c257d7a217a2",
       "evidence": [
-        "G0 accepted on c39b746; contract/interface/ownership freeze still pending",
-        "Actual C1-C4 modules and checked-in compile fixture pass strict typecheck",
-        "Lint passes713files; independent m5_freeze_review accepted; verified image digest/User0:0",
-        "Freeze commit recording before producer release"
+        "G0 accepted on c39b746",
+        "Actual C1-C4 modules and compile fixture pass strict typecheck; lint passes",
+        "Independent m5_freeze_review accepted without blockers; verified image UID/GID 0:0"
       ]
     },
     {
       "id": "M5-01",
       "title": "Portable runtime storage",
       "specialist": "Runtime/storage engineer",
-      "status": "blocked",
+      "status": "review",
       "dependsOn": [
         "M5-00"
       ],
-      "blockedBy": [
-        "M5-00"
-      ],
+      "blockedBy": [],
       "acceptanceDependsOn": [],
       "acceptedCommit": null,
-      "evidence": []
+      "evidence": [
+        "Implementation and root launch/operator integration complete",
+        "Independent m5_freeze_review accepted without blockers",
+        "280 focused tests /973 assertions passed; strict typecheck and exact 25-file scoped Biome passed",
+        "Commit recording pending; installed/container/Railway acceptance remains M5-07"
+      ]
     },
     {
       "id": "M5-02",
@@ -134,7 +146,6 @@
         "M5-01"
       ],
       "blockedBy": [
-        "M5-00",
         "M5-01"
       ],
       "acceptanceDependsOn": [],
@@ -168,7 +179,6 @@
         "M5-01"
       ],
       "blockedBy": [
-        "M5-00",
         "M5-01"
       ],
       "acceptanceDependsOn": [],
@@ -185,7 +195,6 @@
         "M5-04"
       ],
       "blockedBy": [
-        "M5-00",
         "M5-04"
       ],
       "acceptanceDependsOn": [],
@@ -202,7 +211,6 @@
         "M5-02"
       ],
       "blockedBy": [
-        "M5-00",
         "M5-02"
       ],
       "acceptanceDependsOn": [],
@@ -213,13 +221,11 @@
       "id": "M5-07",
       "title": "Installed/container/hosted acceptance",
       "specialist": "Acceptance engineer",
-      "status": "blocked",
+      "status": "in_progress",
       "dependsOn": [
         "M5-00"
       ],
-      "blockedBy": [
-        "M5-00"
-      ],
+      "blockedBy": [],
       "acceptanceDependsOn": [
         "M5-01",
         "M5-02",
@@ -230,7 +236,9 @@
         "M5-08"
       ],
       "acceptedCommit": null,
-      "evidence": []
+      "evidence": [
+        "Released after accepted M5-00; no product acceptance claimed"
+      ]
     },
     {
       "id": "M5-08",
@@ -307,23 +315,21 @@
     }
   ],
   "activeOwnership": {
-    "root": "Shared public/config/bootstrap/restore/manifests/harness and ledger; C3/C4 freeze; combined compilation and acceptance",
-    "m5_storage_freeze": "src/runtime-data-contracts.ts,src/auth/external-auth-replay-contracts.ts,storage-freeze.md only;types/constants",
-    "m5_deployment_freeze": "src/cli/deploy/contracts.ts,deployment-freeze.md only;types/constants",
-    "m5_image_baseline": "image-baseline.md only;read-only exact registry image inspection"
+    "root": "Shared runtime ownership/host/resolver integration, harness contracts/validators, manifests, ledger and acceptance",
+    "m5_storage_freeze": "M5-01: src/cli/runtime-volume.ts, src/runtime-data-admission.ts, tests/cli/runtime-volume.test.ts, tests/runtime-data-admission.test.ts",
+    "m5_acceptance_engineer": "M5-07 preparation: scripts/release-smoke/integration-consumer.ts, integration-container.ts, integration-browser.ts, integration-hosted.ts and matching focused tests; no hosted execution"
   },
   "notes": [
     "Each company owns a separate deployment; no managed platform or shared-company tenancy.",
     "Channels are optional; Next.js and HTTP are not runtime requirements.",
-    "Producer implementation is blocked pending accepted G0/00. Contract preparation does not claim acceptance.",
     "Only root changes gate/task acceptance; producers cannot accept themselves.",
-    "G0 accepted after separately authorized M4 merge, pre-merge collision repair, identical-tree verification and successful resulting-main CI/PG17/full CodeQL. Only M5-00 is ready; no M5 product task is accepted."
+    "G0 and M5-00/G1 accepted. M5-01 implementation and M5-07 preparation released; no M5 behavior task accepted yet."
   ],
   "preparation": {
-    "status": "ready",
-    "scope": "Reviewed preparation packet on accepted main; contracts remain candidates pending M5-00",
+    "status": "accepted",
+    "scope": "Preparation superseded by accepted M5-00 concrete interface freeze",
     "independentReview": "m5_contract_review: preparation recheck passed; R1/R2 resolved; no product acceptance",
-    "planSHA256": "b2731cd1bd15cd79a64569e8743114b416088ac8fe713d4b0f1d9637f4fdd230",
+    "planSHA256": "0905fe797868cd78edb6a99368a0f11e4e5068cd312198400080cf5c3be43d16",
     "contractSHA256": {
       "C1": "8c44ce696c8192c742f20cffbcdf046b10e81117aa6b34f93af3766b2005af10",
       "C2": "3e06671b3d87d5e98a319e3eed97a6438573513af1d0c1fba67ab581e12fce27",
@@ -341,14 +347,10 @@
         "decision": "Railway-only empty-owned-mount mode initialization before ordinary admission; generic roots operator-provisioned"
       }
     ],
-    "remainingFreezeChecks": [
-      "interface compilation and ownership/path freeze",
-      "base-image UID/GID and initial mount policy verification",
-      "managed SQLite identity uniqueness"
-    ]
+    "remainingFreezeChecks": []
   },
   "freeze": {
-    "status": "reviewed",
+    "status": "accepted",
     "independentReview": "m5_freeze_review: accepted, no blockers",
     "documents": [
       "milestone-5-contracts/storage-freeze.md",
@@ -368,6 +370,6 @@
     "defaultContainerUid": 0,
     "defaultContainerGid": 0,
     "localDocker": "unavailable: configured socket absent",
-    "acceptedCommit": null
+    "acceptedCommit": "e0ecbf767a8c4c26a022f8a59d59c257d7a217a2"
   }
 }

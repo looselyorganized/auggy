@@ -13,6 +13,7 @@ interface PosixAtSymbols {
   readdir(directory: unknown): unknown;
   closedir(directory: unknown): number;
   errno(): number;
+  clearErrno(): void;
 }
 
 let symbols: PosixAtSymbols | null = null;
@@ -82,6 +83,7 @@ function requireSymbols(): PosixAtSymbols {
       args: [],
       returns: FFIType.ptr,
     },
+    memset: { args: [FFIType.ptr, FFIType.i32, FFIType.uint64_t], returns: FFIType.ptr },
   } as const;
   for (const libraryPath of libraryPaths) {
     try {
@@ -106,6 +108,15 @@ function requireSymbols(): PosixAtSymbols {
     readdir: linked.readdir as unknown as PosixAtSymbols["readdir"],
     closedir: linked.closedir as unknown as PosixAtSymbols["closedir"],
     errno: () => ffiRead.i32(linked[errnoSymbol]!() as never, 0),
+    clearErrno: () => {
+      // errno is a thread-local C int on the supported Darwin/Linux ABIs.
+      const clear = linked.memset as unknown as (
+        pointer: unknown,
+        value: number,
+        size: number,
+      ) => unknown;
+      clear(linked[errnoSymbol]!(), 0, 4);
+    },
   };
   return symbols;
 }
@@ -260,6 +271,8 @@ function reopenDirectoryFd(fd: number): number {
 export function listDirectoryFd(
   fd: number,
   maxEntries: number,
+  /** @internal Inject a directory-read result; never passed by production callers. */
+  testHooks?: { readEntry?: () => unknown },
 ): { names: string[]; truncated: boolean } {
   if (!Number.isSafeInteger(maxEntries) || maxEntries < 0) {
     throw new Error("directory entry limit must be a non-negative safe integer");
@@ -277,8 +290,15 @@ export function listDirectoryFd(
   let truncated = false;
   try {
     while (true) {
-      const entry = linked.readdir(directory);
-      if (!entry) break;
+      // POSIX readdir returns null both at EOF and on failure. An unreadable
+      // directory must never be accepted as empty by storage admission.
+      linked.clearErrno();
+      const entry = testHooks?.readEntry ? testHooks.readEntry() : linked.readdir(directory);
+      if (!entry) {
+        const errno = linked.errno();
+        if (errno !== 0) throw new Error(`directory enumeration failed (errno ${errno})`);
+        break;
+      }
       const nameOffset = process.platform === "darwin" ? 21 : 19;
       const nameLength =
         process.platform === "darwin" ? ffiRead.u16(entry as never, 18) : undefined;

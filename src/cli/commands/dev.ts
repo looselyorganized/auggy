@@ -12,6 +12,7 @@ import { resolveConfigPath } from "../resolve-config";
 import { openConsoleWithSignIn } from "../console-login";
 import type { ParsedConfig } from "../types";
 import { displayPath } from "../display-path";
+import type { RuntimeDataEnvironment } from "../../runtime-data-contracts";
 
 function extractConsoleBearer(config: ParsedConfig): string | null {
   for (const augment of config.augments) {
@@ -42,6 +43,8 @@ export interface DevOpts {
   internalMode?: string;
   /** Internal: restart already holds this agent's lifecycle admission lease. */
   lifecycleOwned?: boolean;
+  /** Internal validated storage policy inherited from the stopped incarnation. */
+  runtimeDataEnvironment?: RuntimeDataEnvironment;
   /** Internal/test registry seams. */
   auggyDir?: string;
   processIdentityForPid?: (pid: number) => string | null;
@@ -57,7 +60,7 @@ export interface DevOpts {
   onReady?: (info: DevReadyInfo) => void;
 }
 
-/** Resolve the persistent data root for deployment runtimes that provide one. */
+/** Legacy mode-to-path helper. Actual admission uses selectRuntimeDataRoot in the host. */
 export function resolveRuntimeDataRoot(internalMode: string | undefined): string | undefined {
   return internalMode === "railway" ? "/app/data" : undefined;
 }
@@ -176,6 +179,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
           : "foreground",
     lifetime: "return-after-ready",
     lifecycleOwned: opts.lifecycleOwned,
+    runtimeDataEnvironment: opts.runtimeDataEnvironment,
     auggyDir: opts.auggyDir,
     processIdentityForPid: opts.processIdentityForPid,
     onConfigured(config) {
