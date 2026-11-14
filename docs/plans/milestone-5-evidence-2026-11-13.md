@@ -688,3 +688,116 @@ the shared base was preserved. Source SHA-256 is
 `332e9d7fa3b5b84c50325402478af6a396da3b1f326b64faf86ee8bb2f3e17cd`.
 Final-head CI, release and one actual final-archive Alpine create remain required.
 No dependency lock or package version changed.
+
+## 2026-11-14: final 83dca71 verification and G4 preparation
+
+The pending diagnostic/Alpine certification above completed on `83dca71`:
+[CI 43565040948](https://github.com/looselyorganized/auggy/actions/runs/43565040948),
+[release 43565040946](https://github.com/looselyorganized/auggy/actions/runs/43565040946)
+and [full CodeQL 43565060850](https://github.com/looselyorganized/auggy/actions/runs/43565060850)
+passed. The tested merge tree matched the head. All six integration rows, 13
+registered PostgreSQL 17 cases, source/packed/installed inventories and owned
+cleanup passed. The final unmodified archive also created an agent successfully
+in pinned Alpine arm64; its owned container/image were removed. Full CodeQL
+reported eight results without analysis errors/warnings: the previously reviewed
+results and three private test-directory assertions were independently triaged;
+no alerts were dismissed or checks weakened. The private final summary SHA256 is
+`b83249e8d0a8b9ede520ddd40fbc8f8a303b807ac2c7eaa016a3943505263e14`.
+
+Railway authentication was renewed and verified read-only. No isolated rehearsal
+project exists, and no hosted mutation, SSH authentication or key registration
+has occurred. The [G4 amendment](./milestone-5-contracts/hosted-rehearsal.md)
+describes new-project allocation, observed volume defaults, verified service-cap
+requirements, monitored spending, workspace-key scope, explicit first-use relay
+pinning and owned immediate cleanup. Final approval remains pending.
+
+The following local preparation has independent acceptance:
+
+| Change | Evidence scope |
+| --- | --- |
+| `ecb21a7` child supervision | Bounded stdin delivery and side-effect-free reusable supervisor; writing input alone never proves consumption. |
+| `13a302b` Telegram sealing | Real pinned-container exchanges, immutable generation receipts, admitted-body drain and owned cleanup. |
+| `4a69e88` approval gate | Exact new allocation, source inputs, resource/SSH identity and remaining-time bindings; wrong maintenance profile refuses. |
+| `a8616fe` HTTP checkpoint | Actual local/packed/Docker execution; complete sealed domain/provider journals and independent current downstream checkpoint. |
+| `19db679` remote envelope | Exclusive durable claims/receipts, independent deadline, disconnect/reap controls and strict private-token forwarding; 37 final-run containers confirmed absent. |
+| `7e7385f`, `3a36a3b` SSH transport | Isolated identity/pin, fresh instance binding and two exact envelope paths; no remote connection in these tests. |
+| `81c0bed`, `1849c92` journal/API | Immutable run start, no replay of uncertain mutations, fixed bounded API vocabulary and cleanup-only reserve. |
+
+Adversarial review found and repaired hidden effects completing during HTTP seal,
+omitted provider generations, short/escaped token disclosure, inappropriate
+maintenance profiles, orphan outcomes at action admission and allocation using
+the cleanup reserve. Each repair returned to independent acceptance. These are
+local harness findings; they are not claims of hosted vulnerabilities or hosted
+certification.
+
+Exact selected HTTP and polling contexts retain the accepted core archive
+`779c806ac00ef2962671019c3d93f7a3b34ed88db89d944c151b06059e30e648`
+and explicitly recorded source overlays. Fresh local application execution passed
+real model/tool/transport paths, replay, denials, owned-source markers and sealing.
+Independent artifact reviews checked all context files and installed package
+bytes. A separate fixed watchdog exited after 115036 ms despite ignored SIGTERM,
+with no local supervisor timeout and confirmed cleanup. It is test-only source;
+its deadline marker invalidates an experiment regardless of runtime exit status.
+
+Actual backup testing found an unused Console database declaration in the company
+application reference while `adminRoute` was false. `78f64a9` removes only that
+declaration, preserving conservative state inventory. Relevant suites passed
+44 tests / 753 assertions, and actual installed inventory confirms the corrected
+reference no longer requires the nonexistent store. Corrected HTTP contexts were
+regenerated and rerun; their evidence SHA256 is
+`4abc652591ecb922e98c7e50fd7b71e5539f331325d356de0fee68e8987e4a51`.
+Earlier HTTP artifacts with the unused declaration are superseded.
+
+The exact worker artifact/proof hashes and independent review hashes are recorded
+in the task ledger. Integration of the finite hosted executor, concrete approval,
+actual hosted execution/teardown and new-candidate CI remain outstanding. The accepted
+`83dca71` checks do not certify these later source changes. M5 remains incomplete;
+no merge, version bump or npm publication has occurred.
+
+## 2026-11-14: recovery prerequisites accepted
+
+`f8a15e7` gives HTTP and polling recovery separate service slots and rejects reused
+service IDs and crossed profiles. Independent gate/API/SSH/journal verification
+passed 45 tests / 383 assertions. No service conversion or new provider mutation
+was added. The proposed allocation is four services and four distinct volumes.
+
+`29c782e` adds the finite offline maintenance commands and bounded backup transfer.
+The real public CLI performs backup, verification, restore and reconciliation;
+the fixture acquires the runtime singleton lease around offline operations. The
+accepted HTTP Docker row restores older Auggy state while preserving a newer
+downstream checkpoint. It verifies the startup fence, unchanged assertion guard,
+actual 503 responses across restart, expired assertion rejection, completed replay
+without another effect and one new effect after the real hold. All 13 owned Docker
+resources were independently confirmed absent.
+
+The separate worker Docker row restores the exact Telegram namespace and claims
+1, 2 and 3. Reconciliation preserves the guard, duplicate delivery 1 performs no
+model or domain work, and new delivery 4 performs exactly one effect. All 11 owned
+Docker resources were independently confirmed absent. Telegram is not claimed to
+use the HTTP assertion TTL hold.
+
+A small additive Docker proof verifies that the fixed `prepare-empty-volume`
+operation changes a fresh owned directory from 0755 to 0700, enables actual CLI
+restore, and refuses a nonempty directory without changing its guard. All three
+owned resources were independently confirmed absent. The final maintenance suite
+passes 12 tests / 97 assertions. Railway stopped observations have an explicit
+provider shape; they never fabricate a process exit code that Railway does not
+expose. Actual hosted parent, instance, volume and quiescence binding remains an
+executor responsibility.
+
+Private controller review caught a confirmed-create/failed-read cleanup gap. The
+repair can recover a cleanup binding from the recorded successful creation and
+fresh exact-ID readback. Unknown creations remain unresolved and are never
+adopted by name. Independent controller verification passes 13 tests / 71
+assertions, including process lease contention and crash release. The candidate
+combined sequence has 90 logical actions; it is not yet a frozen, approved run.
+
+The bounded public CLI runner also has independent local acceptance: four fake
+platform scenarios exercise initial and saved-target deployment, incomplete CLI
+completion after an upload acknowledgement, and the separate maintenance upload.
+The root remote/channel observers were independently reviewed and repaired for
+receipt completeness, decoded secret disclosure, generation identity, omitted
+provider work and rewritten terminal journal entries. These local results do not
+substitute for actual Railway acceptance. Remaining preparation includes the
+guard's complete process lifetime, attached callback supervision, exact hosted
+TTL artifacts and final executor integration/review.

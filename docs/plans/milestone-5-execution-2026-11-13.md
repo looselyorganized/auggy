@@ -6,13 +6,21 @@ storage, packaging, deployment, durable replay, optional application integration
 standalone channels and teaching have independent acceptance for their scopes.
 G3 passed all six actual local/browser/container rows on `515cf79` with audited
 artifact identities and cleanup. All required Linux CI and release rehearsal
-passed on `a5aa966`, including the six integration rows and all 13 PostgreSQL 17
-cases. Supplemental scaffold diagnostics and an Alpine atomic-publication repair
-require final-head checks. Hosted G4 still needs target discovery, remaining
+passed on `83dca71`, including the six integration rows and all 13 PostgreSQL 17
+cases. Supplemental scaffold diagnostics and the Alpine atomic-publication repair
+passed final-package verification. Railway access was verified read-only on
+2026-11-14; G4 now needs a reviewed isolated target allocation, remaining
 execution/recovery engineering and concrete approval. M5-07, M5-09 and M5-10 remain
 open; draft PR #230 is not ready to merge or publish. See the
 [task ledger](./milestone-5-tasks.json) and
 [evidence](./milestone-5-evidence-2026-11-13.md) for exact accepted revisions.
+
+G4's bounded local fixtures, command receipts, SSH transport, API adapter and
+action journal now have independent acceptance. Exact HTTP and polling source
+artifacts passed local channel/replay/source-edit checks. The stopped recovery
+prerequisite and finite hosted executor are still being completed. The
+[G4 amendment](./milestone-5-contracts/hosted-rehearsal.md) records the discovered
+allocation, cost and SSH boundaries; it does not grant execution approval.
 
 ## Outcome and preserved boundaries
 

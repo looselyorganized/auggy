@@ -460,6 +460,11 @@ is escalated to root with a concrete boundary reason before editing.
 
 ## 9. Hosted gate and completion claims
 
+The internal v2 allocation, source-build and remote-control preparation is
+specified in [the G4 rehearsal amendment](./hosted-rehearsal.md). It permits an
+explicitly approved new-project allocation followed by returned-ID binding; it
+does not authorize an existing target by name or infer approval from login.
+
 Before creating, updating or deploying any Railway resource, root must obtain
 and record the exact isolated target and authorization envelope:
 
