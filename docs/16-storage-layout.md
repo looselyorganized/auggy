@@ -159,9 +159,9 @@ locations rather than relocating them.
 
 Use `auggy inspect` for passive declared execution and installed source navigation.
 A partial report can mean dependencies or an index are unavailable; it does not
-certify readiness. `auggy doctor --verbose` provides runtime diagnostics. Under
-normal Bun startup, Bun may preload `.env` before Auggy runs. To prevent that read
-when inspecting, invoke `bun --no-env-file node_modules/auggy/src/cli/index.ts inspect`.
+certify readiness. `auggy doctor --verbose` provides runtime diagnostics. Use the
+`auggy` executable so its startup flags disable Bun environment loading, automatic
+installation and local configuration preloads during inspection.
 No option values or secret values are included in the inspection report.
 
 ## Cloud-deploy state
@@ -172,11 +172,19 @@ the "not-deployed" state (no null sentinel).
 
 ```json
 {
+  "version": 2,
+  "agentId": "aug1_00000000-0000-4000-8000-000000000001",
   "provider": "railway",
   "projectId": "proj_abc",
   "serviceId": "svc_def",
   "url": "https://zip.up.railway.app",
   "volumeId": "zip-data",
+  "profile": {
+    "kind": "http",
+    "port": 8080,
+    "healthPath": "/health",
+    "consolePath": "/console"
+  },
   "deployedAt": "2026-05-15T12:00:00.000Z"
 }
 ```

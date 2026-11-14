@@ -43,11 +43,11 @@ surface; keep secrets and runtime data out of it. Mutable state belongs in ignor
 of record. Run `auggy inspect` for passive configuration and installed source
 navigation. Its partial result is a navigation report, not a readiness check;
 custom paths do not prove an arbitrary TypeScript call graph. Built-in source
-remains in `node_modules/auggy/src`. To prevent Bun from reading `.env` at
-process startup as well, use:
+remains in `node_modules/auggy/src`. Use the project-local executable to disable
+Bun environment loading, automatic installation and local configuration preloads:
 
 ```bash
-bun --no-env-file node_modules/auggy/src/cli/index.ts inspect
+./node_modules/.bin/auggy inspect
 ```
 
 `auggy routes` executes application configuration and augments. Inspect source

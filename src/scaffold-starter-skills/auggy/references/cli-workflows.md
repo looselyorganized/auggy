@@ -51,11 +51,11 @@ Install the selected dependencies and configure private secrets before execution
 
 `auggy inspect` reports declared entrypoints and installed built-in source paths
 without importing project code. A partial result is not a readiness check and
-custom path hints are not a proven TypeScript call graph. To prevent Bun from
-preloading `.env`, use the project-local binary explicitly:
+custom path hints are not a proven TypeScript call graph. Use the project-local binary explicitly to disable Bun environment loading,
+automatic installation and local configuration preloads:
 
 ```bash
-bun --no-env-file node_modules/auggy/src/cli/index.ts inspect
+./node_modules/.bin/auggy inspect
 ```
 
 Legacy run and read commands remain supported. Graph-changing commands require

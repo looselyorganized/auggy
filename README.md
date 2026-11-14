@@ -119,9 +119,9 @@ local/global `auggy run` and `auggy dev` use the same application main and the
 project's selected runtime. The generated `dev` script does not promise watch or
 hot reload. Use `auggy inspect` to find declared entrypoints and exact installed
 source paths without starting the agent. A partial report is navigation evidence,
-not a readiness check; `auggy doctor` performs readiness checks. Normal Bun startup
-can preload `.env`; to prevent that read, invoke
-`bun --no-env-file node_modules/auggy/src/cli/index.ts inspect`. Custom source hints
+not a readiness check; `auggy doctor` performs readiness checks. The `auggy`
+executable disables Bun environment loading, automatic installation and local
+configuration preloads during inspection. Custom source hints
 do not prove the execution path through arbitrary TypeScript.
 
 The [inspectable reference](examples/inspectable-agent/README.md) remains a

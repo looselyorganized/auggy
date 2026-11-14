@@ -76,6 +76,9 @@ describe("auggy builder skill helper scripts", () => {
     const trap = `await Bun.write(${JSON.stringify(marker)}, "executed"); throw new Error("PROJECT_CODE_EXECUTED");`;
     writeFileSync(join(dir, "src", "index.ts"), trap);
     writeFileSync(join(dir, "src", "augments", "services", "index.ts"), trap);
+    // Bun must not run project-level preloads before entering passive inspection.
+    writeFileSync(join(dir, "bunfig.toml"), 'preload = ["./preload.ts"]\n');
+    writeFileSync(join(dir, "preload.ts"), trap);
 
     const result = await runScript(join(SCRIPTS, "summarize-auggy-project.sh"), [dir], {
       cwd: dir,
@@ -96,7 +99,7 @@ describe("auggy builder skill helper scripts", () => {
     expect(readFileSync(join(dir, "agent.yaml"), "utf8")).toBe(config);
   });
 
-  test("summary disables Bun environment-file loading and forwards the exact local arguments", async () => {
+  test("summary disables Bun environment and configuration loading and forwards the exact local arguments", async () => {
     const dir = temporaryProject("auggy-skill-env probe-");
     const cli = join(dir, "node_modules", "auggy", "src", "cli");
     mkdirSync(cli, { recursive: true });
@@ -116,7 +119,7 @@ describe("auggy builder skill helper scripts", () => {
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({
       args: ["inspect", "--config", join(dir, "agent.yaml")],
-      runtimeArguments: ["--no-env-file"],
+      runtimeArguments: ["--no-env-file", "--no-install", "--config=/dev/null"],
       loaded: null,
     });
   });
