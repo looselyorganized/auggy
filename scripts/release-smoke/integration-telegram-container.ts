@@ -1,8 +1,10 @@
 /** A12 polling-image execution. Distinct from local Telegram and generic container storage proof. */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { parse, stringify } from "yaml";
+import { z } from "zod";
+import { createPinnedFile, pinDirectory } from "../../src/lib/anchored-files";
 import { applicationEnvironment, applicationHash } from "./application-consumer";
 import type { CreateAuthoringConsumerOptions } from "./authoring-contract";
 import {
@@ -40,8 +42,27 @@ type Change = IntegrationScenarioEvidence["changes"][number];
 type HashedFile = { path: string; sha256: string };
 type Snapshot = {
   version: 1;
-  protocol: { events: TelegramJournalEvent[]; activeRequests: number; rejectedRequests: number };
+  generationId: string;
+  lifecycle: {
+    state: "running" | "sealing" | "sealed" | "failed";
+    activeProxy: number;
+    activeModel: number;
+    businessListenersClosed: boolean;
+    lateWork: number;
+    proxyFailures: number;
+    cancelledBodies: number;
+    failures: string[];
+  };
+  protocol: {
+    events: TelegramJournalEvent[];
+    activeRequests: number;
+    rejectedRequests: number;
+    pendingUpdates: number;
+    sealing: boolean;
+    rejectedWhileSealing: number;
+  };
   provider: ProviderFixtureEvidence;
+  providerGenerations: ProviderFixtureEvidence[];
 };
 
 class PollingContainerFailure extends Error {}
@@ -173,21 +194,222 @@ export function assertContainerTelegramReplay(
   );
 }
 
-function parseSnapshot(value: string): Snapshot {
+const integer = z.number().int().safe();
+const count = integer.min(0);
+const observationText = z.string().max(256);
+const eventSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("poll"),
+      offset: integer.nullable(),
+      timeout: integer.min(0).max(30),
+      updateIds: z.array(integer).max(16),
+      json: z.literal(true),
+      runtimeUserAgent: z.literal(true),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("reply"),
+      chatId: integer,
+      text: z.string().max(4096),
+      json: z.literal(true),
+      runtimeUserAgent: z.literal(true),
+    })
+    .strict(),
+  z.object({ kind: z.literal("validate-agent"), userId: integer }).strict(),
+  z
+    .object({
+      kind: z.literal("attempt"),
+      marker: observationText,
+      trust: observationText,
+      peerId: observationText,
+      peerKind: observationText,
+      publicSubstate: z.enum(["recognized", "anonymous"]).nullable(),
+      threadId: observationText,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("effect"),
+      marker: observationText,
+      trust: observationText,
+      peerId: observationText,
+      peerKind: observationText,
+      publicSubstate: z.enum(["recognized", "anonymous"]).nullable(),
+      threadId: observationText,
+    })
+    .strict(),
+]);
+const providerSchema = z
+  .object({
+    scenario: z.enum(["success", "answer-only", "invalid-tool-arguments", "provider-failure"]),
+    generation: integer.min(1),
+    calls: count,
+    toolRequests: count,
+    validatedToolResults: count,
+    finalResponses: count,
+    rejectedRequests: count,
+    summaries: z
+      .array(
+        z
+          .object({
+            call: integer.min(1),
+            streaming: z.boolean(),
+            outcome: z.enum([
+              "tool-request",
+              "direct-answer",
+              "verified-tool-result",
+              "verified-validation-error",
+              "provider-failure",
+              "invalid-request",
+              "call-limit",
+            ]),
+            status: integer.min(100).max(599),
+          })
+          .strict(),
+      )
+      .max(INTEGRATION_LIMITS.fixtureEvents),
+  })
+  .strict();
+const generationIdSchema = z.string().regex(/^[a-zA-Z0-9:_-]{1,128}$/);
+const snapshotSchema = z
+  .object({
+    version: z.literal(1),
+    generationId: generationIdSchema,
+    lifecycle: z
+      .object({
+        state: z.enum(["running", "sealing", "sealed", "failed"]),
+        activeProxy: count.max(8),
+        activeModel: count.max(8),
+        businessListenersClosed: z.boolean(),
+        lateWork: count,
+        proxyFailures: count,
+        cancelledBodies: count,
+        failures: z
+          .array(
+            z.enum([
+              "pending-updates",
+              "proxy-stop",
+              "drain-timeout",
+              "body-cancel",
+              "listener-stop",
+              "not-quiescent",
+              "late-work",
+              "protocol-rejection",
+              "proxy-failure",
+              "provider-rejection",
+            ]),
+          )
+          .max(10),
+      })
+      .strict(),
+    protocol: z
+      .object({
+        events: z.array(eventSchema).max(INTEGRATION_LIMITS.fixtureEvents),
+        activeRequests: count.max(8),
+        rejectedRequests: count,
+        pendingUpdates: count.max(16),
+        sealing: z.boolean(),
+        rejectedWhileSealing: count,
+      })
+      .strict(),
+    provider: providerSchema,
+    providerGenerations: z.array(providerSchema).min(1).max(129),
+  })
+  .strict();
+
+export function parseTelegramContainerSnapshot(value: string): Snapshot {
   check(
     Buffer.byteLength(value) <= INTEGRATION_LIMITS.fixtureJournalBytes,
     "Container snapshot exceeded bound",
   );
-  const snapshot = JSON.parse(value) as Snapshot;
+  const snapshot = snapshotSchema.parse(JSON.parse(value));
   check(
-    snapshot.version === 1 &&
-      Array.isArray(snapshot.protocol?.events) &&
-      snapshot.protocol.events.length <= INTEGRATION_LIMITS.fixtureEvents &&
-      snapshot.protocol.rejectedRequests === 0 &&
-      Number.isSafeInteger(snapshot.provider?.calls),
-    "Invalid container fixture snapshot",
+    snapshot.providerGenerations.every((entry, index) => entry.generation === index + 1) &&
+      JSON.stringify(snapshot.providerGenerations.at(-1)) === JSON.stringify(snapshot.provider),
+    "Container provider generation history is incomplete",
   );
   return snapshot;
+}
+
+export function assertSealedTelegramContainerSnapshot(snapshot: Snapshot): void {
+  check(
+    snapshot.lifecycle.state === "sealed" &&
+      snapshot.lifecycle.businessListenersClosed &&
+      snapshot.lifecycle.activeProxy === 0 &&
+      snapshot.lifecycle.activeModel === 0 &&
+      snapshot.lifecycle.lateWork === 0 &&
+      snapshot.lifecycle.proxyFailures === 0 &&
+      snapshot.lifecycle.failures.length === 0 &&
+      snapshot.protocol.activeRequests === 0 &&
+      snapshot.protocol.pendingUpdates === 0 &&
+      snapshot.protocol.sealing &&
+      snapshot.protocol.rejectedRequests === 0 &&
+      snapshot.protocol.rejectedWhileSealing === 0 &&
+      snapshot.providerGenerations.every((entry) => entry.rejectedRequests === 0),
+    "Container fixture terminal evidence is not sealed and quiescent",
+  );
+}
+
+/** Commit terminal generation evidence before its container can be replaced. */
+export function writeTelegramGenerationReceipt(options: {
+  directory: string;
+  generation: string;
+  runId: string;
+  source: Pick<IntegrationSourceIdentity, "revision" | "tree">;
+  imageId: string;
+  exportSHA256: string;
+  containerId: string;
+  snapshot: Snapshot;
+}): HashedFile {
+  check(/^[a-z0-9-]{1,80}$/.test(options.generation), "Invalid fixture receipt name");
+  generationIdSchema.parse(options.runId);
+  check(
+    options.snapshot.generationId === `${options.runId}:${options.generation}`,
+    "Fixture generation identity changed",
+  );
+  check(
+    /^[a-f0-9]{40}$/.test(options.source.revision) && /^[a-f0-9]{40}$/.test(options.source.tree),
+    "Invalid receipt source identity",
+  );
+  check(
+    /^sha256:[a-f0-9]{64}$/.test(options.imageId) &&
+      /^[a-f0-9]{64}$/.test(options.exportSHA256) &&
+      /^[a-f0-9]{64}$/.test(options.containerId),
+    "Invalid receipt artifact identity",
+  );
+  const snapshot = parseTelegramContainerSnapshot(JSON.stringify(options.snapshot));
+  assertSealedTelegramContainerSnapshot(snapshot);
+  const bytes = `${JSON.stringify({
+    version: 1,
+    runId: options.runId,
+    generation: options.generation,
+    source: { revision: options.source.revision, tree: options.source.tree },
+    imageId: options.imageId,
+    exportSHA256: options.exportSHA256,
+    containerId: options.containerId,
+    snapshot,
+  })}\n`;
+  check(
+    Buffer.byteLength(bytes) <= INTEGRATION_LIMITS.evidenceBytes,
+    "Generation receipt exceeded bound",
+  );
+  const path = `telegram-generation-${options.generation}.json`;
+  const parent = pinDirectory(options.directory, "Telegram generation evidence directory");
+  try {
+    check(
+      (fstatSync(parent.fd).mode & 0o7777) === 0o700,
+      "Generation evidence directory must be private",
+    );
+    check(
+      createPinnedFile(parent.fd, path, bytes, "Telegram generation evidence"),
+      "Generation receipt already exists",
+    );
+  } finally {
+    closeSync(parent.fd);
+  }
+  return { path, sha256: applicationHash(bytes) };
 }
 
 const script = (code: string) => [
@@ -202,7 +424,8 @@ type ControlWait =
   | { kind: "ready" }
   | { kind: "reply"; count: number }
   | { kind: "duplicate"; updateId: number }
-  | { kind: "snapshot" };
+  | { kind: "snapshot" }
+  | { kind: "sealed" };
 
 /** Secret is read inside the owned container, never embedded in command args or metadata. */
 export function telegramContainerControlCommand(
@@ -212,22 +435,27 @@ export function telegramContainerControlCommand(
   const input = JSON.stringify(operation);
   check(input.length <= 2048, "Container control request exceeded bound");
   return script(`
+const terminal = ${JSON.stringify(wait.kind === "sealed")};
+const deadline=Date.now()+15000;
 const request = async (body) => {
-  const response = await fetch(${JSON.stringify(CONTROL)}, { method: "POST", headers: {"content-type":"application/json", "x-fixture-control":process.env.AUGGY_FIXTURE_CONTROL_TOKEN}, body:JSON.stringify(body), redirect:"manual", signal:AbortSignal.timeout(2000) });
+  const response = await fetch(${JSON.stringify(CONTROL)}, { method: "POST", headers: {"content-type":"application/json", "x-fixture-control":process.env.AUGGY_FIXTURE_CONTROL_TOKEN}, body:JSON.stringify(body), redirect:"manual", signal:AbortSignal.timeout(Math.max(1,Math.min(terminal?5000:2000,deadline-Date.now()))) });
   if (!response.ok) throw Error("private container fixture request rejected");
   const reader=response.body.getReader(); const chunks=[]; let bytes=0;
-  for (;;) { const next=await reader.read(); if(next.done)break; bytes+=next.value.length;if(bytes>2097152){await reader.cancel();throw Error("snapshot limit");}chunks.push(next.value); }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  try {
+    for (;;) { const next=await reader.read(); if(next.done)break; bytes+=next.value.length;if(bytes>2097152)throw Error("snapshot limit");chunks.push(next.value); }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } finally { await reader.cancel().catch(()=>{}); reader.releaseLock(); }
 };
 const operation=${input}; const wait=${JSON.stringify(wait)};
-const deadline=Date.now()+15000; let initial=true;
+let initial=true;
 while(Date.now()<deadline) {
   let snapshot;
-  try { snapshot=await request(initial?operation:{operation:"snapshot"}); initial=false; }
+  try { snapshot=await request(initial?operation:{operation:terminal?"final":"snapshot"}); initial=false; }
   catch { if(!initial||operation.operation!=="snapshot")throw Error("private fixture request failed"); await Bun.sleep(100);continue; }
+  if(terminal && snapshot.lifecycle?.state === "failed") throw Error("fixture sealing failed");
   const events=snapshot.protocol.events;
   const delivered=wait.kind==="duplicate"?events.findIndex(e=>e.kind==="poll"&&e.offset===null&&e.updateIds.includes(wait.updateId)):-1;
-  const ready=wait.kind==="snapshot" || (wait.kind==="ready"&&events.some(e=>e.kind==="poll")) || (wait.kind==="reply"&&events.filter(e=>e.kind==="reply").length===wait.count) || (wait.kind==="duplicate"&&delivered>=0&&events.slice(delivered+1).some(e=>e.kind==="poll"&&e.offset===wait.updateId+1));
+  const ready=(wait.kind==="sealed"&&snapshot.lifecycle?.state==="sealed") || wait.kind==="snapshot" || (wait.kind==="ready"&&events.some(e=>e.kind==="poll")) || (wait.kind==="reply"&&events.filter(e=>e.kind==="reply").length===wait.count) || (wait.kind==="duplicate"&&delivered>=0&&events.slice(delivered+1).some(e=>e.kind==="poll"&&e.offset===wait.updateId+1));
   if(ready){console.log(JSON.stringify(snapshot));process.exit(0);} await Bun.sleep(100);
 }
 throw Error("private fixture observation deadline exceeded");
@@ -397,6 +625,7 @@ export async function runTelegramContainerIntegration(options: TelegramContainer
     beforeStopLogs: string;
     afterStopLogs: string;
   }[] = [];
+  const generationReceipts: HashedFile[] = [];
   const deliveries: {
     generation: string;
     updateId: number;
@@ -463,7 +692,7 @@ export async function runTelegramContainerIntegration(options: TelegramContainer
           operation: Record<string, unknown>,
           wait: ControlWait,
         ) =>
-          parseSnapshot(
+          parseTelegramContainerSnapshot(
             (await scope.exec(containerId, telegramContainerControlCommand(operation, wait)))
               .stdout,
           );
@@ -477,7 +706,7 @@ export async function runTelegramContainerIntegration(options: TelegramContainer
             imageId: image.imageId,
             volume,
             profile: { kind: "none" },
-            env: containerEnv,
+            env: { ...containerEnv, AUGGY_FIXTURE_GENERATION_ID: `${options.runId}:${name}` },
           });
           check(running.origin === null, "Polling container invented a public origin");
           const observation = {
@@ -498,8 +727,20 @@ export async function runTelegramContainerIntegration(options: TelegramContainer
             });
             observation.snapshot = await control(
               running.containerId,
-              { operation: "snapshot" },
-              { kind: "snapshot" },
+              { operation: "seal" },
+              { kind: "sealed" },
+            );
+            generationReceipts.push(
+              writeTelegramGenerationReceipt({
+                directory: options.evidenceDirectory,
+                generation: name,
+                runId: options.runId,
+                source: options.source,
+                imageId: image.imageId,
+                exportSHA256,
+                containerId: running.containerId,
+                snapshot: observation.snapshot,
+              }),
             );
             observation.beforeStopLogs = await scope.logs(running.containerId);
           } finally {
@@ -694,7 +935,10 @@ export async function runTelegramContainerIntegration(options: TelegramContainer
           reason: failure ?? `Polling image did not complete phase ${phase}`,
         },
     cleanup: docker.cleanup,
-    artifacts: [{ path: "telegram-container-journal.json", sha256: applicationHash(diagnostic) }],
+    artifacts: [
+      ...generationReceipts,
+      { path: "telegram-container-journal.json", sha256: applicationHash(diagnostic) },
+    ],
     retainedUntil: null,
     independentReviewer: null,
   };

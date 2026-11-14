@@ -94,7 +94,7 @@ describe("polling container fixture preparation - not Docker acceptance", () => 
       "-e",
     ]);
     expect(command[5]).toContain("process.env.AUGGY_FIXTURE_CONTROL_TOKEN");
-    expect(command[5]).toContain("AbortSignal.timeout(2000)");
+    expect(command[5]).toContain("terminal?5000:2000");
     expect(command[5]).toContain("Date.now()+15000");
     expect(command[5]).toContain("bytes>2097152");
   });
@@ -104,12 +104,14 @@ describe("polling container fixture preparation - not Docker acceptance", () => 
     prepareTelegramContainerFixtures(root);
     const keys = [
       "AUGGY_FIXTURE_CONTROL_TOKEN",
+      "AUGGY_FIXTURE_GENERATION_ID",
       "AUGGY_FIXTURE_TELEGRAM_ORIGIN",
       "AUGGY_FIXTURE_MODEL_ORIGIN",
     ] as const;
     const previous = keys.map((key) => [key, process.env[key]] as const);
     const token = "b".repeat(64);
     process.env.AUGGY_FIXTURE_CONTROL_TOKEN = token;
+    process.env.AUGGY_FIXTURE_GENERATION_ID = "preparation:control";
     process.env.AUGGY_FIXTURE_TELEGRAM_ORIGIN = "http://127.0.0.1:43141";
     process.env.AUGGY_FIXTURE_MODEL_ORIGIN = "http://127.0.0.1:43141";
     const fixture = await import(

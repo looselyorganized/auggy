@@ -71,6 +71,8 @@ export function createTelegramProtocolFixture() {
   const waiting = new Set<() => void>();
   let pending: FixtureUpdate[] = [];
   let stopped = false;
+  let sealing = false;
+  let rejectedWhileSealing = 0;
   let activeRequests = 0;
   let rejectedRequests = 0;
   let bytes = 0;
@@ -100,6 +102,10 @@ export function createTelegramProtocolFixture() {
         )
           throw new Error("Invalid fixture request envelope.");
         const input = await body(request);
+        if (sealing && url.pathname !== "/telegram/getUpdates") {
+          rejectedWhileSealing++;
+          return Response.json({ error: "fixture_sealing" }, { status: 503 });
+        }
         if (
           url.pathname.startsWith("/telegram/") &&
           request.headers.get("user-agent") !== "auggy-telegram/0.1"
@@ -117,7 +123,7 @@ export function createTelegramProtocolFixture() {
                 input.allowed_updates.join(",") !== "message"))
           )
             throw new Error("Invalid getUpdates serialization.");
-          if (!pending.length && !stopped) {
+          if (!pending.length && !stopped && !sealing) {
             await new Promise<void>((resolve) => {
               const finish = () => {
                 clearTimeout(timer);
@@ -131,8 +137,8 @@ export function createTelegramProtocolFixture() {
               if (request.signal.aborted) finish();
             });
           }
-          const updates = pending;
-          pending = [];
+          const updates = sealing ? [] : pending;
+          if (!sealing) pending = [];
           append({
             kind: "poll",
             offset: (input.offset as number | undefined) ?? null,
@@ -200,12 +206,24 @@ export function createTelegramProtocolFixture() {
   return {
     origin: `http://127.0.0.1:${server.port}`,
     enqueue(update: FixtureUpdate) {
-      if (stopped || pending.length >= 16) throw new Error("Fixture update queue unavailable.");
+      if (stopped || sealing || pending.length >= 16)
+        throw new Error("Fixture update queue unavailable.");
       pending.push(structuredClone(update));
       for (const wake of waiting) wake();
     },
     snapshot() {
-      return { events: structuredClone(events), activeRequests, rejectedRequests };
+      return {
+        events: structuredClone(events),
+        activeRequests,
+        rejectedRequests,
+        pendingUpdates: pending.length,
+        sealing,
+        rejectedWhileSealing,
+      };
+    },
+    beginSeal() {
+      sealing = true;
+      for (const wake of waiting) wake();
     },
     async stop() {
       stopped = true;

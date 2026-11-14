@@ -1,9 +1,15 @@
 import { createTelegramProtocolFixture } from "./telegram-protocol";
-import { createProviderFixture } from "./telegram-provider";
+import { createProviderFixture, type ProviderFixtureEvidence } from "./telegram-provider";
 
 const PROXY_ORIGIN = "http://127.0.0.1:43141";
 const CONTROL_ORIGIN = "http://127.0.0.1:43142";
 const QUIESCENT = "auggy-telegram-container-fixtures:quiescent";
+// Ordinary control retains its existing bound. Authenticated seal/final exports
+// have an independent small reserve, so observation traffic cannot consume cleanup.
+const ORDINARY_CALLS = 128;
+const TERMINAL_CALLS = 8;
+const SEAL_MS = 10_000;
+const REAP_MS = 5_000;
 let shutdown: (() => Promise<void>) | undefined;
 
 async function readControl(request: Request): Promise<Record<string, unknown>> {
@@ -12,7 +18,10 @@ async function readControl(request: Request): Promise<Record<string, unknown>> {
   const chunks: Uint8Array[] = [];
   let bytes = 0;
   let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; void reader.cancel().catch(() => {}); }, 2000);
+  const timer = setTimeout(() => {
+    timedOut = true;
+    void reader.cancel().catch(() => {});
+  }, 2000);
   try {
     for (;;) {
       const next = await reader.read();
@@ -23,7 +32,8 @@ async function readControl(request: Request): Promise<Record<string, unknown>> {
       chunks.push(next.value);
     }
     const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid fixture control body.");
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new Error("Invalid fixture control body.");
     return value as Record<string, unknown>;
   } finally {
     clearTimeout(timer);
@@ -35,8 +45,15 @@ async function readControl(request: Request): Promise<Record<string, unknown>> {
 export async function startContainerTelegramFixture() {
   if (shutdown) throw new Error("Container fixtures already started.");
   const token = process.env.AUGGY_FIXTURE_CONTROL_TOKEN;
-  if (!token || !/^[a-f0-9]{64}$/.test(token)) throw new Error("Missing private fixture control authority.");
-  if (process.env.AUGGY_FIXTURE_TELEGRAM_ORIGIN !== PROXY_ORIGIN || process.env.AUGGY_FIXTURE_MODEL_ORIGIN !== PROXY_ORIGIN)
+  const generationId = process.env.AUGGY_FIXTURE_GENERATION_ID;
+  if (!token || !/^[a-f0-9]{64}$/.test(token))
+    throw new Error("Missing private fixture control authority.");
+  if (!generationId || !/^[a-zA-Z0-9:_-]{1,128}$/.test(generationId))
+    throw new Error("Missing fixture generation identity.");
+  if (
+    process.env.AUGGY_FIXTURE_TELEGRAM_ORIGIN !== PROXY_ORIGIN ||
+    process.env.AUGGY_FIXTURE_MODEL_ORIGIN !== PROXY_ORIGIN
+  )
     throw new Error("Fixture origins do not match the recorded loopback proxy.");
   const nativeFetch = globalThis.fetch;
   const telegram = createTelegramProtocolFixture();
@@ -44,74 +61,344 @@ export async function startContainerTelegramFixture() {
   let proxy: ReturnType<typeof Bun.serve> | undefined;
   let control: ReturnType<typeof Bun.serve> | undefined;
   let activeProxy = 0;
+  let activeModel = 0;
+  let businessListenersClosed = false;
   let activeControl = 0;
-  let controlCalls = 0;
-  let closing = false;
-  const stop = async () => {
-    if (closing) return;
-    closing = true;
-    const results = await Promise.allSettled([
-      control?.stop(true), proxy?.stop(true), model?.stop(), telegram.stop(),
-    ]);
-    if (results.some((result) => result.status === "rejected") || activeProxy !== 0 || activeControl !== 0)
-      throw new Error("Container fixture shutdown did not quiesce.");
+  let ordinaryCalls = 0;
+  let terminalCalls = 0;
+  let lateWork = 0;
+  let proxyFailures = 0;
+  let cancelledBodies = 0;
+  let state: "running" | "sealing" | "sealed" | "failed" = "running";
+  let controlClosing = false;
+  let terminalBytes: string | undefined;
+  let sealPromise: Promise<void> | undefined;
+  let stopPromise: Promise<void> | undefined;
+  const failures = new Set<string>();
+  const providerGenerations: ProviderFixtureEvidence[] = [];
+  const bodies = new Set<{ cancel(): Promise<void> }>();
+  const proxyAborts = new Set<AbortController>();
+  const snapshot = () => ({
+    version: 1,
+    generationId,
+    lifecycle: {
+      state,
+      activeProxy,
+      activeModel,
+      businessListenersClosed,
+      lateWork,
+      proxyFailures,
+      cancelledBodies,
+      failures: [...failures].sort(),
+    },
+    protocol: telegram.snapshot(),
+    provider: model!.evidence(),
+    providerGenerations: [...providerGenerations, model!.evidence()],
+  });
+  const serialize = () => {
+    const output = JSON.stringify(snapshot());
+    if (Buffer.byteLength(output) > 2 * 1024 * 1024)
+      throw new Error("Fixture snapshot exceeded bound.");
+    return output;
+  };
+  const seal = () => {
+    if (sealPromise) return sealPromise;
+    state = "sealing";
+    if (telegram.snapshot().pendingUpdates !== 0) failures.add("pending-updates");
+    telegram.beginSeal();
+    // Closing admission precedes draining. A response remains owned until its
+    // entire body reaches EOF or cancellation, not merely until headers arrive.
+    sealPromise = (async () => {
+      const deadline = Date.now() + SEAL_MS;
+      while ((activeProxy || telegram.snapshot().activeRequests) && Date.now() < deadline)
+        await Bun.sleep(10);
+      if (activeProxy || telegram.snapshot().activeRequests) {
+        failures.add("drain-timeout");
+        for (const abort of proxyAborts) abort.abort();
+        for (const body of bodies)
+          void body.cancel().catch(() => {
+            failures.add("body-cancel");
+          });
+      }
+      let listenersStopped = false;
+      const stopping = Promise.allSettled([proxy?.stop(true), model?.stop(), telegram.stop()]).then(
+        (results) => {
+          if (results.some((result) => result.status === "rejected")) failures.add("listener-stop");
+          else {
+            listenersStopped = true;
+            businessListenersClosed = true;
+          }
+        },
+      );
+      const reapDeadline = Date.now() + REAP_MS;
+      while (
+        (!listenersStopped || activeProxy || telegram.snapshot().activeRequests) &&
+        Date.now() < reapDeadline
+      )
+        await Bun.sleep(10);
+      // Never await an unbounded server/body promise after the bounded reap.
+      void stopping;
+      if (!listenersStopped || activeProxy || telegram.snapshot().activeRequests)
+        failures.add("not-quiescent");
+      const protocol = telegram.snapshot();
+      if (lateWork || protocol.rejectedWhileSealing) failures.add("late-work");
+      if (protocol.rejectedRequests) failures.add("protocol-rejection");
+      if (proxyFailures) failures.add("proxy-failure");
+      if ([...providerGenerations, model!.evidence()].some((entry) => entry.rejectedRequests))
+        failures.add("provider-rejection");
+      state = failures.size ? "failed" : "sealed";
+      try {
+        terminalBytes = serialize();
+      } catch {
+        state = "failed";
+        terminalBytes = JSON.stringify({
+          version: 1,
+          generationId,
+          lifecycle: { state, failures: ["snapshot-overflow"] },
+        });
+      }
+    })();
+    return sealPromise;
+  };
+  const stop = () => {
+    if (stopPromise) return stopPromise;
+    stopPromise = (async () => {
+      try {
+        await seal();
+      } finally {
+        controlClosing = true;
+        await control?.stop(true);
+      }
+      if (state !== "sealed" || activeControl !== 0)
+        throw new Error("Container fixture shutdown did not quiesce.");
+    })();
+    return stopPromise;
   };
   try {
     model = createProviderFixture({
       toolResultSentinel: "telegram-proof:",
-      tool: { name: "telegram_proof_effect", input: { operation: "probe" }, invalidInput: { operation: 7 } },
+      tool: {
+        name: "telegram_proof_effect",
+        input: { operation: "probe" },
+        invalidInput: { operation: 7 },
+      },
       maxCalls: 4,
       maxRequestBytes: 256 * 1024,
     });
     const provider = model;
     proxy = Bun.serve({
-      hostname: "127.0.0.1", port: 43141, idleTimeout: 5, maxRequestBodySize: 256 * 1024,
+      hostname: "127.0.0.1",
+      port: 43141,
+      idleTimeout: 5,
+      maxRequestBodySize: 256 * 1024,
       async fetch(request) {
         const url = new URL(request.url);
-        const protocolPath = ["/telegram/getUpdates", "/telegram/sendMessage", "/telegram/getChat", "/telegram/deleteWebhook", "/telegram/setWebhook", "/attempt", "/effect"].includes(url.pathname);
-        if (closing || activeProxy >= 8 || request.method !== "POST" || url.search ||
-          (!protocolPath && url.pathname !== "/v1/messages")) return new Response(null, { status: 404 });
+        const protocolPath = [
+          "/telegram/getUpdates",
+          "/telegram/sendMessage",
+          "/telegram/getChat",
+          "/telegram/deleteWebhook",
+          "/telegram/setWebhook",
+          "/attempt",
+          "/effect",
+        ].includes(url.pathname);
+        if (state !== "running") {
+          if (url.pathname !== "/telegram/getUpdates") lateWork++;
+          return new Response(null, { status: 503 });
+        }
+        if (
+          activeProxy >= 8 ||
+          request.method !== "POST" ||
+          url.search ||
+          (!protocolPath && url.pathname !== "/v1/messages")
+        )
+          return new Response(null, { status: 404 });
         activeProxy++;
+        if (!protocolPath) activeModel++;
+        const abort = new AbortController();
+        proxyAborts.add(abort);
+        let complete = false;
+        let owned: { cancel(): Promise<void> } | undefined;
+        let onAbort: (() => void) | undefined;
+        const finish = () => {
+          if (complete) return;
+          complete = true;
+          activeProxy--;
+          if (!protocolPath) activeModel--;
+          proxyAborts.delete(abort);
+          if (owned) bodies.delete(owned);
+          if (onAbort) request.signal.removeEventListener("abort", onAbort);
+        };
         try {
           const destination = `${protocolPath ? telegram.origin : provider.baseURL}${url.pathname}`;
-          return await nativeFetch.call(globalThis, new Request(destination, request), {
-            redirect: "manual", signal: AbortSignal.any([request.signal, AbortSignal.timeout(10000)]),
+          const response = await nativeFetch.call(globalThis, new Request(destination, request), {
+            redirect: "manual",
+            signal: AbortSignal.any([request.signal, abort.signal, AbortSignal.timeout(10000)]),
           });
-        } catch { return new Response(null, { status: 502 }); }
-        finally { activeProxy--; }
+          if (!response.body) {
+            finish();
+            return response;
+          }
+          const reader = response.body.getReader();
+          let cancellation: Promise<void> | undefined;
+          owned = {
+            cancel() {
+              if (!cancellation)
+                cancellation = (async () => {
+                  cancelledBodies++;
+                  try {
+                    await reader.cancel();
+                  } finally {
+                    reader.releaseLock();
+                    finish();
+                  }
+                })();
+              return cancellation;
+            },
+          };
+          bodies.add(owned);
+          onAbort = () => {
+            void owned!.cancel().catch(() => {
+              proxyFailures++;
+            });
+          };
+          request.signal.addEventListener("abort", onAbort, { once: true });
+          if (request.signal.aborted) onAbort();
+          const stream = new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              try {
+                const next = await reader.read();
+                if (next.done) {
+                  if (cancellation) await cancellation;
+                  else {
+                    reader.releaseLock();
+                    finish();
+                  }
+                  controller.close();
+                } else controller.enqueue(next.value);
+              } catch {
+                if (!cancellation) proxyFailures++;
+                await owned!.cancel().catch(() => {
+                  proxyFailures++;
+                });
+                controller.error(new Error("Fixture response body failed."));
+              }
+            },
+            async cancel() {
+              await owned!.cancel();
+            },
+          });
+          return new Response(stream, { status: response.status, headers: response.headers });
+        } catch {
+          proxyFailures++;
+          finish();
+          return new Response(null, { status: 502 });
+        }
       },
     });
     control = Bun.serve({
-      hostname: "127.0.0.1", port: 43142, idleTimeout: 5, maxRequestBodySize: 4096,
+      hostname: "127.0.0.1",
+      port: 43142,
+      idleTimeout: 5,
+      maxRequestBodySize: 4096,
       async fetch(request) {
-        if (closing || activeControl >= 2 || ++controlCalls > 128) return new Response(null, { status: 503 });
-        if (request.method !== "POST" || request.url !== `${CONTROL_ORIGIN}/control` ||
-          request.headers.get("x-fixture-control") !== token) return new Response(null, { status: 403 });
+        if (
+          request.method !== "POST" ||
+          request.url !== `${CONTROL_ORIGIN}/control` ||
+          request.headers.get("x-fixture-control") !== token
+        )
+          return new Response(null, { status: 403 });
+        if (controlClosing || activeControl >= 2) return new Response(null, { status: 503 });
         activeControl++;
+        let charged = false;
         try {
           const input = await readControl(request);
+          const terminal =
+            (input.operation === "seal" || input.operation === "final") &&
+            Object.keys(input).length === 1;
+          if (terminal) {
+            charged = true;
+            if (++terminalCalls > TERMINAL_CALLS) return new Response(null, { status: 429 });
+            if (input.operation === "seal") void seal();
+            if (!sealPromise) throw new Error("Fixture has not begun sealing.");
+            if (!terminalBytes && input.operation === "final") {
+              let timer: ReturnType<typeof setTimeout> | undefined;
+              let aborted: (() => void) | undefined;
+              try {
+                await Promise.race([
+                  sealPromise,
+                  new Promise<void>((resolve) => {
+                    timer = setTimeout(resolve, 3000);
+                    aborted = resolve;
+                    request.signal.addEventListener("abort", aborted, { once: true });
+                    if (request.signal.aborted) resolve();
+                  }),
+                ]);
+              } finally {
+                if (timer) clearTimeout(timer);
+                if (aborted) request.signal.removeEventListener("abort", aborted);
+              }
+            }
+            return new Response(terminalBytes ?? serialize(), {
+              status: terminalBytes ? 200 : 202,
+              headers: { "content-type": "application/json" },
+            });
+          }
+          charged = true;
+          if (++ordinaryCalls > ORDINARY_CALLS) return new Response(null, { status: 429 });
+          if (state !== "running") return new Response(null, { status: 409 });
           if (input.operation === "enqueue" && Object.keys(input).length === 2) {
-            const update = input.update as { update_id?: unknown; message?: { text?: unknown; chat?: { id?: unknown; type?: unknown }; from?: { id?: unknown } } } | undefined;
-            if (!update || !Number.isSafeInteger(update.update_id) || !update.message ||
-              typeof update.message.text !== "string" || update.message.text.length > 256 ||
-              !Number.isSafeInteger(update.message.from?.id) || !Number.isSafeInteger(update.message.chat?.id) ||
-              !["private", "group"].includes(String(update.message.chat?.type))) throw new Error("Invalid fixture update.");
+            const update = input.update as
+              | {
+                  update_id?: unknown;
+                  message?: {
+                    text?: unknown;
+                    chat?: { id?: unknown; type?: unknown };
+                    from?: { id?: unknown };
+                  };
+                }
+              | undefined;
+            if (
+              !update ||
+              !Number.isSafeInteger(update.update_id) ||
+              !update.message ||
+              typeof update.message.text !== "string" ||
+              update.message.text.length > 256 ||
+              !Number.isSafeInteger(update.message.from?.id) ||
+              !Number.isSafeInteger(update.message.chat?.id) ||
+              !["private", "group"].includes(String(update.message.chat?.type))
+            )
+              throw new Error("Invalid fixture update.");
+            if (activeModel)
+              throw new Error("Fixture model reset requires drained model responses.");
+            providerGenerations.push(provider.evidence());
+            if (providerGenerations.length > 128)
+              throw new Error("Provider generation bound exceeded.");
             provider.reset();
             telegram.enqueue(input.update as Parameters<typeof telegram.enqueue>[0]);
           } else if (input.operation !== "snapshot" || Object.keys(input).length !== 1) {
             throw new Error("Unknown fixture control operation.");
           }
-          const output = JSON.stringify({ version: 1, protocol: telegram.snapshot(), provider: provider.evidence() });
-          if (Buffer.byteLength(output) > 2 * 1024 * 1024) throw new Error("Fixture snapshot exceeded bound.");
-          return new Response(output, { headers: { "content-type": "application/json" } });
-        } catch { return Response.json({ error: "fixture-control-rejected" }, { status: 400 }); }
-        finally { activeControl--; }
+          return new Response(serialize(), { headers: { "content-type": "application/json" } });
+        } catch {
+          if (!charged && ++ordinaryCalls > ORDINARY_CALLS)
+            return new Response(null, { status: 429 });
+          return Response.json({ error: "fixture-control-rejected" }, { status: 400 });
+        } finally {
+          activeControl--;
+        }
       },
     });
     shutdown = stop;
     return { telegramOrigin: PROXY_ORIGIN, modelOrigin: PROXY_ORIGIN };
   } catch {
-    await stop();
+    controlClosing = true;
+    await Promise.allSettled([
+      control?.stop(true),
+      proxy?.stop(true),
+      model?.stop(),
+      telegram.stop(),
+    ]);
     throw new Error("Container fixture startup failed.");
   }
 }
