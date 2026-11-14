@@ -1,8 +1,8 @@
 # Milestone 5 execution evidence
 
-Current status: G0/G1 and M5-00/01/02/04 accepted. M5-03/05/06 implementation
-continues; M5-07 helper mechanics have independent preparation review. Final
-installed/browser/container/hosted acceptance remains open. Earlier entries below
+Current status: G0/G1 and M5-00/01/02/03/04/08 accepted. M5-05/06 source and provisional
+installed runs have independent review. Final
+committed installed/browser/container and hosted acceptance remain open. Earlier entries below
 record historical gate states; the task ledger is the current source of status.
 
 ## Preservation and entry checks
@@ -327,3 +327,79 @@ Actual browser and generic-container acceptance are in progress, not accepted.
 Docker Desktop was already installed but stopped. Root started it for authorized
 local verification; its real server reports29.1.3. This updates the initial daemon
 unavailability observation without claiming image, container or Railway success.
+
+### Reviewed deployment and recovery checkpoints
+
+M5-03 is committed at `e35cafb`. Independent review reproduced and required repairs
+for effective Railway config overrides, validation occurring after project creation,
+native descendants surviving npm-wrapper timeouts, inherited target selectors, and
+alternate config identity differing from the directory's canonical identity. The
+final review accepted 349 tests /1441 assertions; root's exact staged snapshot passed
+375 tests /1613 assertions and strict typecheck. Repository lint passed (765 files).
+Counts overlap. A final help-only clarification removed stale version language and
+passed its focused regression. No Railway mutations or hosted proof were performed.
+
+Actual Docker recovery exposed default `./data/*` paths being interpreted against
+the temporary recovery mount. The additive `--runtime-root` repair, committed at
+`d82af27`, separates pure final-mount topology checks from the physical `--root`
+destination. Runtime mapping, stored schemas and copy/fence authority are unchanged.
+Two independent reviewers accepted it. Twenty command/bundle tests /107 assertions
+include real default-path backup, restore and interrupted resume. The final packed
+container fixture now uses that repair; its previous root-relative run is provisional.
+
+### Provisional execution and adversarial harness repairs
+
+The reviewed Telegram harness is checkpointed at `214bef2`. Normal installed runs
+and the identity/stale-history counterexamples described above remain valid scoped
+evidence, not a final committed-artifact gate.
+
+The optional application implementation is checkpointed at `714db5e`. Its isolated
+frozen dependency installation, 14 tests /264 assertions, both TypeScript checks,
+actual Node webpack production build and dependency audit passed. A clean lock
+regeneration removed a stale nested Zod selection; the root lock remains unchanged.
+
+Independent application rerun `http-8743a40a` passed standalone HTTP policy,
+production reference, and actual Chromium browser rows. The authoritative journal
+records production 0, HTTP 1 committed unknown effect, browser 1 support effect,
+and zero duplicate or unauthorized effects. All ten diagnostic process groups were
+cleaned. The browser sends three fresh assertions directly to the agent, streams
+before completion and retries the same operation without a second effect. Private
+fixture credentials and SQLite now remain in the workspace, outside uploaded
+evidence; all 22 evidence files were checked against actual cookie/control bytes.
+The deliberate crash oracle now requires the completed injection observation and
+rejects real supervisor timeouts even with a false completion marker.
+
+The directly owned Chromium launcher uses Playwright's password-store and mock
+keychain flags. The earlier launcher triggered a macOS keychain prompt; root stopped
+that browser and advised Cancel. No keychain reset or repair was performed. An actual startup/cleanup probe and
+subsequent browser run passed. The CDP driver uses a verified Node executable;
+Chromium and driver process groups remain independently supervised. Settled mobile
+layout measurements show 16 px gutters without overflow; viewport screenshots
+avoid Playwright's full-page scrollbar/reflow clipping artifact.
+
+Actual provisional Docker run `container-403bebc2` passed 23 checks: frozen image
+build and stale-lock rejection, private-root refusals, worker startup without
+ingress, singleton competition, atomic assertion reuse, durable SQLite replacement,
+offline backup/verify/restore/reconcile, and restore holds surviving replacement,
+expiring, then reopening after a TTL increase. Four actual effects, zero duplicate
+or unauthorized effects and complete owned-resource cleanup were observed.
+Independent review then required complete bounded logs, the durability image's
+actual identity, and redacted bounded diagnostics. All repairs passed 24 tests /124
+assertions and independent recheck. Fresh current-artifact execution remains required.
+
+The aggregate now verifies every packaged owned source file, including helpers
+outside the selected installed-file subset, against the committed source inventory.
+Generated console output is identified separately and compared with build output.
+Before/after archive hashes bind that proof to the installed package. Independent
+same-size mutation, missing-file and extra-file controls all fail. Exact scenario
+stage, build kind, profile, observed effects, cleanup and platform identities prevent
+a renamed local row from satisfying container acceptance. No hosted stage is invoked
+by the local/container runner.
+
+The repaired integration runner and CI gate are checkpointed at `69ca967`.
+Root verification passed 69 harness/CI tests /433 assertions, strict typecheck
+and repository lint. M5-08's eleven teaching files passed independent source
+parity review; 134 local links/anchors, five actual CLI help surfaces, Markdown
+structure and diff checks passed. Root clarified separate capability/provider
+package upgrade ownership. These checkpoints enable the clean committed run;
+they do not pre-accept its result.

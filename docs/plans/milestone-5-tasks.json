@@ -157,17 +157,18 @@
       "id": "M5-03",
       "title": "Channel-aware Railway deployment",
       "specialist": "Deployment engineer",
-      "status": "review",
+      "status": "accepted",
       "dependsOn": [
         "M5-01",
         "M5-02"
       ],
       "blockedBy": [],
       "acceptanceDependsOn": [],
-      "acceptedCommit": null,
+      "acceptedCommit": "e35cafb6588b0c867c444229287788c9528208f1",
       "evidence": [
-        "Producer197focusedtests627assertions; fulltypecheck/format passed",
-        "Independent deployment review in progress; nohostedexecution"
+        "Independent deployment review accepted all repaired admission/override/cleanup boundaries: 349 tests / 1441 assertions",
+        "Exact staged source snapshot: 375 tests / 1613 assertions and strict typecheck passed; repository lint passed (765 files)",
+        "Final help-only version wording clarified and focused regression rechecked; no hosted execution claimed"
       ]
     },
     {
@@ -201,8 +202,9 @@
       "acceptanceDependsOn": [],
       "acceptedCommit": null,
       "evidence": [
-        "Independent source/security review found no blocker;14tests264assertions",
-        "Actual Nodeproductionbuild/routes and bundlefixtureexclusion passed; actualbrowser and installedHTTP runner in progress"
+        "Implementation checkpoint 714db5e: app/source security review, isolated frozen install, real Node production build, 14 tests / 264 assertions and audit passed",
+        "Independent actual installed HTTP/production/browser rerun passed all three rows; one browser effect and one committed unknown effect, zero duplicate/unauthorized effects; all process groups cleaned",
+        "Private evidence and intentional crash oracle repairs independently accepted; final committed artifact rerun pending"
       ]
     },
     {
@@ -220,7 +222,8 @@
       "evidence": [
         "Independent actual installed normalworker passed2authorizedeffects0duplicates0unauthorized",
         "Two harness findings repaired; mutatedanonymous-to-recognized runtime and stale-poll controls correctlyfail with cleanprocesscleanup",
-        "Final committedartifact rerun remains pending"
+        "Final committedartifact rerun remains pending",
+        "Reviewed installed Telegram harness checkpoint committed at 214bef2; final settled artifact rerun pending"
       ]
     },
     {
@@ -243,16 +246,20 @@
       ],
       "acceptedCommit": null,
       "evidence": [
-        "Five preparation mechanics suites: 31 tests /146 assertions; independent m5_storage_freeze accepted mechanics only",
-        "Exact-artifact dependency materializer exercised by actual installed Telegram runner; independent integrated review pending",
-        "Actual browser/container/hosted acceptance not claimed"
+        "Reviewed foundation checkpoint a352e38; source review and actual protocol controls do not replace final artifact proof",
+        "Independent repaired application/browser, artifact-source and aggregate oracles accepted; all packed source bytes now compared with committed files or explicitly identified console build output",
+        "Actual provisional Docker run passed 23 checks, observed 4 effects, zero duplicate/unauthorized effects and complete cleanup",
+        "Complete logs, tested image identity and diagnostic redaction independently accepted: 24 tests / 124 assertions",
+        "Recovery mount repair d82af27 independently accepted; final default ./data paths require fresh packed run",
+        "Clean committed all-stage and hosted acceptance remain open",
+        "Reviewed aggregate harness committed at 69ca967; root 69 tests / 433 assertions, strict typecheck and lint passed"
       ]
     },
     {
       "id": "M5-08",
       "title": "Operator and developer teaching",
       "specialist": "Documentation engineer",
-      "status": "blocked",
+      "status": "accepted",
       "dependsOn": [
         "M5-01",
         "M5-02",
@@ -261,14 +268,14 @@
         "M5-05",
         "M5-06"
       ],
-      "blockedBy": [
-        "M5-03",
-        "M5-05",
-        "M5-06"
-      ],
+      "blockedBy": [],
       "acceptanceDependsOn": [],
-      "acceptedCommit": null,
-      "evidence": []
+      "acceptedCommit": "9c41541b7d7708f8eabec29ab3548e187bddaf52",
+      "evidence": [
+        "Independent source/doc parity review accepted all 11 files; no unsupported final or hosted certification claim",
+        "134 relative links/anchors and five actual CLI help surfaces verified; Markdown structure and diff checks passed",
+        "Root clarified that bundled built-ins follow auggy, while separate capability/provider packages follow their own manifest and lockfile selection"
+      ]
     },
     {
       "id": "M5-09",
@@ -286,11 +293,9 @@
         "M5-08"
       ],
       "blockedBy": [
-        "M5-03",
         "M5-05",
         "M5-06",
-        "M5-07",
-        "M5-08"
+        "M5-07"
       ],
       "acceptanceDependsOn": [],
       "acceptedCommit": null,
@@ -308,7 +313,6 @@
       ],
       "blockedBy": [
         "M5-07",
-        "M5-08",
         "M5-09"
       ],
       "acceptanceDependsOn": [],
@@ -317,17 +321,13 @@
     }
   ],
   "activeOwnership": {
-    "root": "Shared CLI/public auth/app manifest/lock/materializers; top acceptance suite, CI, docs/evidence/ledger and commits",
-    "m5_deployment_review": "Independent read-only M5-03 deployment/shared CLI review",
-    "m5_integration_review": "Independent M5-05/06/materializers review complete; both Telegram harness findings independently verified fixed",
-    "m5_app_acceptance": "M5 actual standalone HTTP and Next/browser runner plus application fixture driver and tests",
-    "m5_container_acceptance": "M5 Docker utility/status helpers and actual container storage/recovery suite; root releases existing helpers after checkpoint"
+    "root": "Final committed artifacts, CI, independent gate orchestration, evidence/ledger and PR handoff"
   },
   "notes": [
     "Each company owns a separate deployment; no managed platform or shared-company tenancy.",
     "Channels are optional; Next.js and HTTP are not runtime requirements.",
     "Only root changes gate/task acceptance; producers cannot accept themselves.",
-    "G0/G1 and M5-01/02/04 accepted. M5-03/05/06 in progress. M5-07 helpers independently reviewed; actual installed/browser/container/hosted acceptance remains open."
+    "G0/G1 and M5-00/01/02/03/04/08 accepted. M5-05/06 remain in review; M5-07 actual final committed artifact and hosted gates remain open."
   ],
   "preparation": {
     "status": "accepted",
@@ -373,7 +373,8 @@
     "imageIndex": "sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b47bdbf2152d2196383c0",
     "defaultContainerUid": 0,
     "defaultContainerGid": 0,
-    "localDocker": "unavailable: configured socket absent",
-    "acceptedCommit": "e0ecbf767a8c4c26a022f8a59d59c257d7a217a2"
+    "localDocker": "available: existing Docker Desktop started for authorized local checks; server 29.1.3, Linux ARM64 VM",
+    "acceptedCommit": "e0ecbf767a8c4c26a022f8a59d59c257d7a217a2",
+    "initialLocalDocker": "unavailable: configured socket absent"
   }
 }
