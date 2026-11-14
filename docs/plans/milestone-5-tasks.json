@@ -97,13 +97,16 @@
       "id": "M5-00",
       "title": "Freeze accepted main and contracts",
       "specialist": "CTO / architect",
-      "status": "ready",
+      "status": "review",
       "dependsOn": [],
       "blockedBy": [],
       "acceptanceDependsOn": [],
       "acceptedCommit": null,
       "evidence": [
-        "G0 accepted on c39b746; contract/interface/ownership freeze still pending"
+        "G0 accepted on c39b746; contract/interface/ownership freeze still pending",
+        "Actual C1-C4 modules and checked-in compile fixture pass strict typecheck",
+        "Lint passes713files; independent m5_freeze_review accepted; verified image digest/User0:0",
+        "Freeze commit recording before producer release"
       ]
     },
     {
@@ -304,7 +307,10 @@
     }
   ],
   "activeOwnership": {
-    "root": "Accepted entry baseline; M5-00 interface compilation and ownership freeze next; no producer acceptance yet"
+    "root": "Shared public/config/bootstrap/restore/manifests/harness and ledger; C3/C4 freeze; combined compilation and acceptance",
+    "m5_storage_freeze": "src/runtime-data-contracts.ts,src/auth/external-auth-replay-contracts.ts,storage-freeze.md only;types/constants",
+    "m5_deployment_freeze": "src/cli/deploy/contracts.ts,deployment-freeze.md only;types/constants",
+    "m5_image_baseline": "image-baseline.md only;read-only exact registry image inspection"
   },
   "notes": [
     "Each company owns a separate deployment; no managed platform or shared-company tenancy.",
@@ -319,9 +325,9 @@
     "independentReview": "m5_contract_review: preparation recheck passed; R1/R2 resolved; no product acceptance",
     "planSHA256": "b2731cd1bd15cd79a64569e8743114b416088ac8fe713d4b0f1d9637f4fdd230",
     "contractSHA256": {
-      "C1": "5e28bb55c69387c42e07154d82e9919553387a5c97c919406b66887081b61312",
-      "C2": "a88efe4f36e626d5953a31da7844480cc97dd3a34afe6478046512b702b074e2",
-      "C3_C4": "223c36617d7722de2fecb9e328935eaa5802f1494e463709006e50ecb072cf80"
+      "C1": "8c44ce696c8192c742f20cffbcdf046b10e81117aa6b34f93af3766b2005af10",
+      "C2": "3e06671b3d87d5e98a319e3eed97a6438573513af1d0c1fba67ab581e12fce27",
+      "C3_C4": "6d82507234e3fca33402a49651d5708d599dbd00e0b09e892998c6186c774e70"
     },
     "dispositions": [
       {
@@ -340,5 +346,28 @@
       "base-image UID/GID and initial mount policy verification",
       "managed SQLite identity uniqueness"
     ]
+  },
+  "freeze": {
+    "status": "reviewed",
+    "independentReview": "m5_freeze_review: accepted, no blockers",
+    "documents": [
+      "milestone-5-contracts/storage-freeze.md",
+      "milestone-5-contracts/deployment-freeze.md",
+      "milestone-5-contracts/integration-freeze.md",
+      "milestone-5-contracts/image-baseline.md"
+    ],
+    "contractModules": [
+      "src/runtime-data-contracts.ts",
+      "src/auth/external-auth-replay-contracts.ts",
+      "src/cli/deploy/contracts.ts",
+      "examples/company-app/src/server/contracts.ts",
+      "scripts/release-smoke/integration-contracts.ts"
+    ],
+    "compileFixture": "tests/fixtures/milestone-5-contracts.ts",
+    "imageIndex": "sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b47bdbf2152d2196383c0",
+    "defaultContainerUid": 0,
+    "defaultContainerGid": 0,
+    "localDocker": "unavailable: configured socket absent",
+    "acceptedCommit": null
   }
 }

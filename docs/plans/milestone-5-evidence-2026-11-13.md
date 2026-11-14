@@ -162,3 +162,44 @@ ancestry/tree identity, main PostgreSQL evidence, contract hashes and truthful
 task states. It confirmed no premature product acceptance or remaining entry
 blocker. Main's source tree and the preparation branch's added documents are
 explicitly distinguished.
+
+## M5-00 compiled contract freeze
+
+On 2026-11-14, main still resolved to accepted `c39b746`; frozen dependency install
+completed without a lock change. Storage, deployment and image specialists worked
+in exclusive files. Actual producer interfaces now live in
+`src/runtime-data-contracts.ts`, `src/auth/external-auth-replay-contracts.ts`,
+`src/cli/deploy/contracts.ts`, `examples/company-app/src/server/contracts.ts`, and
+`scripts/release-smoke/integration-contracts.ts`. These additions contain types
+and constants, not product behavior.
+
+The checked-in compile fixture imports the actual C1–C4 modules, including the
+reference/harness files outside ordinary root includes. It checks existing copier,
+health and caller-owned replay compatibility; rejects forged storage capabilities,
+async descriptor callbacks and worker HTTP claims; and checks new host/store/app
+call shapes. Strict `bun run typecheck` passed. `bun run lint` passed 713 files
+after a concurrent final-format check was rerun; only the inherited Biome schema
+informational message remains. Whitespace validation passed.
+
+The storage freeze requires a retained pinned-root descriptor, a live private
+capability registry, complete configured replay-path inventory before first-use
+guard creation, exact reserved pending-file recovery, and separate ordinary versus
+copying-fence recovery rules. EARP identity `0x45415250` is unused in accepted
+source. The deployment freeze binds bounded manifest preflight to the existing
+host and distinguishes skipped/unavailable platform or HTTP checks from success.
+The real Railway subprocess wrapper must support termination/reaping for deadlines.
+
+The image specialist verified both registry image configurations and all 12 layers
+without execution or extraction. Both architectures default to container UID/GID
+0:0; the generator will preserve that behavior using the verified multiarch index
+digest `sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b47bdbf2152d2196383c0`.
+See [image evidence](./milestone-5-contracts/image-baseline.md) for manifest,
+configuration and layer identities and bounded methods. Local Docker's configured
+socket is absent; A12 requires actual Linux CI execution. Railway mount ownership
+and arbitrary-UID support are not established by image inspection.
+
+Independent `m5_freeze_review` accepted the concrete freeze after source/API,
+capability/recovery, fixture reachability, bounds, image evidence and compile-fixture
+review, with no blocking findings. Root will record the immutable freeze commit
+before releasing dependent producers. Product, installed/container, hosted and
+final certification remain unaccepted.

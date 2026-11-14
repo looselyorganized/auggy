@@ -1,8 +1,8 @@
 # C1 draft — portable runtime storage and assertion replay
 
-Status: preparation only; **not frozen or accepted**. G0 is accepted; the M5-00
-interface/ownership freeze remains pending in root's execution ledger.
-This document authorizes no producer edits. Source observations below refer to
+Status: interface freeze reviewed and compiled under M5-00. The concrete choices
+in [storage-freeze.md](./storage-freeze.md) resolve the proposed alternatives below.
+Root's ledger releases producer work; this is not product acceptance. Source observations refer to
 reviewed M4 commit `32d7265d0659d5911755e802d18a9f9077b80196`; the preparation
 worktree started from main `911fe1682c76208c1d99d4dc6841bfcaa608dd8d`.
 The worktree is now rebased onto merged M4 main

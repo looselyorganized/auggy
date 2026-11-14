@@ -1,9 +1,9 @@
 # M5 C2 — portable deployment contract
 
-Status: **draft for root and independent review; not an accepted producer
-contract**. Preparation only. G0 is accepted; M5-00 contract freeze remains
-pending. Do not interpret this document as approval for hosted
-resource creation or release producers before those gates.
+Status: interface freeze reviewed and compiled under M5-00. The concrete choices
+in [deployment-freeze.md](./deployment-freeze.md) resolve the proposed alternatives
+below. Root's ledger releases producers; this is not product acceptance or approval
+for hosted resource creation.
 
 Source inspected: M4 `32d7265d0659d5911755e802d18a9f9077b80196`.
 Draft worktree base: main `911fe1682c76208c1d99d4dc6841bfcaa608dd8d`.

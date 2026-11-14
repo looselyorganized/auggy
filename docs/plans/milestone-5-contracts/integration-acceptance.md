@@ -1,8 +1,9 @@
 # M5 contract C3/C4 — application integration and execution evidence
 
-Status: contract candidate, prepared before G0. This document does not authorize
-producer implementation, hosted resources, credentials, or acceptance of its own
-author. Root freezes the contract after independent review.
+Status: interface freeze reviewed and compiled under M5-00, with concrete source
+paths and evidence types in [integration-freeze.md](./integration-freeze.md).
+Root's ledger releases producers. This does not authorize hosted resources or
+credentials, and does not certify product behavior.
 
 Planning evidence is reviewed M4 commit
 `32d7265d0659d5911755e802d18a9f9077b80196` in the `inspectable-authoring`
