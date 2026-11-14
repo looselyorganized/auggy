@@ -314,6 +314,24 @@ describe("runDeploy", () => {
     expect(existsSync(join(agentDir, ".auggy-cloud.json"))).toBe(false);
   }
 
+  function useExternalRuntimeArchive(): void {
+    const tarballName = "auggy-compatibility.tgz";
+    writeFileSync(join(dirname(agentDir), tarballName), "packed runtime");
+    const packagePath = join(agentDir, "package.json");
+    const manifest = JSON.parse(readFileSync(packagePath, "utf8"));
+    manifest.dependencies.auggy = `file:../${tarballName}`;
+    writeFileSync(packagePath, `${JSON.stringify(manifest)}\n`);
+  }
+
+  function addMutableMemory(contents: string): void {
+    writeAugmentMetadata(agentDir, "learned", {
+      type: "fileMemory",
+      config: { source: "./learned-behaviors.md", mutable: true },
+    });
+    appendAugmentId(agentDir, "learned");
+    writeFileSync(join(agentDir, "learned-behaviors.md"), contents);
+  }
+
   test.each(["RAILWAY_PROJECT_ID", "RAILWAY_SERVICE_ID", "RAILWAY_ENVIRONMENT_ID"])(
     "rejects ambient %s before any Railway call, including empty selectors",
     async (key) => {
@@ -2696,6 +2714,148 @@ describe("runDeploy", () => {
       stagedDockerfile!.indexOf(`COPY ["${tarballName}","/app/${tarballName}"]`),
     );
     expect(existsSync(stagingDir!)).toBe(false);
+  });
+
+  test("external runtime archive staging excludes raw extensionless stores and preserves an empty mutable seed", async () => {
+    useExternalRuntimeArchive();
+    writeAugmentMetadata(agentDir, "webTransport", {
+      type: "webTransport",
+      config: {
+        port: 8080,
+        auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
+        externalAuth: {
+          secret: "fixture-only-secret",
+          maxTtlSeconds: 60,
+          replayProtection: { enabled: true, dbPath: "./private-auth-ledger" },
+        },
+        idempotency: { dbPath: "./private-run-ledger" },
+      },
+    });
+    addMutableMemory("");
+    for (const [name, metadata] of Object.entries({
+      telegram: {
+        type: "telegramTransport",
+        config: {
+          botToken: "fixture-only-token",
+          inbound: { mode: "polling" },
+          auth: { creatorUserIds: [42] },
+          replay: { dbPath: "./private-telegram-ledger" },
+        },
+      },
+      notifications: {
+        type: "notify",
+        config: {
+          dbPath: "./private-notify-ledger",
+          destinations: [{ name: "audit", transport: "log-to-file", path: "./private-audit-log" }],
+        },
+      },
+      files: {
+        type: "filesystem",
+        config: {
+          mounts: [{ name: "mutable", path: "./private-files", writable: true }],
+        },
+      },
+    })) {
+      writeAugmentMetadata(agentDir, name, metadata);
+      appendAugmentId(agentDir, name);
+    }
+    appendJobsSettings(agentDir, "./private-jobs-ledger");
+    const privatePaths = [
+      "private-auth-ledger",
+      "private-run-ledger",
+      "private-jobs-ledger",
+      "private-telegram-ledger",
+      "private-notify-ledger",
+    ].flatMap((path) => ["", "-wal", "-shm", "-journal"].map((suffix) => path + suffix));
+    privatePaths.push("private-audit-log", "private-files/customer.txt");
+    mkdirSync(join(agentDir, "private-files"));
+    for (const path of privatePaths) writeFileSync(join(agentDir, path), "PRIVATE_STATE_SENTINEL");
+    const originalConfig = readFileSync(join(agentDir, "agent.yaml"), "utf8");
+    const originalPackage = readFileSync(join(agentDir, "package.json"), "utf8");
+    const { cli, calls } = mockRailwayCli();
+    let stagingDir: string | undefined;
+    cli.linkProject = async ({ cwd }) => {
+      stagingDir = cwd;
+      for (const path of privatePaths) expect(existsSync(join(cwd, path))).toBe(false);
+      expect(readFileSync(join(cwd, "learned-behaviors.md"), "utf8")).toBe("");
+      expect(existsSync(join(cwd, "auggy-compatibility.tgz"))).toBe(true);
+      throw new Error("reviewed compatibility context without remote mutation");
+    };
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      "reviewed compatibility context without remote mutation",
+    );
+    expect(stagingDir).toBeDefined();
+    expect(existsSync(stagingDir!)).toBe(false);
+    expectNoHostedMutation(calls);
+    for (const path of privatePaths)
+      expect(readFileSync(join(agentDir, path), "utf8")).toBe("PRIVATE_STATE_SENTINEL");
+    expect(readFileSync(join(agentDir, "agent.yaml"), "utf8")).toBe(originalConfig);
+    expect(readFileSync(join(agentDir, "package.json"), "utf8")).toBe(originalPackage);
+  });
+
+  test("external runtime archive deployment refuses nonempty mutable memory before Railway access", async () => {
+    useExternalRuntimeArchive();
+    addMutableMemory("PRIVATE_LEARNED_SENTINEL");
+    const { cli, calls } = mockRailwayCli();
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      "Nonempty mutable fileMemory source",
+    );
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.checkAuth).toBe(0);
+    expect(calls.linkProject).toHaveLength(0);
+    expectNoHostedMutation(calls);
+    expect(readFileSync(join(agentDir, "learned-behaviors.md"), "utf8")).toBe(
+      "PRIVATE_LEARNED_SENTINEL",
+    );
+  });
+
+  test("external runtime archive deployment rechecks mutable seed bytes before remote mutation", async () => {
+    useExternalRuntimeArchive();
+    addMutableMemory("");
+    const { cli, calls } = mockRailwayCli();
+    cli.checkPresence = async () => {
+      calls.checkPresence++;
+      writeFileSync(join(agentDir, "learned-behaviors.md"), "PRIVATE_LATE_LEARNED_SENTINEL");
+      return true;
+    };
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      "Mutable seed changed before staging",
+    );
+    expect(calls.linkProject).toHaveLength(0);
+    expectNoHostedMutation(calls);
+    expect(readFileSync(join(agentDir, "learned-behaviors.md"), "utf8")).toBe(
+      "PRIVATE_LATE_LEARNED_SENTINEL",
+    );
+  });
+
+  test("external runtime archive deployment rejects changed state declarations before remote mutation", async () => {
+    useExternalRuntimeArchive();
+    const { cli, calls } = mockRailwayCli();
+    cli.checkPresence = async () => {
+      calls.checkPresence++;
+      writeAugmentMetadata(agentDir, "webTransport", {
+        type: "webTransport",
+        config: {
+          port: 8080,
+          auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
+          idempotency: { dbPath: "./late-private-ledger" },
+        },
+      });
+      writeFileSync(join(agentDir, "late-private-ledger"), "PRIVATE_LATE_STATE_SENTINEL");
+      return true;
+    };
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      "Selected input changed before staging",
+    );
+    expect(calls.linkProject).toHaveLength(0);
+    expectNoHostedMutation(calls);
+    expect(readFileSync(join(agentDir, "late-private-ledger"), "utf8")).toBe(
+      "PRIVATE_LATE_STATE_SENTINEL",
+    );
   });
 
   test("removes the staging directory when Railway setup fails", async () => {

@@ -125,13 +125,14 @@ const STATE_FIELDS = {
   link: ["dbPath"],
 } as const satisfies Record<BuiltinAugmentType, readonly string[]>;
 
-interface SourceInventory {
+export interface DeploymentSourceInventory {
   excluded: string[];
   files: Set<string>;
   directories: Set<string>;
   emptySeeds: Set<string>;
 }
-function sourceInventory(document: AuthoringDocument): SourceInventory {
+/** Shared source/state disposition for every deployment artifact, including legacy installs. */
+export function inspectDeploymentSources(document: AuthoringDocument): DeploymentSourceInventory {
   const root = document.projectDir;
   const excluded = new Set<string>();
   const files = new Set<string>();
@@ -229,6 +230,33 @@ function sourceInventory(document: AuthoringDocument): SourceInventory {
     }
   }
   return { excluded: [...excluded], files, directories, emptySeeds };
+}
+
+/** Recheck the bytes actually staged against the raw declaration and empty-seed policy. */
+export function validateStagedDeploymentSources(
+  document: AuthoringDocument,
+  inventory: DeploymentSourceInventory,
+  staged: StagedBundle,
+): void {
+  const byPath = new Map(staged.files.map((file) => [file.path, file]));
+  for (const path of inventory.emptySeeds)
+    if (byPath.get(path)?.bytes !== 0)
+      fail("Mutable seed changed before staging; only an ordinary empty seed can be exported.");
+  for (const path of inventory.files)
+    if (!byPath.has(path))
+      fail(
+        "A required source file is excluded as secret/state or unsupported; separate source from runtime state before exporting.",
+      );
+  for (const path of inventory.directories)
+    if (!staged.directories.includes(path))
+      fail("A required source directory is excluded as runtime state.");
+  for (const input of document.inputs)
+    if (
+      input.exists &&
+      byPath.get(relative(document.projectDir, input.path).split(sep).join("/"))?.sha256 !==
+        input.sha256
+    )
+      fail("Selected input changed before staging; retry with stable source.");
 }
 
 function snapshot(path: string, limit: number): ExistingFileSnapshot {
@@ -341,7 +369,7 @@ export async function exportDocker(options: ExportDockerOptions): Promise<Export
       fail("Export requires a literal safe agent name.");
     const profile = resolveDeploymentProfile(document, options);
     const location = outputLocation(options.out, cwd, root);
-    const inventory = sourceInventory(document);
+    const inventory = inspectDeploymentSources(document);
     const configPath = requiredPath(root, document.configPath);
     const manifestPath = requiredPath(root, DEPLOYMENT_FILES.packageManifest);
     const lockPath = requiredPath(root, DEPLOYMENT_FILES.lockfile);
@@ -388,19 +416,14 @@ export async function exportDocker(options: ExportDockerOptions): Promise<Export
       )
         fail("Source collides with a reserved generated filename (including case aliases).");
     }
+    validateStagedDeploymentSources(document, inventory, staged);
     const byPath = new Map(staged.files.map((file) => [file.path, file]));
-    for (const path of inventory.emptySeeds)
-      if (byPath.get(path)?.bytes !== 0)
-        fail("Mutable seed changed before staging; only an ordinary empty seed can be exported.");
-    for (const path of [...inventory.files, manifestPath, lockPath])
+    for (const path of [manifestPath, lockPath])
       if (!byPath.has(path))
         fail(
           "A required source file is excluded as secret/state or unsupported; separate source from runtime state before exporting.",
         );
-    for (const path of inventory.directories)
-      if (!staged.directories.includes(path))
-        fail("A required source directory is excluded as runtime state.");
-    for (const input of [...document.inputs, packageSnapshot, lockSnapshot]) {
+    for (const input of [packageSnapshot, lockSnapshot]) {
       if (
         input.exists &&
         byPath.get(relative(root, input.path).split(sep).join("/"))?.sha256 !== input.sha256

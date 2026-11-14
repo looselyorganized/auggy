@@ -37,7 +37,7 @@ import {
 import { parseConfig } from "../config-parser";
 import { formatDoctorChecks, hasDoctorFailures, runDoctor } from "./doctor";
 import { readAgentName, resolveConfigPath } from "../resolve-config";
-import { stageBundle } from "../deploy/bundle";
+import { stageBundleWithManifest } from "../deploy/bundle";
 import {
   generateRailwayCompatibilityDockerfile,
   generateRailwayEntrypoint,
@@ -45,7 +45,11 @@ import {
 import { readAuthoringDocument } from "../authoring/document";
 import { decodeSnapshotText, readFileSnapshot } from "../authoring/document-io";
 import { assertImmutableAgentId } from "../agent-isolation";
-import { exportDocker } from "../deploy/portable-export";
+import {
+  exportDocker,
+  inspectDeploymentSources,
+  validateStagedDeploymentSources,
+} from "../deploy/portable-export";
 import { readDeploymentManifest, validateDeploymentManifest } from "../deploy/manifest";
 import { reconcileDeploymentProfile, resolveDeploymentProfile } from "../deploy/profile";
 import {
@@ -258,29 +262,6 @@ function readRegularFileNoFollow(path: string, maxBytes: number): Uint8Array | n
   }
 }
 
-function configuredDatabaseArtifacts(config: ReturnType<typeof parseConfig>): string[] {
-  const artifacts = new Set<string>();
-  const addDatabase = (dbPath: string) => {
-    for (const suffix of ["", "-wal", "-shm", "-journal"]) {
-      artifacts.add(`${dbPath}${suffix}`);
-    }
-  };
-  for (const augment of config.augments) {
-    for (const field of ["dbPath", "layeredMemoryDbPath"] as const) {
-      const dbPath = augment.options?.[field];
-      if (typeof dbPath !== "string" || dbPath.trim() === "") continue;
-      addDatabase(dbPath);
-    }
-    if (augment.type === "webTransport") {
-      const consoleDbPath = asRecord(augment.options?.consoleChat)?.dbPath;
-      if (typeof consoleDbPath === "string" && consoleDbPath.trim() !== "") {
-        addDatabase(consoleDbPath);
-      }
-    }
-  }
-  return [...artifacts];
-}
-
 function resolveFileAuggyTarball(spec: string, agentDir: string): string | null {
   if (!spec.startsWith("file:")) return null;
   const rawPath = spec.slice("file:".length);
@@ -379,6 +360,10 @@ export async function runDeploy(
   }
   const config = assertRailwayDeploySafeConfig(configPath);
   reconcileDeploymentProfile(profile, config.augments);
+  // An unfrozen dependency install does not weaken private-state exclusions.
+  // Inspect raw declarations before Railway access; effective config can rebase
+  // durable paths away from their original local files.
+  const sourceInventory = inspectDeploymentSources(document);
   const savedCloud = readBoundCloudRecord(agentDir, config.id);
   await acknowledgeBudgetsDeployPosture(config, opts);
   opts.logger.info(`Deploy preflight passed.`);
@@ -505,11 +490,14 @@ export async function runDeploy(
         archiveRelative.startsWith(`..${sep}`) ||
         isAbsolute(archiveRelative));
     if (externalArchive) {
-      stagingDir = stageBundle({
+      const staged = stageBundleWithManifest({
         agentDir,
         agentName: name,
-        excludedPaths: configuredDatabaseArtifacts(config),
+        excludedPaths: sourceInventory.excluded,
       });
+      stagingDir = staged.directory;
+      validateStagedDeploymentSources(document, sourceInventory, staged);
+      staged.verifySource();
       const vendoredRuntime = maybeVendorLocalAuggyTarball({ agentDir, stagingDir, cwd: opts.cwd });
       if (!vendoredRuntime)
         throw new Error("The explicitly selected external Auggy archive is unavailable.");
