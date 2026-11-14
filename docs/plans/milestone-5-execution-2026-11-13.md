@@ -5,8 +5,10 @@ M4 PR #229 was separately authorized and merged at
 `c39b746b4b743e5c29dab61a677026c10626d8b8`. G0 is accepted: resulting-main CI,
 PostgreSQL 17 and full CodeQL findings passed. M5-00 is accepted at
 `e0ecbf767a8c4c26a022f8a59d59c257d7a217a2` after strict compilation, lint and independent
-review. M5-01 storage implementation and M5-07 harness preparation are released;
-other producers follow their recorded dependencies.
+review. M5-01 storage is accepted at `d7d80695e00cf4e8bbcde8fbebb5721c47c6eefe`.
+M5-02 packaging and M5-04 managed replay implementation are under independent
+review; M5-07 harness preparation continues. Other producers follow their recorded
+dependencies.
 
 ## Outcome and preserved boundaries
 

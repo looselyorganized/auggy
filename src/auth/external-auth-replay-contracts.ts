@@ -7,6 +7,8 @@ export const EXTERNAL_AUTH_REPLAY_INVENTORY_SCHEMA = "EARP/v1";
 export const EXTERNAL_AUTH_REPLAY_GUARD_VERSION = 1;
 export const EXTERNAL_AUTH_REPLAY_GUARD_FILE = ".auggy-auth-replay-guard.json";
 export const EXTERNAL_AUTH_REPLAY_GUARD_PENDING_FILE = ".auggy-auth-replay-guard.pending";
+/** Existing inventory v1 prerequisite for local, non-restorable control state. */
+export const EXTERNAL_AUTH_REPLAY_GUARD_PREREQUISITE = "external-auth-replay-guard";
 export const EXTERNAL_AUTH_REPLAY_MAX_GUARD_BYTES = 4 * 1024;
 export const EXTERNAL_AUTH_REPLAY_MAX_UNEXPIRED_ENTRIES = 100_000;
 export const EXTERNAL_AUTH_REPLAY_MAX_MANAGED_DATABASES = 10_000;

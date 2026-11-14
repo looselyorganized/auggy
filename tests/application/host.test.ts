@@ -112,6 +112,80 @@ function fixture(augments: Augment[] = []) {
   };
 }
 
+test("all managed replay paths are admitted before any provider or transport factory", async () => {
+  const f = fixture();
+  const data = join(f.root, "durable-data");
+  mkdirSync(data, { mode: 0o700 });
+  const previous = process.env.AUGGY_DATA_DIR;
+  delete process.env.AUGGY_DATA_DIR;
+  const web = (name: string, port: number, dbPath: string) => ({
+    name,
+    type: "webTransport",
+    options: {
+      port,
+      auth: { type: "bearer", token: "test-bearer" },
+      adminRoute: false,
+      externalAuth: {
+        secret: "fixture-app-secret",
+        maxTtlSeconds: 60,
+        replayProtection: { enabled: true, dbPath },
+      },
+    },
+  });
+  let calls = 0;
+  const factories = {
+    resolveEngine: async () => {
+      calls++;
+      return createMockModel();
+    },
+    resolveAugments: async () => {
+      calls++;
+      return [];
+    },
+  };
+  try {
+    f.configure({ augments: [web("first", 8087, "./data/replay.db")] });
+    const absent = f.host({ factories });
+    await expect(absent.prepare()).rejects.toThrow(/admitted AUGGY_DATA_DIR/);
+    await absent.stop();
+    process.env.AUGGY_DATA_DIR = data;
+    f.configure({
+      augments: [web("first", 8087, "./data/replay.db"), web("second", 8088, "../../outside.db")],
+    });
+    const outside = f.host({ factories });
+    await expect(outside.prepare()).rejects.toThrow(/within/);
+    await outside.stop();
+    expect(existsSync(join(data, "replay.db"))).toBe(false);
+    f.configure({
+      augments: [web("first", 8087, "./data/replay.db"), web("second", 8088, "./data/replay.db")],
+    });
+    const duplicate = f.host({ factories });
+    await expect(duplicate.prepare()).rejects.toThrow(/distinct augment owners/);
+    await duplicate.stop();
+    for (const dbPath of [
+      ":memory:",
+      "file:replay.db",
+      "sqlite:replay.db",
+      ".auggy-auth-replay-guard.json/child.db",
+      ".AUGGY-AUTH-REPLAY-GUARD.PENDING/child.db",
+      join(data, ".auggy-state-identity.json", "child.db"),
+    ]) {
+      f.configure({ augments: [web("first", 8087, dbPath)] });
+      const invalid = f.host({ factories });
+      await expect(invalid.prepare()).rejects.toThrow(
+        /ordinary file|reserved runtime control path/,
+      );
+      await invalid.stop();
+    }
+    expect(existsSync(join(data, ".auggy-auth-replay-guard.json"))).toBe(false);
+    expect(existsSync(join(data, ".AUGGY-AUTH-REPLAY-GUARD.PENDING"))).toBe(false);
+    expect(calls).toBe(0);
+  } finally {
+    if (previous === undefined) delete process.env.AUGGY_DATA_DIR;
+    else process.env.AUGGY_DATA_DIR = previous;
+  }
+});
+
 for (const launch of [
   { mode: "direct", legacy: false },
   { mode: "foreground", legacy: false },

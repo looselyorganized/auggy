@@ -14,7 +14,10 @@ import type {
 import { parseConfig } from "../cli/config-parser";
 import type { ParsedConfig } from "../cli/types";
 import { resolveEngine } from "../cli/engine-resolver";
-import { resolveAugments } from "../cli/augment-resolver";
+import {
+  resolveAugments,
+  resolveManagedExternalAuthReplayConfiguration,
+} from "../cli/augment-resolver";
 import {
   createDurableJobsRuntimeIfEnabled,
   type ConfiguredDurableJobsRuntime,
@@ -213,6 +216,11 @@ export function createApplicationHost(options: ApplicationHostOptions): OwnedApp
           ownership = acquired;
         });
         assertNotStopping();
+        const replayConfiguration = resolveManagedExternalAuthReplayConfiguration(
+          config.augments,
+          agentDir,
+          ownership.runtimeDataAdmission,
+        );
         const model = await (options.factories?.resolveEngine ?? resolveEngine)(
           config.engine,
           agentDir,
@@ -221,7 +229,7 @@ export function createApplicationHost(options: ApplicationHostOptions): OwnedApp
         let rollbackReported = false;
         try {
           augments = await (options.factories?.resolveAugments ?? resolveAugments)(
-            config.augments,
+            replayConfiguration.augments,
             agentDir,
             {
               creator: config.creator,
@@ -239,6 +247,8 @@ export function createApplicationHost(options: ApplicationHostOptions): OwnedApp
                 const web = createManagedWebTransport(webOptions, {
                   name,
                   canServe: () => serving,
+                  runtimeDataAdmission: ownership?.runtimeDataAdmission,
+                  managedExternalAuthDbPaths: replayConfiguration.dbPaths,
                 });
                 bindings.push({
                   web,

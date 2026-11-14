@@ -72,7 +72,13 @@ import {
   scopedAgentNamespace,
 } from "./agent-isolation";
 import { compareOwnedStatePaths, resolveOwnedStatePath } from "./owned-state-path";
-import type { RuntimeDataPlatform } from "../runtime-data-contracts";
+import type { RuntimeDataAdmission, RuntimeDataPlatform } from "../runtime-data-contracts";
+import { withRuntimeDataAdmission } from "../runtime-data-admission";
+import { EXTERNAL_AUTH_REPLAY_MAX_MANAGED_DATABASES } from "../auth/external-auth-replay-contracts";
+import {
+  assertManagedReplayPathWithinRoot,
+  isManagedReplayFilePath,
+} from "../auth/external-auth-replay-path";
 import { RAILWAY_INGRESS_PROXY_NETWORKS } from "../transports/console-request-security";
 
 // ---------------------------------------------------------------------------
@@ -82,6 +88,61 @@ import { RAILWAY_INGRESS_PROXY_NETWORKS } from "../transports/console-request-se
 function resolvePath(path: string, agentDir: string): string {
   if (path.startsWith("/")) return path;
   return resolve(agentDir, path);
+}
+
+/** Resolve the complete managed replay inventory before constructing any factory. */
+export function resolveManagedExternalAuthReplayConfiguration(
+  configs: readonly AugmentConfig[],
+  agentDir: string,
+  admission: RuntimeDataAdmission | undefined,
+): { augments: AugmentConfig[]; dbPaths: readonly string[] } {
+  const managed = configs.filter(
+    (config) =>
+      config.type === "webTransport" &&
+      (config.options?.externalAuth as WebTransportOptions["externalAuth"])?.replayProtection
+        ?.dbPath !== undefined,
+  );
+  if (managed.length === 0) return { augments: [...configs], dbPaths: [] };
+  if (!admission)
+    throw new Error(
+      "[web-transport] managed external auth replay requires an admitted AUGGY_DATA_DIR; prepare an owned 0700 data directory and set its absolute path",
+    );
+  if (managed.length > EXTERNAL_AUTH_REPLAY_MAX_MANAGED_DATABASES)
+    throw new Error("[web-transport] managed replay inventory exceeds its limit");
+  return withRuntimeDataAdmission(admission, () => {
+    const paths: string[] = [];
+    const augments = configs.map((config) => {
+      if (config.type !== "webTransport") return config;
+      const externalAuth = config.options?.externalAuth as WebTransportOptions["externalAuth"];
+      const replay = externalAuth?.replayProtection;
+      if (replay?.dbPath === undefined) return config;
+      if (!isManagedReplayFilePath(replay.dbPath))
+        throw new Error(
+          "[web-transport] managed replay dbPath must name an ordinary file, not a SQLite URI or in-memory database",
+        );
+      const dbPath = resolveSqlitePath(
+        replay.dbPath,
+        agentDir,
+        admission.runtimeDataRoot,
+        "externalAuth replayProtection.dbPath",
+        (candidate) => assertManagedReplayPathWithinRoot(candidate, admission.runtimeDataRoot),
+      );
+      if (paths.some((path) => compareOwnedStatePaths(path, dbPath) !== "distinct")) {
+        throw new Error(
+          "[web-transport] configured managed replay databases must have distinct augment owners and paths",
+        );
+      }
+      paths.push(dbPath);
+      return {
+        ...config,
+        options: {
+          ...config.options,
+          externalAuth: { ...externalAuth, replayProtection: { ...replay, dbPath } },
+        },
+      };
+    });
+    return { augments, dbPaths: Object.freeze(paths) };
+  });
 }
 
 /** Resolve an operator-controlled relative path without allowing an escape. */
@@ -106,6 +167,7 @@ function resolveSqlitePath(
   agentDir: string,
   runtimeDataRoot: string | undefined,
   label: string,
+  preflight?: (candidate: string) => void,
 ): string {
   if (!runtimeDataRoot) return resolvePath(path, agentDir);
   const configuredPath = resolvePath(path, agentDir);
@@ -122,6 +184,7 @@ function resolveSqlitePath(
   const dbPath = alreadyContained
     ? configuredPath
     : resolveContainedPath(path, runtimeDataRoot, label);
+  preflight?.(dbPath);
   return resolveOwnedStatePath(dbPath, agentDir, runtimeDataRoot, label, {
     createParents: true,
   });

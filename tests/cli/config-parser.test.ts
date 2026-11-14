@@ -869,7 +869,7 @@ describe("link agent card capabilities", () => {
 });
 
 describe("webTransport external auth replay validation", () => {
-  function configWithReplayProtection(replayProtection: unknown) {
+  function configWithReplayProtection(replayProtection: unknown, maxTtlSeconds?: unknown) {
     return minimalConfig({
       augments: [
         {
@@ -880,6 +880,7 @@ describe("webTransport external auth replay validation", () => {
             externalAuth: {
               secret: "app-secret",
               replayProtection,
+              ...(maxTtlSeconds === undefined ? {} : { maxTtlSeconds }),
             },
           },
         },
@@ -896,6 +897,13 @@ describe("webTransport external auth replay validation", () => {
       { enabled: 1 },
       { enabled: false, store: {} },
       { enabled: true },
+      { enabled: true, dbPath: "" },
+      { enabled: true, dbPath: null },
+      { enabled: false, dbPath: "./data/replay.db" },
+      { enabled: true, dbPath: "./data/replay.db", store: {} },
+      { enabled: true, dbPath: ":memory:" },
+      { enabled: true, dbPath: "file:replay.db" },
+      { enabled: true, dbPath: "SQLITE:replay.db" },
     ]) {
       const path = writeYaml("agent.yaml", configWithReplayProtection(replayProtection));
       expect(() => parseConfig(path)).toThrow(/externalAuth\.replayProtection/);
@@ -905,6 +913,19 @@ describe("webTransport external auth replay validation", () => {
   test("accepts an explicit disabled replay policy", () => {
     const path = writeYaml("agent.yaml", configWithReplayProtection({ enabled: false }));
     expect(parseConfig(path).augments[0]?.options?.externalAuth).toBeDefined();
+  });
+
+  test("managed YAML replay requires an explicit TTL and preserves its data path", () => {
+    const replay = { enabled: true, dbPath: "./data/external-auth-replay.db" };
+    for (const ttl of [undefined, 0, -1, 1.5, "60"]) {
+      const path = writeYaml("agent.yaml", configWithReplayProtection(replay, ttl));
+      expect(() => parseConfig(path)).toThrow(/maxTtlSeconds/);
+    }
+    const path = writeYaml("agent.yaml", configWithReplayProtection(replay, 60));
+    expect(parseConfig(path).augments[0]?.options?.externalAuth).toMatchObject({
+      maxTtlSeconds: 60,
+      replayProtection: replay,
+    });
   });
 
   test("rejects malformed external auth policy fields before runtime", () => {

@@ -241,3 +241,32 @@ errno; ordinary empty/bounded directory reads use libc.
 M5-07 preparation remains separate: its three evidence-validator tests are excluded
 from these M5-01 totals, and its in-progress lint findings do not claim acceptance.
 Actual installed/container/Railway evidence is still required.
+
+### M5-04 managed authentication replay and offline restore candidate
+
+The managed EARP/v1 store uses atomic audience/assertion-ID claims, a bounded
+unexpired-claim capacity, complete configured database inventory, and a shared
+durable guard. Guard clock sampling is serialized across handles. Restore epochs
+remain permanent after downstream reconciliation, and the current TTL determines
+the hold. YAML configuration requires an explicit data path and TTL; caller-owned
+programmatic replay stores retain their existing lifetime and interface.
+
+Host preflight resolves every managed replay path before factories. The transport
+checks availability before authenticated saved responses and after asynchronous
+waits, consumes fresh claims only after keyed operation classification, and never
+downgrades a managed authentication failure to anonymous access. Backup validates
+but excludes local guard state. Restore installs destination control state before
+payload copy; verified interrupted resumes repair only the exact pending leaf and
+preserve the original epoch. Empty and populated EARP databases pass actual bundle
+inspection using the existing bounded private SQLite snapshot path.
+
+Independent review found and resolved original SQLite URI/reserved-path handling,
+statement-preparation cleanup, invalid assertions causing durable writes before
+authentication, and untracked asynchronous cancellation of a denied private stream.
+The final independent pass accepted the candidate, with 121 tests /592 assertions.
+Root separately materialized the exact staged M5-04 snapshot, excluding concurrent
+packaging edits. That snapshot passed 531 tests /1994 assertions across ten suites,
+strict typecheck, and repository lint (722 files; inherited schema-version info
+only). Independent and root counts overlap and are not additive. Immutable commit
+capture precedes dependent release. Installed, browser, container and hosted
+certification remain open.

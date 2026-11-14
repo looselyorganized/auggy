@@ -17,11 +17,18 @@ import {
 } from "../runtime-state-bundle";
 import { buildRuntimeStateInventory, type RuntimeStateInventory } from "../runtime-state-inventory";
 import { selectRuntimeDataRoot } from "../runtime-volume";
+import { EXTERNAL_AUTH_REPLAY_GUARD_PREREQUISITE } from "../../auth/external-auth-replay-contracts";
 
 export interface RuntimeStateCommandOptions {
   config?: string;
   cwd?: string;
   root?: string;
+}
+
+function needsExternalRecoveryPoint(inventory: RuntimeStateInventory): boolean {
+  return inventory.externalPrerequisites.some(
+    (entry) => entry.id !== EXTERNAL_AUTH_REPLAY_GUARD_PREREQUISITE,
+  );
 }
 
 function requireRoot(options: RuntimeStateCommandOptions): string {
@@ -76,7 +83,7 @@ export function runRuntimeStateBackup(
   },
 ) {
   const { root, inventory } = runtimeStateContext(name, options, true);
-  if (inventory.externalPrerequisites.length > 0 && !options.runtimeVolumeOnly) {
+  if (needsExternalRecoveryPoint(inventory) && !options.runtimeVolumeOnly) {
     throw new Error(
       "external recovery prerequisites exist; supply their matching recovery points or explicitly select --runtime-volume-only",
     );
@@ -98,7 +105,7 @@ export function runRuntimeStateRestore(
   name?: string,
 ) {
   const manifest = verifyRuntimeStateBundle(bundlePath);
-  if (manifest.inventory.externalPrerequisites.length > 0 && !options.runtimeVolumeOnly) {
+  if (needsExternalRecoveryPoint(manifest.inventory) && !options.runtimeVolumeOnly) {
     throw new Error(
       "bundle has external recovery prerequisites; restore their matching recovery points or explicitly select --runtime-volume-only",
     );
@@ -122,7 +129,7 @@ export function runRuntimeStateRestoreResume(
   name?: string,
 ) {
   const manifest = verifyRuntimeStateBundle(bundlePath);
-  if (manifest.inventory.externalPrerequisites.length > 0 && !options.runtimeVolumeOnly) {
+  if (needsExternalRecoveryPoint(manifest.inventory) && !options.runtimeVolumeOnly) {
     throw new Error(
       "bundle has external recovery prerequisites; restore their matching recovery points or explicitly select --runtime-volume-only",
     );

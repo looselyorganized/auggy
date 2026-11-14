@@ -122,32 +122,29 @@
       "id": "M5-01",
       "title": "Portable runtime storage",
       "specialist": "Runtime/storage engineer",
-      "status": "review",
+      "status": "accepted",
       "dependsOn": [
         "M5-00"
       ],
       "blockedBy": [],
       "acceptanceDependsOn": [],
-      "acceptedCommit": null,
+      "acceptedCommit": "d7d80695e00cf4e8bbcde8fbebb5721c47c6eefe",
       "evidence": [
         "Implementation and root launch/operator integration complete",
         "Independent m5_freeze_review accepted without blockers",
-        "280 focused tests /973 assertions passed; strict typecheck and exact 25-file scoped Biome passed",
-        "Commit recording pending; installed/container/Railway acceptance remains M5-07"
+        "280 focused tests /973 assertions passed; strict typecheck and exact 25-file scoped Biome passed"
       ]
     },
     {
       "id": "M5-02",
       "title": "Pure Docker export",
       "specialist": "Packaging engineer",
-      "status": "blocked",
+      "status": "in_progress",
       "dependsOn": [
         "M5-00",
         "M5-01"
       ],
-      "blockedBy": [
-        "M5-01"
-      ],
+      "blockedBy": [],
       "acceptanceDependsOn": [],
       "acceptedCommit": null,
       "evidence": []
@@ -162,7 +159,6 @@
         "M5-02"
       ],
       "blockedBy": [
-        "M5-01",
         "M5-02"
       ],
       "acceptanceDependsOn": [],
@@ -173,17 +169,19 @@
       "id": "M5-04",
       "title": "Durable assertion replay and restore guard",
       "specialist": "Security/storage engineer",
-      "status": "blocked",
+      "status": "review",
       "dependsOn": [
         "M5-00",
         "M5-01"
       ],
-      "blockedBy": [
-        "M5-01"
-      ],
+      "blockedBy": [],
       "acceptanceDependsOn": [],
       "acceptedCommit": null,
-      "evidence": []
+      "evidence": [
+        "Independent m5_freeze_review accepted final source candidate without blockers",
+        "Exact staged M5-04 snapshot: 531 tests /1994 assertions; strict typecheck; repository lint (722 files) passed",
+        "Immutable commit capture precedes dependent task release"
+      ]
     },
     {
       "id": "M5-05",
@@ -254,7 +252,6 @@
         "M5-06"
       ],
       "blockedBy": [
-        "M5-01",
         "M5-02",
         "M5-03",
         "M5-04",
@@ -281,7 +278,6 @@
         "M5-08"
       ],
       "blockedBy": [
-        "M5-01",
         "M5-02",
         "M5-03",
         "M5-04",
@@ -315,15 +311,17 @@
     }
   ],
   "activeOwnership": {
-    "root": "Shared runtime ownership/host/resolver integration, harness contracts/validators, manifests, ledger and acceptance",
-    "m5_storage_freeze": "M5-01: src/cli/runtime-volume.ts, src/runtime-data-admission.ts, tests/cli/runtime-volume.test.ts, tests/runtime-data-admission.test.ts",
-    "m5_acceptance_engineer": "M5-07 preparation: scripts/release-smoke/integration-consumer.ts, integration-container.ts, integration-browser.ts, integration-hosted.ts and matching focused tests; no hosted execution"
+    "root": "Shared config/host/web transport and restore/inventory integration; package/CLI registration/manifests; harness evidence and ledger acceptance",
+    "m5_storage_freeze": "M5-04 producer complete; independent READ-ONLY M5-07 helper preparation review",
+    "m5_deployment_freeze": "M5-02: src/cli/deploy/profile.ts, portable-export.ts, portable-dependencies.ts, bundle.ts, dockerfile.ts, commands/export.ts and matching tests/cli only",
+    "m5_acceptance_engineer": "M5-07 preparation: integration-consumer/browser/container/hosted.ts and tests/release-smoke only",
+    "m5_freeze_review": "Independent READ-ONLY M5-02 packaging review; M5-04 final review accepted"
   },
   "notes": [
     "Each company owns a separate deployment; no managed platform or shared-company tenancy.",
     "Channels are optional; Next.js and HTTP are not runtime requirements.",
     "Only root changes gate/task acceptance; producers cannot accept themselves.",
-    "G0 and M5-00/G1 accepted. M5-01 implementation and M5-07 preparation released; no M5 behavior task accepted yet."
+    "G0/G1 and M5-01 accepted. M5-02 and M5-04 released; M5-07 harness preparation continues. Installed/container/hosted acceptance remains open."
   ],
   "preparation": {
     "status": "accepted",
