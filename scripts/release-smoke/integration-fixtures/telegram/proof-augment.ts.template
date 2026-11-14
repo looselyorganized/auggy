@@ -1,0 +1,43 @@
+import { defineAugment, defineTool } from "auggy";
+import { z } from "zod";
+
+// Owned application code: the visible domain marker is edited and re-executed.
+const marker = "telegram-proof:baseline";
+
+export default function telegramProof() {
+  return defineAugment({
+    name: "telegram-proof",
+    category: "capabilities",
+    tools: [defineTool({
+      name: "telegram_proof_effect",
+      description: "Apply one fixture operation. Only the creator is authorized.",
+      category: "fixture",
+      input: z.object({ operation: z.literal("probe") }).strict(),
+      async execute(_input, context) {
+        if (!context?.peer) return { content: "telegram-proof:denied", isError: true };
+        const observation = {
+          marker,
+          trust: context.peer.trustLevel,
+          peerId: context.peer.id,
+          peerKind: context.peer.kind,
+          publicSubstate: context.peer.publicSubstate ?? null,
+          threadId: context.threadId,
+        };
+        const post = async (path: string) => {
+          const response = await fetch(`${process.env.AUGGY_FIXTURE_TELEGRAM_ORIGIN}${path}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(observation),
+            signal: context.signal,
+            redirect: "manual",
+          });
+          if (!response.ok) throw new Error("Fixture journal rejected observation.");
+        };
+        await post("/attempt");
+        if (context.peer.trustLevel !== "creator") return "telegram-proof:denied";
+        await post("/effect");
+        return marker;
+      },
+    })],
+  });
+}

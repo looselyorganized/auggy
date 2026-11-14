@@ -192,8 +192,16 @@ export function resolveDurableJobsDatabase(
     }
 
     const agentDir = dirname(configPath);
-    const rootValue = options.root ?? (options.env ?? process.env).RAILWAY_VOLUME_MOUNT_PATH;
-    if (rootValue !== undefined && !isAbsolute(rootValue)) throw unavailableError();
+    const environment = options.env ?? process.env;
+    const rootValue =
+      options.root ?? environment.AUGGY_DATA_DIR ?? environment.RAILWAY_VOLUME_MOUNT_PATH;
+    if (
+      rootValue !== undefined &&
+      (!isAbsolute(rootValue) ||
+        rootValue.includes("\0") ||
+        rootValue.split("/").some((part) => part === "." || part === ".."))
+    )
+      throw unavailableError();
     const runtimeRoot = rootValue === undefined ? undefined : resolve(rootValue);
     const mapped = resolveRuntimeStatePath(
       jobs.dbPath,

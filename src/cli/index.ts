@@ -1,7 +1,8 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S bun --no-env-file --no-install --config=/dev/null
 import { createRequire } from "node:module";
 import { dispatchAuthoringCommand } from "./authoring-bootstrap";
 import { authoringCommandHandlers } from "./authoring-command-handlers";
+import { dispatchExportCommand } from "./export-bootstrap";
 
 // Keep the synchronous programmatic API without evaluating command handlers
 // before the binary has selected the project's explicit local installation.
@@ -25,10 +26,14 @@ if (import.meta.main) {
     const authoring = await dispatchAuthoringCommand(argv, authoringCommandHandlers);
     if (authoring !== null) process.exitCode = authoring;
     else {
-      const { bootstrapCli } = await import("./command-bootstrap");
-      const result = await bootstrapCli(argv);
-      if (result.kind === "handled") process.exitCode = result.exitCode;
-      else await buildCli().parseAsync(result.argv, { from: "user" });
+      const exported = await dispatchExportCommand(argv);
+      if (exported !== null) process.exitCode = exported;
+      else {
+        const { bootstrapCli } = await import("./command-bootstrap");
+        const result = await bootstrapCli(argv);
+        if (result.kind === "handled") process.exitCode = result.exitCode;
+        else await buildCli().parseAsync(result.argv, { from: "user" });
+      }
     }
   } catch (error) {
     console.error(`Error: ${error instanceof Error ? error.message : "CLI operation failed"}`);

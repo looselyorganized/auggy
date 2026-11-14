@@ -16,6 +16,7 @@ import {
   getAgent,
   listAgents,
   readBoundCloudRecord,
+  normalizeCloudRecord,
   removeAgent,
   resolveAgentDir,
   seedAgentForTest,
@@ -125,6 +126,50 @@ describe("removeAgent", () => {
 });
 
 describe("setCloud / clearCloud — file-existence semantics", () => {
+  test("v2 worker metadata preserves its version and no-URL profile; legacy reads never rewrite disk", () => {
+    const dir = seedAgentForTest("zip", { auggyDir, cloud: CLOUD_FIXTURE });
+    const path = join(dir, ".auggy-cloud.json");
+    const before = readFileSync(path, "utf8");
+    expect(normalizeCloudRecord(readBoundCloudRecord(dir, CLOUD_FIXTURE.agentId)!)).toMatchObject({
+      recordVersion: 1,
+      profile: { kind: "http" },
+    });
+    expect(readFileSync(path, "utf8")).toBe(before);
+    const worker = {
+      ...CLOUD_FIXTURE,
+      version: 2 as const,
+      profile: { kind: "none" as const },
+      url: null,
+    };
+    setCloud("zip", worker, { auggyDir });
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(worker);
+    expect(getAgent("zip", { auggyDir })?.cloud).toEqual(worker);
+    expect(readBoundCloudRecord(dir, CLOUD_FIXTURE.agentId)).toEqual(worker);
+    expect(() =>
+      setCloud(
+        "zip",
+        { ...worker, agentId: "aug1_11111111-1111-4111-8111-111111111111" },
+        { auggyDir },
+      ),
+    ).toThrow(/another immutable agent/);
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(worker);
+  });
+
+  test("display tolerates malformed metadata but authoritative target reads refuse it", () => {
+    const dir = seedAgentForTest("zip", { auggyDir });
+    for (const record of [
+      { ...CLOUD_FIXTURE, version: 99 },
+      { ...CLOUD_FIXTURE, serviceId: 7 },
+      { ...CLOUD_FIXTURE, url: "https://credentials:secret@example.test" },
+    ]) {
+      writeFileSync(join(dir, ".auggy-cloud.json"), JSON.stringify(record));
+      expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
+      expect(() => readBoundCloudRecord(dir, CLOUD_FIXTURE.agentId)).toThrow(
+        /refusing cloud mutation/,
+      );
+    }
+  });
+
   test("setCloud creates .auggy-cloud.json", () => {
     seedAgentForTest("zip", { auggyDir });
     setCloud("zip", CLOUD_FIXTURE, { auggyDir });

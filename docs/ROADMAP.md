@@ -109,14 +109,20 @@ M4's accepted main baseline is `911fe168`; its
 [execution plan](./plans/milestone-4-execution-2026-11-13.md),
 [specialist task ledger](./plans/milestone-4-tasks.json), and
 [execution evidence](./plans/milestone-4-evidence-2026-11-13.md) track implementation.
-Milestone 4 is implemented and certified for review in
-[PR #229](https://github.com/looselyorganized/auggy/pull/229), verified source
-`4fd2fff`. Independent product, harness, documentation and integrated architecture
-reviews are accepted. Actual generated-agent acceptance, full macOS/Linux release
-rehearsals, all required CI/PG17 checks and full CodeQL findings verification pass.
-These changes remain unmerged and unreleased; no package version or publication
-is implied by this milestone.
-Milestones 5–6 remain roadmap outcomes:
+Milestone 4 merged through
+[PR #229](https://github.com/looselyorganized/auggy/pull/229) at `c39b746`, including
+the independently reviewed duplicate-tool repair `56de4e3`. Generated-agent and
+full macOS/Linux release evidence, required CI/PG17 and full CodeQL findings
+passed again on the repaired source; resulting main is verified. No package
+version or npm publication is implied by this merge.
+
+Milestone 5 is executing from that accepted main under its
+[execution plan](./plans/milestone-5-execution-2026-11-13.md),
+[task ledger](./plans/milestone-5-tasks.json) and
+[evidence](./plans/milestone-5-evidence-2026-11-13.md). Shared interfaces have passed
+compilation and independent review; product implementations and installed,
+container and hosted acceptance remain separate gates. Milestone 6 remains a
+roadmap outcome.
 
 | Milestone | Outcome | Exit gate |
 |---|---|---|
@@ -124,7 +130,7 @@ Milestones 5–6 remain roadmap outcomes:
 | 2. Contract and acceptance | Adopt ownership and exercise an installed HTTP-to-tool turn | Consistent decisions, deterministic packed scenarios, independent review |
 | 3. Reference application | Managed startup, visible HTTP wiring, real local orchestration | Local edits affect execution; safeguards hold; project-selected runtime executes |
 | 4. Authoring | Central YAML, custom augments, inspection, migration, CLI scaffold | Fresh packed create/inspect/run/extend works with the agreed layout |
-| 5. Integration | Next.js app communicating with standalone Auggy service | Authenticated streaming, tenant isolation, persistence and recovery on Railway |
+| 5. Integration | Independently deployed agents with portable Docker and optional app/channel consumers | Explicit authorization, authenticated streaming, durable replay and container/Railway recovery; each company owns a separate deployment |
 | 6. Upgrade and DX | Dependency upgrades and measured developer usability | Customized source survives upgrades; unfamiliar engineers trace execution effectively |
 
 Milestones are dependency gates, not separate version promises. The
@@ -137,8 +143,8 @@ are not permission to expand the current tranche.
 The M4 packet assigns central configuration, executable scaffolding, custom
 authoring, credential compatibility, passive inspection, migration and installed
 acceptance to bounded specialist roles. Its acceptance uses actual generated CLI
-output. M5 owns the standalone Next.js/Auggy deployment integration and generic
-Docker product work; M6 owns supported upgrades and external-engineer DX
+output. M5 owns generic Docker, channel-aware deployment and an optional
+Next.js-to-Auggy integration; M6 owns supported upgrades and external-engineer DX
 measurement. M4 preserves existing deployment and ownership contracts without
 claiming those later milestones are complete.
 

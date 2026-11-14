@@ -7,6 +7,10 @@
  * `auggy dev <name> --config /app/agent.yaml --internal-mode railway`.
  */
 
+import { DEPLOYMENT_MANIFEST_ENV, DEPLOYMENT_TOOLCHAIN, type DeploymentProfile } from "./contracts";
+import { validateDeploymentProfile } from "./profile";
+import { validateBundleRelativePath } from "./bundle";
+
 const BUN_VERSION = "1.3.14-alpine";
 
 /**
@@ -145,5 +149,99 @@ runtime_cli="$(bun -e '
   process.stdout.write(entry);
 ')"
 exec bun "$runtime_cli" dev "$1" --config /app/agent.yaml --internal-mode railway
+`;
+}
+
+export interface PortableDockerOptions {
+  readonly agentName: string;
+  readonly configPath: string;
+  readonly profile: DeploymentProfile;
+  readonly dependencyTarballs: readonly string[];
+}
+
+/** Generic image generation has no Railway bootstrap and never creates a durable root. */
+export function generatePortableDockerfile(options: PortableDockerOptions): string {
+  return generateProfiledDockerfile(options, true);
+}
+
+/** Explicit legacy tarball compatibility: pinned image, but install remains unfrozen. */
+export function generateRailwayCompatibilityDockerfile(
+  options: Omit<PortableDockerOptions, "dependencyTarballs"> & {
+    readonly runtimeTarballName?: string;
+  },
+): string {
+  return generateProfiledDockerfile(
+    {
+      ...options,
+      dependencyTarballs: options.runtimeTarballName ? [options.runtimeTarballName] : [],
+    },
+    false,
+  );
+}
+
+function generateProfiledDockerfile(options: PortableDockerOptions, frozen: boolean): string {
+  validateDeploymentProfile(options.profile);
+  validateBundleRelativePath(options.configPath);
+  if (options.configPath.includes("$"))
+    throw new Error(
+      "[portable-export] Selected config paths containing $ are outside the supported Docker path profile; select a literal filename.",
+    );
+  const copies = options.dependencyTarballs.map((path) => {
+    validateBundleRelativePath(path);
+    if (path.includes("$"))
+      throw new Error(
+        "[portable-export] Dependency archive paths containing $ are unsupported because Docker COPY expands environment variables.",
+      );
+    // Docker applies Go filepath matching even to JSON-form COPY source operands.
+    const literal = path.replace(/[[*?]/g, (character) =>
+      character === "[" ? "[[]" : `[${character}]`,
+    );
+    return `COPY ${JSON.stringify([literal, `/app/${path}`])}`;
+  });
+  return `FROM ${DEPLOYMENT_TOOLCHAIN.image}@${DEPLOYMENT_TOOLCHAIN.imageDigest}
+
+WORKDIR /app
+${frozen ? 'COPY ["package.json", "bun.lock", "/app/"]' : 'COPY ["package.json", "/app/"]\nCOPY bun.loc[k] /app/'}
+${copies.length ? `${copies.join("\n")}\n` : ""}${frozen ? "RUN bun install --frozen-lockfile" : "# Legacy external archive compatibility; not a portable frozen-build certification.\nRUN bun install"}
+
+COPY . /app
+ENV AUGGY_DATA_DIR=/app/data
+${frozen ? `ENV ${DEPLOYMENT_MANIFEST_ENV}=/app/auggy-deployment.json\n` : ""}\
+${options.profile.kind === "http" ? `ENV PORT=${options.profile.port}\nEXPOSE ${options.profile.port}\n` : ""}
+ENTRYPOINT ${JSON.stringify(["/app/auggy-entrypoint.sh", options.agentName, `/app/${options.configPath}`])}
+`;
+}
+
+export function generatePortableEntrypoint(): string {
+  return generateForegroundEntrypoint("generic");
+}
+
+export function generateRailwayEntrypoint(): string {
+  return generateForegroundEntrypoint("railway");
+}
+
+function generateForegroundEntrypoint(platform: "generic" | "railway"): string {
+  return `#!/bin/sh
+# Foreground ${platform} launch. Provision durable storage before starting the image.
+# Runtime admission validates ownership, identity and leases before any factory.
+set -eu
+umask 077
+runtime_cli="$(bun --no-env-file --no-install --config=/dev/null -e '
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const root = fs.realpathSync("/app/node_modules/auggy");
+  const manifest = path.join(root, "package.json");
+  if (!fs.lstatSync(manifest).isFile() || fs.statSync(manifest).size > 1048576) throw new Error("Invalid local Auggy manifest");
+  const pkg = JSON.parse(fs.readFileSync(manifest, "utf8"));
+  const bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.auggy;
+  if (pkg.name !== "auggy" || typeof bin !== "string" || !bin || path.isAbsolute(bin)) throw new Error("Invalid local Auggy CLI");
+  const declared = path.resolve(root, bin);
+  if (!fs.lstatSync(declared).isFile()) throw new Error("Invalid local Auggy CLI");
+  const entry = fs.realpathSync(declared);
+  const rel = path.relative(root, entry);
+  if (!rel || rel === ".." || rel.startsWith("../") || path.isAbsolute(rel)) throw new Error("Invalid local Auggy CLI");
+  process.stdout.write(entry);
+')"
+exec bun --no-env-file --no-install --config=/dev/null "$runtime_cli" dev "$1" --config "$2"${platform === "railway" ? " --internal-mode railway" : ""}
 `;
 }

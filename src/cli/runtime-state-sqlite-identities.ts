@@ -28,6 +28,11 @@ import {
   AGENTMAIL_ORCHESTRATION_APPLICATION_ID,
   AGENTMAIL_ORCHESTRATION_SCHEMA_VERSION,
 } from "../augments/agentMail/store";
+import {
+  EXTERNAL_AUTH_REPLAY_APPLICATION_ID,
+  EXTERNAL_AUTH_REPLAY_SCHEMA_VERSION,
+  EXTERNAL_AUTH_REPLAY_INVENTORY_SCHEMA,
+} from "../auth/external-auth-replay-contracts";
 
 export interface RuntimeStateSqliteIdentity {
   applicationId: number;
@@ -38,6 +43,10 @@ export interface RuntimeStateSqliteIdentity {
 
 export const RUNTIME_STATE_SQLITE_IDENTITIES: Readonly<Record<string, RuntimeStateSqliteIdentity>> =
   Object.freeze({
+    [EXTERNAL_AUTH_REPLAY_INVENTORY_SCHEMA]: {
+      applicationId: EXTERNAL_AUTH_REPLAY_APPLICATION_ID,
+      userVersion: EXTERNAL_AUTH_REPLAY_SCHEMA_VERSION,
+    },
     "LMEM/v1": {
       applicationId: LAYERED_MEMORY_APPLICATION_ID,
       userVersion: LAYERED_MEMORY_SCHEMA_VERSION,

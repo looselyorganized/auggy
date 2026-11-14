@@ -22,6 +22,7 @@
       "@evals/*": ["./packages/evals/src/*"],
       "@auggy/evals/*": ["./packages/evals/src/*"],
       "auggy": ["./src/index.ts"],
+      "auggy/auth": ["./src/auth/index.ts"],
       "auggy/cli": ["./src/cli/index.ts"],
       "auggy/internal/cost": ["./src/engines/_shared/cost.ts"],
       "auggy/internal/schema-normalize": ["./src/engines/_shared/schema-normalize.ts"],

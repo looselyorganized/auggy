@@ -14,6 +14,15 @@ turn program. The managed router rejects foreign or already-consumed requests.
 `web.fallback` serves the configured health, console and augment routes with their
 existing policies. Keep this fallback when customizing the HTTP response.
 
+For a separate application with existing login, the optional
+[company application reference](../examples/company-app/README.md) traces the
+browser's fresh assertion through this endpoint to the owned turn program and
+authorized business augment. The server-side `auggy/auth` entrypoint lets a Node
+backend mint assertions without importing the Bun agent runtime. See
+[delegated authorization](./26-delegated-authorization.md) for managed durable
+replay and same-operation retries. The application is optional: a Telegram polling
+agent can run without a web transport, HTTP endpoint or Next.js service.
+
 ## What a transport is
 
 A transport is the boundary between Auggy and the outside world. It is responsible for:

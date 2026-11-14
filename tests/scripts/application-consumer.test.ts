@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  APPLICATION_BOUNDS,
   APPLICATION_ROWS,
   applicationEnvironment,
   applicationHash,
@@ -343,6 +344,54 @@ describe("bounded harness child ownership", () => {
     });
   }
 
+  async function drainingGroup(
+    delayMs: number,
+    extra: Partial<Parameters<typeof startApplicationChild>[0]> = {},
+  ) {
+    const fixture = join(root, "draining-group.mjs");
+    const ready = join(root, "descendant-ready");
+    const finished = join(root, "descendant-finished");
+    // Static executable source; only test-owned paths and a delay travel as argv.
+    writeFileSync(
+      fixture,
+      `import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const [mode, ready, finished, delay] = process.argv.slice(2);
+if (mode === "leader") {
+  process.on("SIGTERM", () => process.exit(0));
+  spawn(process.execPath, [process.argv[1], "descendant", ready, finished, delay], {
+    stdio: "ignore",
+  });
+} else {
+  process.on("SIGTERM", () => {
+    if (Number(delay) > 0) setTimeout(() => {
+      writeFileSync(finished, "drained");
+      process.exit(0);
+    }, Number(delay));
+  });
+  writeFileSync(ready, "ready");
+}
+setInterval(() => {}, 1000);
+`,
+    );
+    const running = child(
+      [process.execPath, fixture, "leader", ready, finished, String(delayMs)],
+      extra,
+    );
+    for (let i = 0; i < 100 && !existsSync(ready); i++) await Bun.sleep(10);
+    expect(existsSync(ready)).toBe(true);
+    return { running, finished };
+  }
+
+  function killOwnedGroup(pid: number | undefined) {
+    if (!pid) return;
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  }
+
   test("does not inherit ambient secrets and preserves nonzero exit with sanitized evidence", async () => {
     const result = await child(
       'console.log("dummy-secret-never-export"); process.exit(7)',
@@ -383,6 +432,80 @@ describe("bounded harness child ownership", () => {
       exitCode: 0,
       orphanedGroup: false,
     });
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "allows descendants to drain after the leader exits during intentional shutdown",
+    async () => {
+      const { running, finished } = await drainingGroup(250);
+      try {
+        const result = await running.stop();
+        expect(result).toMatchObject({
+          wasRunning: true,
+          exitCode: 0,
+          forced: false,
+          orphanedGroup: false,
+          cleanupConfirmed: true,
+          timedOut: false,
+        });
+        expect(readFileSync(finished, "utf8")).toBe("drained");
+      } finally {
+        killOwnedGroup(running.pid);
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "kills a descendant still alive at the original shutdown deadline before settling",
+    async () => {
+      const { running, finished } = await drainingGroup(0);
+      const started = Date.now();
+      try {
+        const result = await running.stop();
+        expect(Date.now() - started).toBeGreaterThanOrEqual(APPLICATION_BOUNDS.shutdownMs);
+        expect(Date.now() - started).toBeLessThan(
+          APPLICATION_BOUNDS.shutdownMs + APPLICATION_BOUNDS.reapMs + 1000,
+        );
+        expect(result).toMatchObject({
+          wasRunning: true,
+          exitCode: 0,
+          forced: true,
+          orphanedGroup: true,
+          cleanupConfirmed: true,
+          timedOut: false,
+        });
+        expect(existsSync(finished)).toBe(false);
+        expect(() => process.kill(-running.pid!, 0)).toThrow();
+      } finally {
+        killOwnedGroup(running.pid);
+      }
+    },
+    25_000,
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "does not let intentional shutdown extend the child lifetime deadline",
+    async () => {
+      const { running, finished } = await drainingGroup(10_000, { timeoutMs: 1000 });
+      const started = Date.now();
+      try {
+        const result = await running.stop();
+        expect(result.timedOut).toBe(true);
+        expect(result.cleanupConfirmed).toBe(true);
+        expect(existsSync(finished)).toBe(false);
+        expect(Date.now() - started).toBeLessThan(1000 + APPLICATION_BOUNDS.reapMs + 1000);
+      } finally {
+        killOwnedGroup(running.pid);
+      }
+    },
+    10_000,
+  );
+
+  test("stopping a child that cannot spawn remains bounded and fails closed", async () => {
+    const result = await child([join(root, "missing-executable")]).stop();
+    expect(result.spawnFailed).toBe(true);
+    expect(result.cleanupConfirmed).toBe(true);
+    expect(result.forced).toBe(false);
   });
 
   test.skipIf(process.platform === "win32")(

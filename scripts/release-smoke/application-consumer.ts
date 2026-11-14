@@ -551,6 +551,8 @@ export function startApplicationChild(options: {
   let cleanupConfirmed = false;
   let terminalSettled = false;
   let forced = false;
+  let gracefulStopDeadline: number | undefined;
+  let reapDeadline: number | undefined;
   let outcome: { exitCode: number | null; signal: NodeJS.Signals | null } = {
     exitCode: null,
     signal: null,
@@ -566,7 +568,12 @@ export function startApplicationChild(options: {
     }
   };
   const signal = (value: NodeJS.Signals) => {
-    if (!child.pid || cleanupConfirmed || terminalSettled) return;
+    if (cleanupConfirmed || terminalSettled) return;
+    if (value === "SIGKILL") {
+      gracefulStopDeadline = undefined;
+      reapDeadline ??= Date.now() + APPLICATION_BOUNDS.reapMs;
+    }
+    if (!child.pid) return;
     try {
       if (process.platform === "win32") child.kill(value);
       else if (groupState() !== "gone") process.kill(-child.pid, value);
@@ -579,19 +586,30 @@ export function startApplicationChild(options: {
     resolveTerminal = resolveExit;
   });
   let finalizeTask: Promise<void> | undefined;
-  let stopTimer: ReturnType<typeof setTimeout> | undefined;
   const finalize = () =>
     (finalizeTask ??= (async () => {
-      const deadline = Date.now() + APPLICATION_BOUNDS.reapMs;
-      while (Date.now() < deadline) {
-        if ((leaderExited || spawnFailed) && streamsClosed && groupState() === "gone") {
+      while (true) {
+        const group = groupState();
+        if ((leaderExited || spawnFailed) && streamsClosed && group === "gone") {
           cleanupConfirmed = true;
           break;
         }
+        const now = Date.now();
+        if (gracefulStopDeadline !== undefined) {
+          // An intentional group stop may finish its leader before descendants
+          // drain. Preserve the original shutdown budget before starting reap.
+          if (now >= gracefulStopDeadline) {
+            forced = true;
+            if (leaderExited && group !== "gone") orphanedGroup = true;
+            signal("SIGKILL");
+          }
+        } else {
+          reapDeadline ??= now + APPLICATION_BOUNDS.reapMs;
+        }
+        if (reapDeadline !== undefined && now >= reapDeadline) break;
         await new Promise((resolveWait) => setTimeout(resolveWait, 10));
       }
       clearTimeout(lifetimeTimer);
-      if (stopTimer) clearTimeout(stopTimer);
       terminalSettled = true;
       // Close our own pipes after a failed reap observation. Do not certify that
       // another process has exited merely because its inherited pipe was closed.
@@ -618,12 +636,13 @@ export function startApplicationChild(options: {
   }
   child.once("error", () => {
     spawnFailed = true;
+    gracefulStopDeadline = undefined;
     void finalize();
   });
   child.once("exit", (exitCode, exitSignal) => {
     leaderExited = true;
     outcome = { exitCode, signal: exitSignal };
-    if (groupState() !== "gone") {
+    if (groupState() !== "gone" && gracefulStopDeadline === undefined) {
       orphanedGroup = true;
       signal("SIGKILL");
     }
@@ -664,12 +683,10 @@ export function startApplicationChild(options: {
     async stop(requestedSignal: "SIGINT" | "SIGTERM" = "SIGTERM") {
       const wasRunning = !leaderExited && !terminalSettled;
       if (!terminalSettled) {
+        if (wasRunning && gracefulStopDeadline === undefined && reapDeadline === undefined)
+          gracefulStopDeadline = Date.now() + APPLICATION_BOUNDS.shutdownMs;
         signal(requestedSignal);
-        stopTimer ??= setTimeout(() => {
-          forced = true;
-          signal("SIGKILL");
-          void finalize();
-        }, APPLICATION_BOUNDS.shutdownMs);
+        void finalize();
       }
       const result = await this.finish();
       return { wasRunning, forced, ...result };

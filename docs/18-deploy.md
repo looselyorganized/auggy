@@ -1,171 +1,216 @@
-# Deploying an Auggy agent to Railway
+# Portable deployment and Railway
 
-This page covers `auggy deploy` — the CLI path for shipping a single agent to Railway, the current default cloud deployment target.
+Deploy one agent project as one service with its own identity, credentials and
+private volume. Each company owns its deployment. A Next.js application can run
+beside it and call its HTTP endpoint; Telegram polling can run without an HTTP
+listener or frontend. See the [company application reference](../examples/company-app/README.md)
+for the separate application/agent boundary.
 
-If you're deploying locally as a launchd service (macOS), see [`auggy start`](./07-built-in-augments.md) instead.
+These commands describe the unreleased implementation in this checkout. Use
+matching candidate packages when evaluating it; the published 0.5 scaffold does
+not acquire these features by following this page.
 
----
+## Export a Docker build context
 
-## Prerequisites
-
-| | Why |
-|---|---|
-| **Bun** ≥ 1.3.14 ([install](https://bun.sh/install)) | The runtime; `auggy` is a TypeScript CLI executed by Bun. |
-| **Railway CLI** ([install](https://docs.railway.com/develop/cli)) | The deploy command shells out to `railway`. Same trust pattern as `git push` trusts `git`. |
-| `railway login` completed | Authenticates the Railway CLI session. `auggy deploy` does not store API tokens. |
-| A Railway workspace | Personal/team workspace that will own the project. `auggy deploy` can create the Railway project for you, or link an existing one. |
-| An existing agent project | Deploy reads the selected `agent.yaml`, package manifest, and project-local dependencies. |
-| `webTransport` on port `8080` | The generated Railway Dockerfile exposes `8080`; other ports can boot in-container but return 502 through Railway. |
-
----
-
-## First deploy
-
-Deployment preserves the dependency selection declared by the project. An unrelated
-nearby `auggy-*.tgz` never replaces a registry dependency. An explicitly declared
-core `file:` tarball is copied and rebased into the bundle. A source directory or
-workspace link is a development dependency: materialize a packed or released
-runtime before deploying it. Application entry files are included with the other
-project-owned source. Startup executes the declared application through the
-selected local runtime. This is the existing standalone service deployment path;
-no Next.js integration or new hosting topology is generated here.
+From an installed agent project:
 
 ```bash
-# 1. Make sure the agent runs locally
-cd zip
-auggy run
-# (Ctrl-C to stop)
-
-# 2. Deploy to Railway
-auggy deploy
+auggy export docker --config agent.yaml --out ../support-agent-image
 ```
 
-The CLI walks you through:
-
-1. **Local preflight** — runs doctor-style checks for config, env placeholders, package manifest, and agent-local dependencies before touching Railway.
-2. **Presence + auth checks** — confirms `railway` is installed and logged in.
-3. **Workspace selection** — Auggy discovers Railway workspaces from your logged-in Railway CLI session and lets you choose where the deploy belongs.
-4. **Project selection** — create a new Railway project in that workspace, or use an existing project from that workspace. You can still pass `--project <project-id>` to skip prompts and deploy into a known existing project. For scripted first deploys, pass `--project-name <name>` plus `--workspace <workspace-name-or-id>`.
-5. **Bundle staging** — copies your agent directory minus private environment files, SQLite state, `workspace/`, `data/`, `node_modules/`, `.git/`, `.worktrees/`, `.claude/`, `.auggy/` (including private recovery receipts), `.DS_Store`, and temporary files into a temp dir. The agent's `package.json` + `bun.lock` are included so the image can install your pinned deps.
-6. **Dockerfile + entrypoint generation** — written into the staging dir. Static and intentionally not operator-tunable. The image copies `package.json` + `bun.lock` first, runs `bun install` to materialize `node_modules/` inside the image, then COPYs the rest of the agent dir; the entrypoint verifies the installed local CLI and executes it directly with Bun 1.3.14. A missing local executable fails startup instead of downloading another package.
-7. **Secrets diff + confirm** — shows what's about to be pushed to Railway (with values redacted). Decline aborts the deploy. Pass `--yes` to skip.
-8. **Railway service selection** — by default Auggy creates a new service named `<name>` in the selected project. Pass `--service <name-or-id>` to deploy into an existing Railway service instead.
-9. **`railway volume add --mount-path /app/data`** — provisions a persistent volume mounted at `/app/data`. Holds SQLite-backed state across redeploys.
-10. **`railway domain`** — assigns a `<name>-production-xxxx.up.railway.app` URL.
-11. **Push env vars** — your `.env` entries + `AUGGY_PUBLIC_URL` (the just-generated URL) are pushed with `railway variable set <KEY> --stdin --skip-deploys`. Secret values travel over subprocess stdin, not argv. This requires a current Railway CLI with `variable set --stdin` support; Auggy fails closed instead of falling back to argv on older releases.
-12. **`railway up --detach`** — uploads the bundle, kicks off the build and deploy.
-13. **Health verification** — polls `${url}/health` for a bounded window. Timeout is non-destructive; Railway may still finish booting.
-14. **Metadata write** — the cloud record lands in `<agent-dir>/.auggy-cloud.json`. Later plain `auggy deploy` runs show the saved target and ask whether to redeploy it, recreate the service, choose another target, or reset metadata.
-
-Successful deploy output includes the public URL, `/health`, `/console`, and `/console/chat`. Follow later builds in the [Railway dashboard](https://railway.com) or with `auggy logs`.
-
-## Open the deployed Console
-
-From the agent project, open its saved Railway Console with:
-
-```bash
-auggy console --cloud
-```
-
-With an optional agent name, use `auggy console <name> --cloud`. Without
-`--cloud`, the command prefers that agent's running local process and falls
-back to its saved Railway deployment when no local Console is available.
-
-The CLI sends the configured bearer only to the Railway HTTPS origin to request
-a short-lived, single-use login, then opens that one-time path in the browser.
-The permanent bearer is never placed in a browser URL. If the exchange or
-browser launch is unavailable, the CLI opens or prints `/console/login` and
-points you to the password. For Railway, the authoritative password is the
-service's `AUGGY_WEB_TOKEN` variable, normally synced from the agent's local
-`.env` by `auggy deploy`. Opening Railway's public Console URL directly shows
-the same native password form, which works without JavaScript.
-
----
-
-## Redeploy
-
-A re-run of the same command opens the saved-target prompt. There's no separate
-`redeploy` verb.
-
-```bash
-auggy deploy
-```
-
-When `<agent-dir>/.auggy-cloud.json` exists, plain `auggy deploy` asks:
+The destination must be new and outside the source project. Export reads the
+configuration without expanding `.env`, importing application code, installing
+dependencies, running Docker, or contacting a registry. It preserves the selected
+configuration, application source, `package.json` and `bun.lock` bytes. The context
+contains:
 
 ```text
-Saved Railway service:
-  <service>
-  <workspace> / <project>
-
-What do you want to do?
-  Redeploy <service>
-  Recreate <service> in this project
-  Choose another Railway project/service
-  Remove saved deploy metadata and start over
-  Cancel
+support-agent-image/
+  Dockerfile
+  auggy-entrypoint.sh
+  auggy-deployment.json       # profile, toolchain and input hashes
+  agent.yaml                 # selected config at its original relative path
+  package.json
+  bun.lock
+  src/                       # your startup, HTTP, turn and custom augment code
+  ...                        # retained project source and contained dependency archives
 ```
 
-For scripted deploys that intentionally skip prompts and reuse the saved target:
+The generated image pins Bun 1.3.14 and its base-image digest. Its build runs
+`bun install --frozen-lockfile`; a stale lock fails the build. Export reports that
+it has **not** built or run the image. The manifest describes inputs and the
+selected ingress profile; it is not an artifact signature or an additional
+augment graph.
+
+Export requires ordinary project-contained inputs. It supports contained `file:`
+dependency tarballs, including their contained archive dependencies. Materialize
+workspace links, source-directory dependencies, and archives outside the project
+before exporting. It refuses collisions with its three generated files and
+existing output directories; there is no overwrite mode.
+
+Private `.env` files, `.auggy/` receipts, cloud metadata, dependencies, known
+runtime state and database sidecars are excluded. Required files that would be
+excluded cause an error. Keep secrets out of ordinary source and `.env.example`:
+a file filter cannot identify a secret hidden in an arbitrary filename.
+
+### Select ingress explicitly when needed
+
+`--ingress auto` is the default. Profiles describe listeners already present in
+configuration; they do not enable an augment or rewrite its port.
+
+| Configuration | Profile |
+| --- | --- |
+| Known augments with no listener, including Telegram polling | `none` |
+| One `webTransport` | Its configured port, `/health`, and `/console` when enabled |
+| One Telegram webhook or Link listener | Its port; no inferred health or Console path |
+| Multiple known listeners, even on the same port | Refused; one port does not explain routing |
+| Custom augment or unresolved listener configuration | Requires explicit `none` or `http` |
 
 ```bash
-auggy deploy --yes
+# A custom augment alongside one web transport: confirm its single HTTP surface.
+auggy export docker --config agent.yaml --out ../support-agent-image \
+  --ingress http --port 8080
+
+# A worker whose custom code does not open a listener.
+auggy export docker --config agent.yaml --out ../worker-image --ingress none
 ```
 
-For scripted deploys into a specific existing project:
+For a custom HTTP listener, supply `--port` and optionally
+`--health-path /ready` for an endpoint the application actually serves. A health
+path must be an origin-relative path without a query or fragment. `none` rejects
+port/health options and known HTTP listeners. Explicit ports must match known
+listeners; startup checks resolved built-in configuration against the exported
+profile before constructing the runtime. An explicit profile for custom code is
+an operator declaration, not proof that arbitrary TypeScript obeys it.
+
+### Build and provision durable storage
 
 ```bash
-auggy deploy --project <project-id>
+docker build -t support-agent:local ../support-agent-image
+
+docker volume create support-agent-data
+# Initialize this NEW, EMPTY, dedicated volume once as the image's runtime user.
+docker run --rm --entrypoint sh \
+  --mount type=volume,src=support-agent-data,dst=/app/data \
+  support-agent:local \
+  -c 'test -z "$(ls -A /app/data)" && chmod 0700 /app/data'
+
+docker run --rm --name support-agent \
+  --env-file .env -e AUGGY_DATA_DIR=/app/data \
+  --mount type=volume,src=support-agent-data,dst=/app/data \
+  -p 127.0.0.1:8080:8080 \
+  support-agent:local
 ```
 
-For scripted first deploys that create a new Railway project:
+The port mapping above assumes the agent declares port 8080. For a worker,
+export `none` and omit the port mapping. Keep production secrets in the hosting
+platform's secret manager rather than in the image.
+
+The pinned image currently runs as UID/GID `0:0`. A custom non-root image needs
+its own ownership and admission verification; changing the UID alone is not a
+certified deployment profile. Generic startup requires `AUGGY_DATA_DIR` to name
+an existing absolute, ordinary directory owned by the runtime user with mode
+`0700`. It refuses missing, unsafe, symlinked, wrong-agent or unreconciled roots;
+it does not create or repair them. Do not run the initialization command on an
+existing state volume. The admitted root holds the singleton lease for the sole
+replica. See [storage layout](./16-storage-layout.md#explicit-runtime-data-root)
+and [recovery](./27-runtime-state-recovery.md).
+
+The entrypoint resolves the installed local Auggy executable and launches your
+application through it. It does not copy runtime internals into your project,
+fall back to a global package, or download a missing runtime at startup. Generic
+Docker does not automatically trust Railway forwarding headers.
+
+## Deploy to Railway
+
+Install the Railway CLI and complete `railway login`. Run `auggy doctor` and
+verify your agent locally before deploying:
 
 ```bash
-auggy deploy --yes --project-name zip --workspace "My Workspace"
+auggy deploy --to railway
+# The same ingress options are available here.
+auggy deploy --to railway --ingress none
 ```
 
-To deploy into an existing Railway service instead of creating a new one:
+Use only one of those commands for the project's actual profile. The CLI can
+select a workspace and create a project/service, or use explicit targets:
 
 ```bash
-auggy deploy --project <project-id> --service my-existing-service
+auggy deploy --project <project-id> --service <service-name-or-id>
+auggy deploy --yes --project-name support-agent --workspace "My Workspace"
 ```
 
-Railway terms:
+The ordinary Railway path starts from the portable context, then substitutes the
+Railway entrypoint. It uses the same pinned image and frozen install. An explicitly
+declared external core tarball retains a legacy compatibility path with an
+**unfrozen** install and a warning; that path is outside portable export guarantees.
+A nearby unrelated tarball never changes the project's dependency selection.
 
-- **Workspace**: the personal/team Railway account that owns projects.
-- **Project**: the Railway project Auggy creates or links.
-- **Service**: the deployable app inside the project.
+Before creating hosted resources, the command checks selected configuration,
+local dependencies, ingress, secret variables and the confirmation to push them.
+An alternate `--config production.yaml` must retain the adjacent `agent.yaml`'s
+immutable agent ID: one project directory owns one deployment record. Unset
+inherited `RAILWAY_PROJECT_ID`, `RAILWAY_SERVICE_ID` and
+`RAILWAY_ENVIRONMENT_ID`; targets must come from the explicit linked selection.
+The deployment `.env` must not override the platform mount, `AUGGY_DATA_DIR` or
+`AUGGY_DEPLOYMENT_MANIFEST`; the image and Railway supply those values. Worker
+deployments also reject HTTP-only variables such as `PORT` and `AUGGY_PUBLIC_URL`.
 
-Auggy helps select an existing workspace. It does not create Railway workspaces; create one in Railway first, then rerun `auggy deploy`.
+Managed deployment refuses configuration that can replace the selected profile:
+root `railway.json`/`railway.toml`, custom service config paths, build/start/root/
+Dockerfile overrides, pre-deploy or cron commands, conflicting build variables,
+and unsupported replica/ingress settings. It also refuses upload ignore files
+that could hide its generated inputs, and uploads with `--no-gitignore`. Resolve
+the reported override explicitly; Auggy does not delete it or silently deploy a
+different command.
 
-What changes vs. first deploy:
+The selected service must have one verified `/app/data` volume. Auggy creates one
+when appropriate and verifies its actual binding before upload and metadata
+write. Redeploy refuses a missing or changed saved volume rather than silently
+starting with empty state. HTTP deployments create a domain targeting the selected
+port and set `PORT` and `AUGGY_PUBLIC_URL`. A worker creates neither a domain nor
+those HTTP variables. Secret values travel to Railway over subprocess stdin.
 
-- Plain `auggy deploy` shows the saved workspace/project/service and asks whether to redeploy, recreate the service, choose another target, reset metadata, or cancel.
-- `auggy deploy --yes` reads the saved target and redeploys without prompts.
-- Volume is not re-added; the existing one is preserved.
-- Secrets are re-pushed (so updating `.env` and redeploying is the workflow).
-- `/health` is checked again after the build is queued.
-- `deployedAt` in the index is refreshed.
+After upload, output distinguishes three observations:
 
----
+- **Platform:** the selected Railway deployment's status, with bounded polling.
+- **HTTP:** the configured health endpoint, or explicitly not applicable/not configured.
+- **Channel:** unverified. A running process or successful health response does
+  not prove a Telegram exchange, AG-UI turn, tool effect, or provider connection.
 
-## Logs and recovery
+A timeout is not a readiness success. Ordinary pending readiness can still leave
+a saved target for diagnosis; deployment failure, uncertain subprocess cleanup,
+or target-policy changes can stop the command without writing new metadata.
+The CLI does not roll back hosted mutations automatically. Inspect Railway and
+`auggy logs` before retrying a partially completed deploy.
+
+## Redeploy, Console and logs
+
+Plain `auggy deploy` offers the saved target, recreation, another target, metadata
+reset or cancellation. `auggy deploy --yes` intentionally reuses the saved target
+without prompts. Redeploy preserves and verifies the volume, pushes current
+secrets, uploads the new image inputs and repeats readiness observations.
 
 ```bash
 auggy logs
+auggy console --cloud
 ```
 
-`auggy logs` reads the stored Railway cloud record, links a temporary Railway workspace to the saved project/service, and streams `railway logs`.
+Logs work for HTTP and worker deployments. The Console command requires a saved
+HTTP profile with a Console path; a worker has no URL to open. HTTP without a
+Console does not acquire one through this command.
 
-Use it when:
+For a Console-enabled service, the CLI exchanges the configured bearer at the
+saved HTTPS origin for a short-lived single-use login. It never puts the permanent
+bearer in the browser URL. If automatic login is unavailable, use the service's
+`AUGGY_WEB_TOKEN` on its password screen. Keep this operator credential out of
+application browsers; app users use delegated assertions instead.
 
-- Deploy health verification times out.
-- Railway reports a crash loop.
-- You changed `.env` or `agent.yaml` and need boot diagnostics.
-
-If the agent has not been deployed yet, `auggy logs` fails with a local message and points you back to `auggy deploy`.
-
----
+`.auggy-cloud.json` version 2 records the immutable agent ID, real project/service/
+volume IDs and profile; a worker's URL is `null`. Valid version 1 records remain
+readable as the historical port-8080 HTTP profile. Reading does not rewrite them;
+a successful explicit deployment writes version 2. Treat invalid records as an
+operator error, not an invitation to select another service implicitly.
 
 ## Cost surface
 
@@ -226,6 +271,10 @@ roots, requires the runtime-owned root to have mode `0700`, creates
 `/app/data/agent-mail` with mode `0700`, and performs an atomic
 write/fsync/rename/delete probe through pinned directory descriptors. Startup
 fails closed when the advertised mount or durability contract is wrong.
+Only explicit Railway startup may narrow the permissions of an already existing,
+owned, empty advertised mount to `0700`. A nonempty unsafe mount is refused;
+generic Docker and local startup never perform this initialization. If
+`AUGGY_DATA_DIR` is also set on Railway, it must equal `/app/data`.
 Fence checking, agent/volume identity binding, and that probe share one held
 root descriptor. The platform must keep the admitted mountpoint stable for the
 process lifetime; a process identity that can replace `/app/data` or its mount
@@ -252,6 +301,9 @@ volume even when an agent's portable config uses a project-relative default:
 - `/app/data/visitor-auth.db` (`visitorAuth` augment)
 - `/app/data/link.db` (`link` augment, when present)
 - `/app/data/web-idempotency.db` (`webTransport` execution ledger)
+- the configured managed external-assertion replay database (`EARP/v1`)
+- `/app/data/.auggy-auth-replay-guard.json` (local replay control state;
+  excluded from backup payload and recreated by the restore protocol)
 - `/app/data/console-chat.db` (`webTransport` operator conversations)
 - `/app/data/telegram-replay.db` (`telegramTransport` update-claim ledger)
 - `/app/data/durable-jobs.sqlite` (optional `DJOB/v2` jobs, schedules, leases,
@@ -435,7 +487,7 @@ the agent for new mail, while paginated provider catch-up reconciles messages
 missed during disconnects and restarts. The orchestration database must stay on
 the Railway volume. Provider delivery-lifecycle events missed while the agent
 is offline cannot be reconstructed per message; see
-[AgentMail](./22-agent-mail.md#recovery-and-errors) for the complete recovery
+[AgentMail](./22-agent-mail.md#recovery-and-limits) for the complete recovery
 boundary.
 
 Console magic links are local-only. Deploy preflight fails if `visitorAuth` is
@@ -464,17 +516,18 @@ servers.
 ## Tear-down
 
 ```bash
-# Remove from your local index AND destroy the Railway service
+# Delete this local agent project and request deletion of its Railway service
 auggy remove --cloud --yes
 ```
 
 What `--cloud` does:
 
-1. Local agent dir + index entry cleared (same as `auggy remove`).
-2. Railway service is deleted via `railway service delete --yes`.
-3. If Railway destruction fails, the warning is logged but local cleanup still proceeds — you may need to delete the service manually via the Railway dashboard.
+1. Validate the bound saved target and refuse removal while the local agent is running.
+2. Request Railway service deletion before removing the local project.
+3. If Railway destruction fails, log a warning and continue local cleanup; the operator must inspect and remove any remaining service separately.
 
-The Railway volume is **NOT** automatically deleted (Railway retains it as a safety measure). Delete it explicitly from the dashboard if you don't need the data.
+The command does not explicitly delete the volume. Inspect retained platform
+resources and remove data only after applying your retention and recovery policy.
 
 ---
 
@@ -531,14 +584,14 @@ contract connects them to a common bounded signal boundary.
 | `railway: command not found` | Install the Railway CLI: https://docs.railway.com/develop/cli |
 | `Unauthorized. Run \`railway login\` first.` | Re-run `railway login` and follow the browser flow. |
 | `Agent "X" not registered` | Run `auggy create X` first, then `cd X && auggy deploy`. |
-| First-deploy fails at `railway volume add` | The Railway project may not support volumes on the free tier. Upgrade or pick a different project. |
+| First-deploy fails at `railway volume add` | Inspect the Railway error and the selected project's permissions and volume support before retrying. |
 | Deploy preflight fails before Railway work | Run `auggy doctor` and fix the reported config/env/dependency issue. |
-| Deploy preflight fails because webTransport is not on 8080 | Set `port: 8080` under `options` in the `webTransport` entry in `agent.yaml`. |
-| Health check does not pass after deploy | Run `auggy logs` and inspect the boot error. The cloud record is still written, so redeploy with `auggy deploy --yes` after fixing. |
+| Ingress profile cannot be inferred | Choose `--ingress none`, or `--ingress http --port <actual-port>` for custom code. Resolve multiple known listeners explicitly in the application topology. |
+| Health check does not pass after deploy | Inspect platform and HTTP readiness separately, then use `auggy logs`. A health timeout can preserve a target; do not assume every failed deploy wrote metadata. |
 | visitorAuth refuses to boot — "publicUrl required" | Check that the `visitorAuth` entry in `agent.yaml` has `publicUrl: ${AUGGY_PUBLIC_URL}` and the deploy actually generated a domain. Re-run `auggy deploy` to refresh. |
 | Deploy preflight fails because visitorAuth uses console mail | If `agentMail` is installed, run `auggy augment setup agentMail --mode connect` followed by `auggy augment setup visitorAuth --mode env`; otherwise run `auggy augment setup visitorAuth --mode connect`. Set `allowConsoleInProduction: true` only for smoke tests where log-visible magic links are acceptable. |
 | Deploy preflight fails because MCP has an enabled `stdio` server | Use a remote HTTPS MCP server for cloud, or mark the local server `cloud: "disabled"` in `.mcp.json`. |
-| Runtime refuses to start with a volume-admission error | Confirm Railway mounted a real volume at exactly `/app/data`, exposes `RAILWAY_VOLUME_MOUNT_PATH=/app/data`, and permits the generated entrypoint to set the root to mode `0700`. Remove symlinked state directories; the startup probe intentionally fails before state can fall back to ephemeral disk. |
+| Runtime refuses to start with a volume-admission error | Confirm the advertised `/app/data` mount, runtime ownership, mode `0700`, matching agent ID and reconciled restore fence. Railway may initialize only an empty owned mount; inspect existing state before repairing it offline. |
 | Memory disappears after redeploy | Check Railway dashboard → service → Volumes and confirm the mount is `/app/data`. Core SQLite augments resolve directly to that root; do not repair this by adding an `/app/*.db` symlink. |
 | Console chats disappear after restart | Confirm the database exists at `/app/data/console-chat.db`, the service still has the `/app/data` volume attached, `webTransport.consoleChat.dbPath` is not `null`, and the service is configured for one replica. An explicit custom path must remain below `/app/data`. |
 | Daily budget cap hit unexpectedly | If you enabled autoSave with an extraction engine, extraction calls count against the cap. Run `bun run packages/evals/src/layered-memory/smoke.ts` to measure your per-extraction cost; lower the cadence in the `layeredMemory` entry in `agent.yaml` if needed. |

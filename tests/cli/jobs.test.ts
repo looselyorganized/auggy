@@ -95,6 +95,31 @@ afterEach(() => {
 });
 
 describe("auggy jobs", () => {
+  test("operator jobs use the explicit data environment without falling back on invalid roots", () => {
+    submitFixtureJob();
+    expect(
+      resolveDurableJobsDatabase(undefined, {
+        config: fixture.config,
+        env: { AUGGY_DATA_DIR: fixture.root, RAILWAY_VOLUME_MOUNT_PATH: "/wrong-root" },
+      }).dbPath,
+    ).toBe(realpathSync.native(fixture.db));
+    for (const value of ["", "relative", `${fixture.root}/../volume`]) {
+      expect(() =>
+        resolveDurableJobsDatabase(undefined, {
+          config: fixture.config,
+          env: { AUGGY_DATA_DIR: value, RAILWAY_VOLUME_MOUNT_PATH: fixture.root },
+        }),
+      ).toThrow();
+    }
+    expect(
+      resolveDurableJobsDatabase(undefined, {
+        config: fixture.config,
+        root: fixture.root,
+        env: { AUGGY_DATA_DIR: "" },
+      }).dbPath,
+    ).toBe(realpathSync.native(fixture.db));
+  });
+
   test("maps runtime root, reads only redacted summaries, and remains live with a second SQLite handle", () => {
     const submitted = submitFixtureJob();
     const secondHandle = createSqliteDurableJobStore({ dbPath: fixture.db });

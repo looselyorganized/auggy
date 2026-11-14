@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -72,6 +73,67 @@ function generationFromPlist(path: string): string {
 }
 
 describe("runStart launchd generation fencing", () => {
+  test("preserves a shell-only durable root in launchd's environment", async () => {
+    const previous = process.env.AUGGY_DATA_DIR;
+    const data = join(root, "persistent-data");
+    mkdirSync(data, { mode: 0o700 });
+    process.env.AUGGY_DATA_DIR = data;
+    const opts = options();
+    let checked = false;
+    try {
+      await expect(
+        runStart("launch-test", {
+          ...opts,
+          loadLaunchd: async () => {
+            const plist = readFileSync(opts.paths.storePath, "utf8");
+            expect(plist).toContain(`<key>AUGGY_DATA_DIR</key>\n    <string>${data}</string>`);
+            expect(existsSync(join(root, ".env"))).toBe(false);
+            checked = true;
+            throw new Error("fixture inspected storage handoff");
+          },
+          unloadLaunchd: async () => {},
+        }),
+      ).rejects.toThrow("fixture inspected storage handoff");
+      expect(checked).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.AUGGY_DATA_DIR;
+      else process.env.AUGGY_DATA_DIR = previous;
+    }
+  });
+
+  test("invalid, missing and unsafe explicit roots fail before launchd mutation", async () => {
+    const previous = process.env.AUGGY_DATA_DIR;
+    const unsafe = join(root, "unsafe-data");
+    mkdirSync(unsafe);
+    chmodSync(unsafe, 0o755);
+    let touches = 0;
+    try {
+      for (const data of ["", "relative", join(root, "missing"), unsafe, "/control\npath"]) {
+        process.env.AUGGY_DATA_DIR = data;
+        await expect(
+          runStart("launch-test", {
+            ...options(),
+            listLaunchd: async () => {
+              touches++;
+              return "";
+            },
+            loadLaunchd: async () => {
+              touches++;
+            },
+            makeDirectory: () => {
+              touches++;
+            },
+          }),
+        ).rejects.toThrow();
+      }
+      expect(touches).toBe(0);
+      expect(existsSync(options().paths.storePath)).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.AUGGY_DATA_DIR;
+      else process.env.AUGGY_DATA_DIR = previous;
+    }
+  });
+
   test("rejects a broken application before changing the installed generation", async () => {
     writeFileSync(
       configPath,

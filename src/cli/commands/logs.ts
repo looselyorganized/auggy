@@ -1,5 +1,5 @@
 import { dirname } from "node:path";
-import { getAgentFromDir, readBoundCloudRecord } from "../agent-index";
+import { getAgentFromDir, normalizeCloudRecord, readBoundCloudRecord } from "../agent-index";
 import { readAgentName, resolveConfigPath } from "../resolve-config";
 import { parseAgentIdOnly } from "../yaml-helpers";
 import type { CloudRecord } from "../types";
@@ -31,11 +31,14 @@ export async function runLogs(name: string | undefined, opts: LogsOptions = {}):
 }
 
 export function formatRailwayLogsMessage(name: string, cloud: NonNullable<CloudRecord>): string {
+  const deployment = normalizeCloudRecord(cloud);
   return [
     `Railway logs for "${name}" are available in Railway.`,
     "",
     `Open Railway: ${railwayDashboardUrl(cloud)}`,
-    `App URL:      ${cloud.url}`,
+    deployment.profile.kind === "none"
+      ? "Worker:       no public HTTP endpoint"
+      : `App URL:      ${deployment.url}`,
     `Project:      ${cloud.projectId}`,
     `Service:      ${cloud.serviceId}`,
     "",

@@ -16,6 +16,8 @@ import {
 import { resolveConfigPath } from "../resolve-config";
 import { assertCurrentProjectRuntime, inspectLaunchSelection } from "../command-bootstrap";
 import type { PidManifest } from "../types";
+import { selectRuntimeDataRoot } from "../runtime-volume";
+import type { RuntimeDataEnvironment } from "../../runtime-data-contracts";
 import { runStop } from "./stop";
 import { runStart } from "./start";
 import { runDev } from "./dev";
@@ -163,6 +165,7 @@ async function restartResolvedTarget(
   const mode = current.mode;
   const configPath = assertRestartTarget(current, target.configPath ?? current.configPath);
   assertCurrentProjectRuntime(inspectLaunchSelection(configPath));
+  const runtimeDataEnvironment = resolveRestartStorage(current);
   console.log(`Restarting "${current.name}" (${mode} mode)...`);
 
   // Stop the agent.
@@ -182,6 +185,7 @@ async function restartResolvedTarget(
       lifecycleOwned: true,
       auggyDir: opts.auggyDir,
       processIdentityForPid: opts.processIdentityForPid,
+      runtimeDataEnvironment,
     });
   } else {
     await (opts._runDev ?? runDev)(current.name, {
@@ -189,8 +193,39 @@ async function restartResolvedTarget(
       lifecycleOwned: true,
       auggyDir: opts.auggyDir,
       processIdentityForPid: opts.processIdentityForPid,
+      runtimeDataEnvironment,
+      ...(current.runtimeData?.platform === "railway" ? { internalMode: "railway" } : {}),
     });
   }
+}
+
+/** A restart preserves storage; moving state requires an explicit stopped migration. */
+function resolveRestartStorage(current: PidManifest): RuntimeDataEnvironment | undefined {
+  const selected = process.env.AUGGY_DATA_DIR;
+  if (!current.runtimeData) {
+    if (selected !== undefined || process.env.RAILWAY_VOLUME_MOUNT_PATH !== undefined) {
+      throw new Error(
+        "The running runtime did not record its storage policy. No process was stopped. Stop it explicitly and start with the intended data root.",
+      );
+    }
+    return undefined;
+  }
+  const root = current.runtimeData.root;
+  if (selected !== undefined && selected !== root) {
+    throw new Error(
+      "AUGGY_DATA_DIR differs from the running agent's data root. No process was stopped. Moving storage requires an explicit stopped migration.",
+    );
+  }
+  const environment = {
+    auggyDataDir: root ?? undefined,
+    railwayVolumeMountPath: process.env.RAILWAY_VOLUME_MOUNT_PATH,
+  };
+  // Railway still requires the actual platform advertisement; never fabricate it.
+  selectRuntimeDataRoot(
+    current.runtimeData.platform === "railway" ? "railway" : "foreground",
+    environment,
+  );
+  return environment;
 }
 
 /** Validate a restart target completely before the running process is touched. */

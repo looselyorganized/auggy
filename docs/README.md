@@ -18,6 +18,8 @@ For installation and first-run instructions, start with the root
 - [Skills](./11-skills.md)
 - [Storage Layout](./16-storage-layout.md)
 - [Deploy](./18-deploy.md)
+- [Application Authentication and Authorization](./26-delegated-authorization.md)
+- [Optional Company Application Reference](../examples/company-app/README.md)
 - [Console](./21-console.md)
 - [Runtime State Recovery](./27-runtime-state-recovery.md)
 - [Delivery and Operator Recovery](./28-delivery-and-operator-recovery.md)

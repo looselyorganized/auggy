@@ -13,6 +13,7 @@ import { $ } from "bun";
 import { parseConfig } from "../config-parser";
 import {
   generatePlist,
+  assertPlistRuntimeDataRoot,
   logDir,
   plistInstallPath,
   plistLabel,
@@ -31,6 +32,8 @@ import {
 } from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
 import { assertCurrentProjectRuntime, inspectLaunchSelection } from "../command-bootstrap";
+import { prepareRuntimeDataVolume, selectRuntimeDataRoot } from "../runtime-volume";
+import type { RuntimeDataEnvironment } from "../../runtime-data-contracts";
 
 interface StartOptions {
   config?: string;
@@ -39,6 +42,8 @@ interface StartOptions {
   auggyDir?: string;
   processIdentityForPid?: (pid: number) => string | null;
   lifecycleOwned?: boolean;
+  /** Internal restart handoff; never a general environment capture. */
+  runtimeDataEnvironment?: RuntimeDataEnvironment;
   listLaunchd?: () => Promise<string>;
   unloadLaunchd?: (installPath: string) => Promise<void>;
   loadLaunchd?: (installPath: string) => Promise<void>;
@@ -69,6 +74,16 @@ export async function runStart(name: string | undefined, opts: StartOptions): Pr
   assertCurrentProjectRuntime(selection);
   const agentDir = dirname(configPath);
   const config = parseConfig(configPath);
+  const runtimeData = selectRuntimeDataRoot(
+    "launchd",
+    opts.runtimeDataEnvironment ?? {
+      auggyDataDir: process.env.AUGGY_DATA_DIR,
+      railwayVolumeMountPath: process.env.RAILWAY_VOLUME_MOUNT_PATH,
+    },
+  );
+  assertPlistRuntimeDataRoot(
+    runtimeData.kind === "local" ? undefined : runtimeData.runtimeDataRoot,
+  );
   const agentName = config.name;
   const processOptions = {
     auggyDir: opts.auggyDir,
@@ -83,6 +98,9 @@ export async function runStart(name: string | undefined, opts: StartOptions): Pr
     if (runningManifest) {
       throw new Error(formatAgentAlreadyRunningMessage(agentName, runningManifest));
     }
+    // Preflight the selected root before replacing a launchd generation. The
+    // child repeats admission and holds its own lease for its complete lifetime.
+    if (runtimeData.kind !== "local") prepareRuntimeDataVolume(runtimeData, config.id).release();
 
     // Supersede any previously installed generation before interacting with
     // launchd. An already-spawned old KeepAlive child must fail admission even
@@ -139,6 +157,7 @@ export async function runStart(name: string | undefined, opts: StartOptions): Pr
       configPath: resolve(configPath),
       bunPath: resolveBunPath(),
       cliEntryPoint: selection.runtime.cliPath,
+      ...(runtimeData.kind !== "local" ? { runtimeDataRoot: runtimeData.runtimeDataRoot } : {}),
     });
 
     const makeDirectory = opts.makeDirectory ?? ((path) => mkdirSync(path, { recursive: true }));

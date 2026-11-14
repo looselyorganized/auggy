@@ -1,0 +1,475 @@
+{
+  "schemaVersion": 1,
+  "milestone": 5,
+  "plan": "milestone-5-execution-2026-11-13.md",
+  "mode": "execution",
+  "orchestrator": "CTO / AI Engineering Lead (root)",
+  "maxConcurrentSpecialists": 3,
+  "authorization": {
+    "request": "Implement the plan.",
+    "scope": "Approved M5 implementation; separate M4 merge authorization and concrete hosted approval required; no M5 merge/version bump/publication",
+    "mergeAuthorization": {
+      "request": "merge if no standing issues with the codebase.",
+      "status": "granted_and_executed",
+      "pr": 229,
+      "mergedAt": "2026-11-13T22:13:15Z",
+      "mergeCommit": "c39b746b4b743e5c29dab61a677026c10626d8b8"
+    }
+  },
+  "baseline": {
+    "planningCandidate": "32d7265d0659d5911755e802d18a9f9077b80196",
+    "planningPR": "https://github.com/looselyorganized/auggy/pull/229",
+    "observedMain": "911fe1682c76208c1d99d4dc6841bfcaa608dd8d",
+    "observedMainTree": "d901475a9afb7a9d24dc70c21ac2480bfab78439",
+    "acceptedMain": "c39b746b4b743e5c29dab61a677026c10626d8b8",
+    "rootLockSHA256": "cd4b421883d2874dba117e9410acae08207f352d99b74fcd6a9872d35afde3f7",
+    "mergedMain": "c39b746b4b743e5c29dab61a677026c10626d8b8",
+    "mergedMainTree": "d56d32c6c4bf4b975419a37ff839587bdde35292",
+    "certifiedM4Repair": "56de4e380ffe1e39b7392eb7066c367766368321",
+    "acceptedMainTree": "d56d32c6c4bf4b975419a37ff839587bdde35292"
+  },
+  "gates": {
+    "G0": {
+      "status": "accepted",
+      "requires": [
+        "separately authorized PR229 merge",
+        "verify exact resulting main/tree",
+        "required main CI/PG17 and full CodeQL findings",
+        "reconcile source against reviewed M4 head"
+      ],
+      "pending": [],
+      "evidence": {
+        "mergePR": "https://github.com/looselyorganized/auggy/pull/229",
+        "certifiedPRHead": "56de4e380ffe1e39b7392eb7066c367766368321",
+        "prChecksPassed": 31,
+        "prCI": 43515921164,
+        "prRelease": 43515921228,
+        "prReleaseArtifact": 14080569183,
+        "prFullCodeQL": 43515956526,
+        "prFullCodeQLAnalysis": 2164832777,
+        "mainCI": 43517469604,
+        "mainCodeQL": 43517469468,
+        "mainTreeMatchesCertifiedHead": true,
+        "independentReview": "m4_merge_gate_audit: repair and macOS/Linux evidence accepted; no remaining merge blocker",
+        "mainCIConclusion": "success",
+        "mainCodeQLConclusion": "success",
+        "mainFullCodeQLAnalysis": 2164894539,
+        "mainOpenCodeQLAlerts": 0,
+        "mainPostgreSQL": {
+          "registered": 13,
+          "completed": 13,
+          "serverVersion": 170010
+        },
+        "independentEntryAudit": "m4_merge_gate_audit: accepted ancestry/tree, PG17, hashes and ledger state; no entry blockers"
+      },
+      "acceptedCommit": "c39b746b4b743e5c29dab61a677026c10626d8b8"
+    },
+    "G4": {
+      "status": "blocked",
+      "requires": [
+        "accepted local/container evidence",
+        "exact isolated Railway target",
+        "resource/spending limits",
+        "retention and cleanup policy",
+        "private fixture connectivity",
+        "concrete hosted execution approval"
+      ],
+      "pending": [
+        "Required CI, all six Linux integration rows and release rehearsal accepted on a5aa966; supplemental safe scaffold diagnostics and confirmed Alpine publication repair require new-head verification",
+        "Renewed Railway authentication for read-only target discovery; current login is expired",
+        "Exact isolated workspace/project/environment and verified resource limits",
+        "Reviewed loopback fixture control via exact Railway SSH instance, environment binding, per-generation durable journal seal/export and maintenance/recovery operations",
+        "Approval contract amendment binding source-built image provenance and exact action/recovery resources (two agents plus optional recovery; no third fixture service required)",
+        "Explicit approval of the final concrete hosted action manifest; login is not authorization"
+      ]
+    },
+    "G1": {
+      "status": "accepted",
+      "acceptedCommit": "e0ecbf767a8c4c26a022f8a59d59c257d7a217a2",
+      "evidence": [
+        "Actual C1-C4 interfaces and compile fixture pass strict typecheck",
+        "Repository lint passes (713 files); diff whitespace check passes",
+        "m5_freeze_review independently accepted without blockers",
+        "Pinned base image configs and layers verified; default UID/GID 0:0"
+      ]
+    },
+    "G3": {
+      "status": "accepted",
+      "acceptedCommit": "515cf793526f18f5355fc31015b3b9cfe075e881",
+      "scope": "Actual six-row local/browser/container certification; final required CI and hosted G4 are separate",
+      "evidence": {
+        "runId": "eafe3cff-7f9e-49f0-b751-6c78ef012d0b",
+        "tree": "0c638856689de20a6b593c9cf43182ee2ee13400",
+        "scenarios": 6,
+        "sourceFiles": 1469,
+        "packedFiles": 431,
+        "packedArchives": 5,
+        "installedFileClaims": 792,
+        "artifactHashes": 21,
+        "removedDockerResources": 27,
+        "aggregateSHA256": "c16192039bc645d244b57cf2e88d607e5773da5c5def0d2bddc8554385338665",
+        "independentReviewer": "m5_integration_review: accepted exact provenance, behavior, bounds, cleanup and private-credential exclusion"
+      }
+    }
+  },
+  "contracts": {
+    "C1": "milestone-5-contracts/storage-replay.md",
+    "C2": "milestone-5-contracts/deployment.md",
+    "C3_C4": "milestone-5-contracts/integration-acceptance.md"
+  },
+  "allowedStates": [
+    "blocked",
+    "ready",
+    "in_progress",
+    "review",
+    "accepted"
+  ],
+  "tasks": [
+    {
+      "id": "M5-00",
+      "title": "Freeze accepted main and contracts",
+      "specialist": "CTO / architect",
+      "status": "accepted",
+      "dependsOn": [],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "e0ecbf767a8c4c26a022f8a59d59c257d7a217a2",
+      "evidence": [
+        "G0 accepted on c39b746",
+        "Actual C1-C4 modules and compile fixture pass strict typecheck; lint passes",
+        "Independent m5_freeze_review accepted without blockers; verified image UID/GID 0:0"
+      ]
+    },
+    {
+      "id": "M5-01",
+      "title": "Portable runtime storage",
+      "specialist": "Runtime/storage engineer",
+      "status": "accepted",
+      "dependsOn": [
+        "M5-00"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "d7d80695e00cf4e8bbcde8fbebb5721c47c6eefe",
+      "evidence": [
+        "Implementation and root launch/operator integration complete",
+        "Independent m5_freeze_review accepted without blockers",
+        "280 focused tests /973 assertions passed; strict typecheck and exact 25-file scoped Biome passed"
+      ]
+    },
+    {
+      "id": "M5-02",
+      "title": "Pure Docker export",
+      "specialist": "Packaging engineer",
+      "status": "accepted",
+      "dependsOn": [
+        "M5-00",
+        "M5-01"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "17359c6d137f44d148f322e069c4ba18e2902696",
+      "evidence": [
+        "Independent m5_freeze_review accepted final source candidate without blockers",
+        "Exact staged M5-02 snapshot: 96 tests /685 assertions; strict typecheck; repository lint (736 files) passed",
+        "Actual declared CLI/bin-symlink preload refusal and offline frozen nested archive install verified; image execution remains pending"
+      ]
+    },
+    {
+      "id": "M5-03",
+      "title": "Channel-aware Railway deployment",
+      "specialist": "Deployment engineer",
+      "status": "accepted",
+      "dependsOn": [
+        "M5-01",
+        "M5-02"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "e35cafb6588b0c867c444229287788c9528208f1",
+      "evidence": [
+        "Independent deployment review accepted all repaired admission/override/cleanup boundaries: 349 tests / 1441 assertions",
+        "Exact staged source snapshot: 375 tests / 1613 assertions and strict typecheck passed; repository lint passed (765 files)",
+        "Final help-only version wording clarified and focused regression rechecked; no hosted execution claimed",
+        "Integrated compatibility-archive privacy gap repaired with shared raw source/state inventory and staged validation; independent 166 tests /1085 assertions plus actual runDeploy upload-boundary counterexample accepted. Private source remains unchanged and nonempty mutable memory refuses before Railway access."
+      ],
+      "supplementalRepairCommit": "1cd4eb5"
+    },
+    {
+      "id": "M5-04",
+      "title": "Durable assertion replay and restore guard",
+      "specialist": "Security/storage engineer",
+      "status": "accepted",
+      "dependsOn": [
+        "M5-00",
+        "M5-01"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "9408736bac4a758decc038156c1972eac4599cdc",
+      "evidence": [
+        "Independent m5_freeze_review accepted final source candidate without blockers",
+        "Exact staged M5-04 snapshot: 531 tests /1994 assertions; strict typecheck; repository lint (722 files) passed",
+        "Accepted immutable M5-04 commit; application integration dependency released"
+      ]
+    },
+    {
+      "id": "M5-05",
+      "title": "Optional application integration",
+      "specialist": "Application integration engineer",
+      "status": "accepted",
+      "dependsOn": [
+        "M5-00",
+        "M5-04"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "515cf793526f18f5355fc31015b3b9cfe075e881",
+      "evidence": [
+        "Implementation checkpoint 714db5e: app/source security review, isolated frozen install, real Node production build, 14 tests / 264 assertions and audit passed",
+        "Independent actual installed HTTP/production/browser rerun passed all three rows; one browser effect and one committed unknown effect, zero duplicate/unauthorized effects; all process groups cleaned",
+        "Private evidence and intentional crash oracle repairs independently accepted; final committed artifact rerun pending",
+        "Clean CI company-app typing repair157132a passed on74249c1. Browser runtime selection repairc7e56c2 independently accepted with actual native Node execution; safe original locations retained, shared writable source gets private verified copy. Fresh complete artifact execution still required.",
+        "3363581 macOS browser driver/behavior passed but intentional Chromium shutdown transiently set orphanedGroup; aggregate remained failed. Supervisor repaird99b53c accepted independently; fresh complete artifact proof required. Linux reached Chromium size preflight; browser-only bound repair89cbf00 accepted, actual Linux rerun required.",
+        "Accepted exact515cf79 installed application/browser evidence: three application rows passed, production0/HTTP1/browser1 effects, zero duplicate/unauthorized effects, real Chromium/nativeNode, complete cleanup. Independent journal, input hash, artifact and private credential audit accepted."
+      ]
+    },
+    {
+      "id": "M5-06",
+      "title": "Standalone channel acceptance",
+      "specialist": "Channel harness engineer",
+      "status": "accepted",
+      "dependsOn": [
+        "M5-00",
+        "M5-02"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "3363581bc95d72ce22e33a3c5e6e03650412f502",
+      "evidence": [
+        "Independent actual installed normalworker passed2authorizedeffects0duplicates0unauthorized",
+        "Two harness findings repaired; mutatedanonymous-to-recognized runtime and stale-poll controls correctlyfail with cleanprocesscleanup",
+        "Final committedartifact rerun remains pending",
+        "Reviewed installed Telegram harness checkpoint committed at 214bef2; final settled artifact rerun pending",
+        "Installed Telegram passes in macOS and Linux artifact runs through 74249c1, with cleanup. Actual polling-container row eaa76e5 separately accepted after normal/replay-bypass/trust-escalation Docker controls.",
+        "Root accepts standalone-channel scope on committed3363581 artifacts: macOS and Linux installed Telegram rows passed serialization, creator/recognized/anonymous/group/admitted mapping, replay replacement, owned source edit, conflict/quarantine and cleanup. Independent evidence review confirms source identity and sanitized artifacts. This does not accept the separate aggregate/container/hosted gate."
+      ]
+    },
+    {
+      "id": "M5-07",
+      "title": "Installed/container/hosted acceptance",
+      "specialist": "Acceptance engineer",
+      "status": "in_progress",
+      "dependsOn": [
+        "M5-00"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [
+        "M5-01",
+        "M5-02",
+        "M5-03",
+        "M5-04",
+        "M5-05",
+        "M5-06",
+        "M5-08"
+      ],
+      "acceptedCommit": null,
+      "evidence": [
+        "Reviewed foundation checkpoint a352e38; source review and actual protocol controls do not replace final artifact proof",
+        "Independent repaired application/browser, artifact-source and aggregate oracles accepted; all packed source bytes now compared with committed files or explicitly identified console build output",
+        "Actual provisional Docker run passed 23 checks, observed 4 effects, zero duplicate/unauthorized effects and complete cleanup",
+        "Complete logs, tested image identity and diagnostic redaction independently accepted: 24 tests / 124 assertions",
+        "Recovery mount repair d82af27 independently accepted; final default ./data paths require fresh packed run",
+        "Clean committed all-stage and hosted acceptance remain open",
+        "Reviewed aggregate harness committed at 69ca967; root 69 tests / 433 assertions, strict typecheck and lint passed",
+        "fcfd194 tracked runtime/console run: 5755 passed, 0 failed, 13 local PostgreSQL skips. Actual PostgreSQL17 CI on 74249c1 completed all13 registered cases (server170010).",
+        "Generic container recovery passes actual macOS/Linux runs with default ./data restore mount handling; aggregate canonical scenario identity corrected at74249c1.",
+        "A12 polling-container proof eaa76e5: actual normal run2effects/0duplicates/0unauthorized; replay mutant fails with duplicate1, trust escalation mutant fails with unauthorized1; all owned resources cleaned.",
+        "Fresh all-stage proof remains pending: 74249c1 Linux app failed Node permission preflight, and operator shard had two timing assumptions fixed independently atfe97c60. No failed row waived.",
+        "3363581 Linux actual HTTP storage-recovery and Telegram polling container rows both passed with cleanup. macOS polling default CLI lookup was unavailable under isolated PATH;59a5f3d independently accepted with actual fresh default-binary Docker proof.",
+        "Release rehearsal found stale bundler prefix oracle. Ownership repairfc3d6b3 independently accepted; actual packed336 consumer verifies25sourcefiles, private exclusions and complete cleanup.",
+        "3363581 aggregate remains failed: browser supervisor race on macOS, pinned Linux Chromium executable exceeds inherited256MiB bound. Repairsd99b53c/89cbf00 preserve shutdown/reap and non-browser limits; new final artifact run required.",
+        "G3 accepted on515cf79: all six actual local/container rows passed and all27 owned Docker resources plus temporary runtime/build workspaces removed. Independent full source/packed/installed/hash/behavior/bounds/privacy audit accepted. Linux CI requires targeted AppArmor userns support; G4 hosted remains open.",
+        "Required CI43563713875 and release43563713863 passed on a5aa966. Independently audited all six actual Linux rows, exact source/artifact identities, browser effects and complete cleanup; PostgreSQL17 completed all13 required cases. New scaffold diagnostics and Alpine no-replace repair remain supplemental verification work."
+      ]
+    },
+    {
+      "id": "M5-08",
+      "title": "Operator and developer teaching",
+      "specialist": "Documentation engineer",
+      "status": "accepted",
+      "dependsOn": [
+        "M5-01",
+        "M5-02",
+        "M5-03",
+        "M5-04",
+        "M5-05",
+        "M5-06"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "9c41541b7d7708f8eabec29ab3548e187bddaf52",
+      "evidence": [
+        "Independent source/doc parity review accepted all 11 files; no unsupported final or hosted certification claim",
+        "134 relative links/anchors and five actual CLI help surfaces verified; Markdown structure and diff checks passed",
+        "Root clarified that bundled built-ins follow auggy, while separate capability/provider packages follow their own manifest and lockfile selection",
+        "Supplemental passive-inspection teaching correction39ee525 accepted independently across generated README, canonical starter skill and both mirrors; actual Bun preload trap and strict documented v2 cloud record validated."
+      ],
+      "supplementalRepairCommit": "39ee525"
+    },
+    {
+      "id": "M5-09",
+      "title": "Independent integrated review",
+      "specialist": "Architecture/security/harness reviewer",
+      "status": "blocked",
+      "dependsOn": [
+        "M5-01",
+        "M5-02",
+        "M5-03",
+        "M5-04",
+        "M5-05",
+        "M5-06",
+        "M5-07",
+        "M5-08"
+      ],
+      "blockedBy": [
+        "M5-07"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": null,
+      "evidence": [
+        "Preliminary integrated review found compatibility private-state gap and stale inspect/cloud teaching; both repaired and independently accepted. No additional concrete source seam blocker found; final acceptance still depends on final artifact and hosted gates."
+      ]
+    },
+    {
+      "id": "M5-10",
+      "title": "Final certification and PR handoff",
+      "specialist": "CTO / orchestrator",
+      "status": "blocked",
+      "dependsOn": [
+        "M5-07",
+        "M5-08",
+        "M5-09"
+      ],
+      "blockedBy": [
+        "M5-07",
+        "M5-09"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": null,
+      "evidence": []
+    }
+  ],
+  "activeOwnership": {
+    "root": "Maintain accepted repair evidence, draft PR230 and final-head verification; Railway discovery awaits renewed login",
+    "m5_final_ci_review": "Independent final-head CI, PostgreSQL, release, full-CodeQL and final-archive Alpine audit",
+    "m5_freeze_review": "Completed independent POSIX ABI, atomic-publication and pinned Alpine experiment acceptance"
+  },
+  "notes": [
+    "Each company owns a separate deployment; no managed platform or shared-company tenancy.",
+    "Channels are optional; Next.js and HTTP are not runtime requirements.",
+    "Only root changes gate/task acceptance; producers cannot accept themselves.",
+    "G0/G1/G3 and M5-00/01/02/03/04/05/06/08 accepted for their scopes. All required CI/release passed on a5aa966; supplemental repairs require final-head verification. Hosted G4, M5-07 and final M5-09/10 acceptance remain open."
+  ],
+  "preparation": {
+    "status": "accepted",
+    "scope": "Preparation superseded by accepted M5-00 concrete interface freeze",
+    "independentReview": "m5_contract_review: preparation recheck passed; R1/R2 resolved; no product acceptance",
+    "planSHA256": "0905fe797868cd78edb6a99368a0f11e4e5068cd312198400080cf5c3be43d16",
+    "contractSHA256": {
+      "C1": "8c44ce696c8192c742f20cffbcdf046b10e81117aa6b34f93af3766b2005af10",
+      "C2": "3e06671b3d87d5e98a319e3eed97a6438573513af1d0c1fba67ab581e12fce27",
+      "C3_C4": "6d82507234e3fca33402a49651d5708d599dbd00e0b09e892998c6186c774e70"
+    },
+    "dispositions": [
+      {
+        "id": "R1",
+        "status": "resolved_for_preparation",
+        "decision": "Fixture-only startup fetch overlay reaches normal Telegram HTTP/SQLite path; no production hook"
+      },
+      {
+        "id": "R2",
+        "status": "resolved_for_preparation",
+        "decision": "Railway-only empty-owned-mount mode initialization before ordinary admission; generic roots operator-provisioned"
+      }
+    ],
+    "remainingFreezeChecks": []
+  },
+  "freeze": {
+    "status": "accepted",
+    "independentReview": "m5_freeze_review: accepted, no blockers",
+    "documents": [
+      "milestone-5-contracts/storage-freeze.md",
+      "milestone-5-contracts/deployment-freeze.md",
+      "milestone-5-contracts/integration-freeze.md",
+      "milestone-5-contracts/image-baseline.md"
+    ],
+    "contractModules": [
+      "src/runtime-data-contracts.ts",
+      "src/auth/external-auth-replay-contracts.ts",
+      "src/cli/deploy/contracts.ts",
+      "examples/company-app/src/server/contracts.ts",
+      "scripts/release-smoke/integration-contracts.ts"
+    ],
+    "compileFixture": "tests/fixtures/milestone-5-contracts.ts",
+    "imageIndex": "sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b47bdbf2152d2196383c0",
+    "defaultContainerUid": 0,
+    "defaultContainerGid": 0,
+    "localDocker": "available: existing Docker Desktop started for authorized local checks; server 29.1.3, Linux ARM64 VM",
+    "acceptedCommit": "e0ecbf767a8c4c26a022f8a59d59c257d7a217a2",
+    "initialLocalDocker": "unavailable: configured socket absent"
+  },
+  "verificationCheckpoint": {
+    "revision": "a5aa966c031211dbce0ececb168856f2a1ad65d8",
+    "tree": "3e85a33cbbe62047a155214accb79aa44123beea",
+    "ci": 43563713875,
+    "ciConclusion": "success",
+    "fullCodeQL": 43563741606,
+    "analysis": 2166475521,
+    "codeQLRules": 103,
+    "codeQLResults": 5,
+    "openAlertTriage": {
+      "number": 130,
+      "rule": "js/insecure-temporary-file",
+      "disposition": "False positive: flagged source open is O_RDONLY | O_NOFOLLOW | O_NONBLOCK; destination creation remains O_WRONLY | O_CREAT | O_EXCL with mode0600. Alert state unchanged."
+    },
+    "draftPR": "https://github.com/looselyorganized/auggy/pull/230",
+    "milestoneComplete": false,
+    "release": 43563713863,
+    "releaseConclusion": "success: all providers, application, inspection, migration, ownership and deployment passed",
+    "testedMergeRevision": "6dacd1dcbb6bf97dbd9c2e99b60279f6b209e80d",
+    "postgreSQL": {
+      "registered": 13,
+      "completed": 13,
+      "serverVersion": 170010
+    },
+    "portableIntegration": {
+      "status": "passed",
+      "scenarios": 6,
+      "workspaceCleanup": "complete",
+      "aggregateSHA256": "459a318926228e5cb8eae1b92c81bb940acf0d0632e6e3f830614978e8efaf2c"
+    },
+    "supplementalVerification": "New-head checks required after accepted c1c991f controlled diagnostics and eb9b362 Alpine atomic publication repair"
+  },
+  "supplementalRepairs": {
+    "diagnostics": {
+      "commit": "c1c991fccebde338c2eeb613c5bafe8607be60ed",
+      "status": "accepted_source",
+      "independentTests": 5,
+      "independentAssertions": 29
+    },
+    "alpinePublication": {
+      "commit": "eb9b362",
+      "status": "accepted_source_and_explicit_overlay_experiment",
+      "sourceSHA256": "fa4c98eab981a05d605978a424fc7e0d1088ab06edaed2c7c72269dcfc1813e8",
+      "testsSHA256": "332e9d7fa3b5b84c50325402478af6a396da3b1f326b64faf86ee8bb2f3e17cd",
+      "independentTests": 21,
+      "independentAssertions": 119,
+      "alpineArm64Tests": 9,
+      "alpineX64Tests": 9,
+      "alpineArm64FreshCreates": 30,
+      "finalArchiveProof": "pending",
+      "originalUbuntu515Cause": "unexplained"
+    }
+  }
+}

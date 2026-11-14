@@ -3,7 +3,7 @@
  *
  * Sole owner of `railway` binary knowledge in the codebase. Every Railway
  * operation calls `runRailway(args, opts)` which uses the injected spawn
- * factory (defaults to `Bun.spawn`). Tests override the factory to mock
+ * factory (defaults to an owned POSIX process group). Tests override it to mock
  * subprocess behavior without spawning anything.
  *
  * Operator pre-requisites: `railway` CLI installed (https://docs.railway.com/develop/cli)
@@ -11,10 +11,23 @@
  * pattern as `git push` trusts `git`. No token storage in this codebase.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+} from "node:fs";
+import { spawn as spawnChild } from "node:child_process";
+import { Readable } from "node:stream";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readAllText } from "../_shared/stream";
+import { DEPLOYMENT_READINESS_DEFAULTS } from "./contracts";
+import { validateHealthPath } from "./profile";
 
 export class RailwayCliMissingError extends Error {
   constructor() {
@@ -46,6 +59,9 @@ interface SpawnHandle {
   exited: Promise<number>;
   stdout: ReadableStream<Uint8Array>;
   stderr: ReadableStream<Uint8Array>;
+  kill(signal?: NodeJS.Signals): void;
+  /** True while any process in this handle's owned group still exists. */
+  isRunning(): boolean;
 }
 
 interface InteractiveSpawnHandle {
@@ -54,7 +70,12 @@ interface InteractiveSpawnHandle {
 
 export type RailwaySpawnFactory = (
   cmd: string[],
-  opts?: { cwd?: string; env?: Record<string, string>; stdin?: string },
+  opts?: {
+    cwd?: string;
+    env?: Record<string, string>;
+    stdin?: string;
+    ownedProcessGroup?: boolean;
+  },
 ) => SpawnHandle;
 
 export type RailwayInteractiveSpawnFactory = (
@@ -87,7 +108,30 @@ interface RunOrThrowOptions {
 export interface RailwayStatus {
   project?: { id?: string; name?: string };
   service?: { id?: string; name?: string };
-  deployment?: { status?: string };
+  deployment?: { id?: string; status?: string };
+}
+
+export interface RailwayTarget {
+  projectId: string;
+  serviceId: string;
+  environmentId: string;
+}
+
+export interface RailwayIngress extends RailwayTarget {
+  serviceName: string;
+  domains: Array<{ domain: string; targetPort: number | null }>;
+  /** Only HTTP-related keys escape the secret-bearing variable response. */
+  httpVariables: string[];
+  healthPath: string | null;
+  replicas: number;
+  latestDeploymentId: string | null;
+}
+
+export interface RailwayStatusOptions {
+  cwd: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  target?: RailwayTarget;
 }
 
 export interface RailwayWorkspace {
@@ -103,35 +147,70 @@ export interface RailwayProject {
 }
 
 const defaultSpawn: RailwaySpawnFactory = (cmd, opts = {}) => {
-  if (opts.stdin !== undefined) {
-    const proc = Bun.spawn(cmd, {
-      cwd: opts.cwd,
-      env: opts.env ? { ...process.env, ...opts.env } : undefined,
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    proc.stdin.write(opts.stdin);
-    proc.stdin.end();
-    return {
-      exited: proc.exited,
-      stdout: proc.stdout,
-      stderr: proc.stderr,
-    };
-  }
-
-  const proc = Bun.spawn(cmd, {
+  // npm's official railway.js wrapper synchronously spawns the native binary.
+  // Bounded reads use a detached POSIX group owning both processes; killing
+  // only the wrapper leaks the native request and inherited output pipes.
+  // Ordinary commands retain foreground process-group signal behavior.
+  const ownsGroup = opts.ownedProcessGroup === true;
+  if (process.platform === "win32")
+    throw new Error(
+      "Railway deployment requires POSIX process-group supervision on this platform.",
+    );
+  const child = spawnChild(cmd[0]!, cmd.slice(1), {
     cwd: opts.cwd,
-    env: opts.env ? { ...process.env, ...opts.env } : undefined,
-    stdout: "pipe",
-    stderr: "pipe",
+    env: opts.env ? { ...process.env, ...opts.env } : process.env,
+    detached: ownsGroup,
+    stdio: ["pipe", "pipe", "pipe"],
   });
+  const processId = child.pid;
+  const exited = new Promise<number>((resolve, reject) => {
+    child.once("error", (error) =>
+      reject(
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+          ? new RailwayCliMissingError()
+          : new Error("Railway subprocess could not start."),
+      ),
+    );
+    child.once("exit", (code) => resolve(code ?? 1));
+  });
+  child.stdin.on("error", () => {});
+  child.stdin.end(opts.stdin);
   return {
-    exited: proc.exited,
-    stdout: proc.stdout,
-    stderr: proc.stderr,
+    exited,
+    stdout: Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
+    stderr: Readable.toWeb(child.stderr) as ReadableStream<Uint8Array>,
+    kill(signal = "SIGKILL") {
+      if (processId === undefined) return;
+      try {
+        if (ownsGroup) process.kill(-processId, signal);
+        else child.kill(signal);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH")
+          throw new RailwaySubprocessCleanupError();
+      }
+    },
+    isRunning() {
+      if (processId === undefined) return false;
+      if (!ownsGroup) return child.exitCode === null && child.signalCode === null;
+      try {
+        process.kill(-processId, 0);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+        throw new RailwaySubprocessCleanupError();
+      }
+    },
   };
 };
+
+export class RailwaySubprocessCleanupError extends Error {
+  constructor() {
+    super(
+      "Railway subprocess group cleanup could not be verified within its deadline; deployment stopped.",
+    );
+    this.name = "RailwaySubprocessCleanupError";
+  }
+}
 
 function commandError(
   args: readonly string[],
@@ -167,11 +246,166 @@ export interface RailwayCli {
   createService(args: { serviceName: string; cwd: string }): Promise<void>;
   setVariable(args: { key: string; value: string; cwd: string }): Promise<void>;
   up(args: { cwd: string }): Promise<void>;
-  generateDomain(args: { cwd: string }): Promise<string>;
+  generateDomain(args: { cwd: string; port?: number }): Promise<string>;
   addVolume(args: { name: string; mountPath: string; cwd: string }): Promise<void>;
-  status(args: { cwd: string }): Promise<RailwayStatus>;
+  status(args: RailwayStatusOptions): Promise<RailwayStatus>;
+  inspectIngress(args: { cwd: string }): Promise<RailwayIngress>;
+  inspectVolume(args: { cwd: string; target: RailwayTarget }): Promise<string | null>;
   destroyService(args: { cwd: string }): Promise<void>;
   logs(args: { cwd: string }): Promise<void>;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function targetId(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    value !== value.trim() ||
+    Buffer.byteLength(value) > 256 ||
+    /\p{Cc}/u.test(value)
+  ) {
+    throw new Error(
+      "Railway did not report a valid linked target. Relink the project, service and environment.",
+    );
+  }
+  return value;
+}
+
+const serviceInstanceQuery =
+  "query AuggyDeployment($serviceId: String!, $environmentId: String!) { serviceInstance(serviceId: $serviceId, environmentId: $environmentId) { serviceName healthcheckPath numReplicas buildCommand builder dockerfilePath preDeployCommand railwayConfigFile rootDirectory startCommand cronSchedule latestDeployment { id status } } }";
+
+// Narrow projection of Railway CLI v5.30.1 EnvironmentInstances.graphql.
+const volumeQuery =
+  "query AuggyVolume($projectId: String!, $environmentId: String!) { environment(id: $environmentId, projectId: $projectId) { id volumeInstances(first: 500) { edges { node { serviceId environmentId mountPath state deletedAt isPendingDeletion volume { id } } } pageInfo { hasNextPage } } } }";
+
+export class RailwayDeploymentPolicyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RailwayDeploymentPolicyError";
+  }
+}
+
+/** Reject control variables without ever exposing secret-bearing values. */
+export function assertNoRailwayBuildVariables(variables: Record<string, unknown>): void {
+  if (
+    Object.keys(variables).some(
+      (key) =>
+        key === "RAILWAY_DOCKERFILE_PATH" ||
+        key.startsWith("RAILPACK_") ||
+        key.startsWith("NIXPACKS_"),
+    ) ||
+    (Object.hasOwn(variables, "RAILWAY_RUN_UID") && variables.RAILWAY_RUN_UID !== "0")
+  ) {
+    throw new RailwayDeploymentPolicyError(
+      "Managed Railway deployment requires the generated Dockerfile and inherited image user. Review/remove build, Dockerfile or runtime-user override variables, or deploy the exported Docker context manually.",
+    );
+  }
+}
+
+function assertManagedServiceSettings(instance: Record<string, unknown>): void {
+  const absent = (value: unknown) => value === null || value === "";
+  const noPreDeploy =
+    instance.preDeployCommand === null ||
+    (Array.isArray(instance.preDeployCommand) && instance.preDeployCommand.length === 0);
+  if (
+    !absent(instance.buildCommand) ||
+    !absent(instance.startCommand) ||
+    !absent(instance.railwayConfigFile) ||
+    !absent(instance.cronSchedule) ||
+    !(absent(instance.dockerfilePath) || instance.dockerfilePath === "Dockerfile") ||
+    !(absent(instance.rootDirectory) || instance.rootDirectory === "/") ||
+    !noPreDeploy ||
+    !["RAILPACK", "DOCKERFILE"].includes(instance.builder as string) ||
+    instance.numReplicas !== 1
+  ) {
+    throw new RailwayDeploymentPolicyError(
+      "Managed Railway deployment requires the root generated Dockerfile, its default entrypoint, one replica, and no custom Railway config, build/start/pre-deploy command or cron override. Review/reset the service settings or deploy the exported Docker context manually.",
+    );
+  }
+}
+
+function apiArgs(target: RailwayTarget): string[] {
+  return [
+    "api",
+    serviceInstanceQuery,
+    "--variables",
+    JSON.stringify({
+      serviceId: target.serviceId,
+      environmentId: target.environmentId,
+    }),
+    "--compact",
+  ];
+}
+
+function serviceInstance(value: unknown): Record<string, unknown> {
+  const root = record(value);
+  const instance = record(record(root?.data)?.serviceInstance);
+  if (!root || root.errors !== undefined || !instance) {
+    throw new Error("Railway service metadata is unavailable or malformed; deployment stopped.");
+  }
+  return instance;
+}
+
+/** Ambient target selectors can redirect creation before any linked-target read. */
+export function assertNoAmbientRailwayTarget(): void {
+  for (const key of ["RAILWAY_PROJECT_ID", "RAILWAY_SERVICE_ID", "RAILWAY_ENVIRONMENT_ID"]) {
+    if (process.env[key] !== undefined)
+      throw new RailwayDeploymentPolicyError(
+        `Unset ${key} before deploying; Auggy requires an explicit linked Railway target.`,
+      );
+  }
+}
+
+/** Match the exact staged-directory link written by Railway, never an ancestor's target. */
+function readLinkedTarget(configPath: string, cwd: string): RailwayTarget {
+  assertNoAmbientRailwayTarget();
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(
+      configPath,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile() || stat.size > DEPLOYMENT_READINESS_DEFAULTS.railwayStatusOutputBytes)
+      throw new Error();
+    const bytes = Buffer.alloc(DEPLOYMENT_READINESS_DEFAULTS.railwayStatusOutputBytes + 1);
+    let used = 0;
+    while (used < bytes.length) {
+      const count = readSync(descriptor, bytes, used, bytes.length - used, null);
+      if (!count) break;
+      used += count;
+    }
+    if (used > DEPLOYMENT_READINESS_DEFAULTS.railwayStatusOutputBytes || used !== stat.size)
+      throw new Error();
+    const parsed = record(JSON.parse(bytes.subarray(0, used).toString("utf8")));
+    const path = realpathSync(cwd);
+    const linked = record(record(parsed?.projects)?.[path]);
+    if (!linked || linked.projectPath !== path) throw new Error();
+    return {
+      projectId: targetId(linked.project),
+      serviceId: targetId(linked.service),
+      environmentId: targetId(linked.environment),
+    };
+  } catch {
+    throw new Error(
+      "Cannot verify Railway's linked project, service and environment. Relink the staged target before deploying.",
+    );
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function sameTarget(left: RailwayTarget, right: RailwayTarget): boolean {
+  return (
+    left.projectId === right.projectId &&
+    left.serviceId === right.serviceId &&
+    left.environmentId === right.environmentId
+  );
 }
 
 export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli {
@@ -182,6 +416,115 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
   const sleep =
     opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const retryDelayMs = opts.retryDelayMs ?? 750;
+
+  /** Every bounded read owns termination, stream cancellation and child reaping. */
+  async function boundedJson(args: string[], request: RailwayStatusOptions): Promise<unknown> {
+    const timeoutMs =
+      request.timeoutMs ?? DEPLOYMENT_READINESS_DEFAULTS.railwayStatusRequestTimeoutMs;
+    if (
+      !Number.isFinite(timeoutMs) ||
+      timeoutMs <= 0 ||
+      timeoutMs > DEPLOYMENT_READINESS_DEFAULTS.railwayStatusRequestTimeoutMs
+    ) {
+      throw new Error("Railway status timeout must be finite, positive and at most 15000 ms.");
+    }
+    if (request.signal?.aborted) throw new Error("Railway metadata read was cancelled.");
+    const deadline = performance.now() + timeoutMs;
+    let handle: SpawnHandle;
+    try {
+      handle = spawn(["railway", ...args], { cwd: request.cwd, ownedProcessGroup: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new RailwayCliMissingError();
+      throw new Error("Railway metadata read could not start.");
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let bytes = 0;
+    const readers = [handle.stdout.getReader(), handle.stderr.getReader()];
+    let stopped = false;
+    let rejectStopped!: (error: Error) => void;
+    const stopPromise = new Promise<never>((_, reject) => {
+      rejectStopped = reject;
+    });
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      try {
+        handle.kill("SIGKILL");
+      } catch {
+        /* Reaping below decides completion. */
+      }
+      for (const reader of readers) void reader.cancel().catch(() => {});
+      rejectStopped(
+        new Error("Railway metadata read exceeded its time/output bound or was cancelled."),
+      );
+    };
+    const read = async (index: number): Promise<string> => {
+      const chunks: Uint8Array[] = [];
+      const reader = readers[index]!;
+      while (true) {
+        const part = await reader.read();
+        if (part.done) break;
+        bytes += part.value.byteLength;
+        if (bytes > DEPLOYMENT_READINESS_DEFAULTS.railwayStatusOutputBytes) {
+          stop();
+          throw new Error();
+        }
+        chunks.push(part.value);
+      }
+      return Buffer.concat(chunks).toString("utf8");
+    };
+    // Reserve part of the same deadline to reap after SIGKILL. No retry extends it.
+    const reserve = Math.min(250, timeoutMs / 4);
+    timer = setTimeout(stop, Math.max(0, deadline - performance.now() - reserve));
+    request.signal?.addEventListener("abort", stop, { once: true });
+    const completion = Promise.all([read(0), read(1), handle.exited]);
+    try {
+      const [stdout, , code] = await Promise.race([completion, stopPromise]);
+      if (code !== 0 || handle.isRunning()) throw new Error();
+      const parsed: unknown = JSON.parse(stdout);
+      if (!record(parsed)) throw new Error();
+      return parsed;
+    } catch {
+      stop();
+      let reapTimer: ReturnType<typeof setTimeout> | undefined;
+      const cleanup = async (): Promise<boolean> => {
+        const reaped = await handle.exited.then(
+          () => true,
+          () => false,
+        );
+        if (!reaped) return false;
+        while (performance.now() < deadline) {
+          try {
+            if (!handle.isRunning()) return true;
+          } catch {
+            /* A dying group can briefly be unsignalable; require disappearance by the deadline. */
+          }
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, Math.min(5, Math.max(0, deadline - performance.now()))),
+          );
+        }
+        try {
+          return !handle.isRunning();
+        } catch {
+          return false;
+        }
+      };
+      const reaped = await Promise.race([
+        cleanup(),
+        new Promise<false>((resolve) => {
+          reapTimer = setTimeout(() => resolve(false), Math.max(0, deadline - performance.now()));
+        }),
+      ]);
+      if (reapTimer !== undefined) clearTimeout(reapTimer);
+      if (!reaped) throw new RailwaySubprocessCleanupError();
+      throw new Error(
+        "Railway metadata read failed, timed out or exceeded its output limit; no readiness was verified.",
+      );
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      request.signal?.removeEventListener("abort", stop);
+    }
+  }
 
   async function runRailway(
     args: string[],
@@ -357,12 +700,18 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
     },
 
     async up({ cwd }) {
-      await runOrThrow(["up", "--detach"], { cwd }, { retryTransient: true });
+      await runOrThrow(["up", "--detach", "--no-gitignore"], { cwd }, { retryTransient: true });
     },
 
-    async generateDomain({ cwd }) {
+    async generateDomain({ cwd, port }) {
       // Idempotent: first call generates, second returns the existing URL.
-      const { stdout } = await runOrThrow(["domain", "--json"], { cwd }, { retryTransient: true });
+      if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535))
+        throw new Error("Invalid Railway domain port.");
+      const { stdout } = await runOrThrow(
+        ["domain", ...(port === undefined ? [] : ["--port", String(port)]), "--json"],
+        { cwd },
+        { retryTransient: true },
+      );
       const url = extractDomainUrl(stdout);
       if (!url) {
         throw new Error(`railway domain --json produced no URL: ${stdout.trim()}`);
@@ -383,10 +732,163 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
       );
     },
 
-    async status({ cwd }) {
-      const { stdout } = await runOrThrow(["status", "--json"], { cwd }, { retryTransient: true });
-      const parsed = JSON.parse(stdout) as RailwayStatus;
-      return parsed;
+    async status(request) {
+      if (!request.target)
+        return (await boundedJson(["status", "--json"], request)) as RailwayStatus;
+      if (!sameTarget(readLinkedTarget(railwayConfigPath, request.cwd), request.target))
+        throw new Error("Railway linked target changed during deployment.");
+      const instance = serviceInstance(await boundedJson(apiArgs(request.target), request));
+      assertManagedServiceSettings(instance);
+      const deployment =
+        instance.latestDeployment === null ? null : record(instance.latestDeployment);
+      if (
+        instance.latestDeployment !== null &&
+        (!deployment || typeof deployment.status !== "string")
+      )
+        throw new Error("Railway deployment metadata is malformed.");
+      return {
+        project: { id: request.target.projectId },
+        service: { id: request.target.serviceId },
+        ...(deployment
+          ? { deployment: { id: targetId(deployment.id), status: targetId(deployment.status) } }
+          : {}),
+      };
+    },
+
+    async inspectIngress({ cwd }) {
+      // Source shapes: railwayapp/cli v5.30.1 config.rs, variable.rs and domain.rs;
+      // serviceInstance fields: docs.railway.com/integrations/api/manage-services.
+      const target = readLinkedTarget(railwayConfigPath, cwd);
+      const flags = [
+        "--project",
+        target.projectId,
+        "--service",
+        target.serviceId,
+        "--environment",
+        target.environmentId,
+      ];
+      const variables = record(
+        await boundedJson(["variable", "list", ...flags, "--json"], { cwd }),
+      )!;
+      if (
+        Object.values(variables).some((value) => typeof value !== "string") ||
+        variables.RAILWAY_PROJECT_ID !== target.projectId ||
+        variables.RAILWAY_SERVICE_ID !== target.serviceId ||
+        variables.RAILWAY_ENVIRONMENT_ID !== target.environmentId
+      ) {
+        throw new Error("Railway variable metadata does not match the linked deployment target.");
+      }
+      assertNoRailwayBuildVariables(variables);
+      const domainResult = record(
+        await boundedJson(["domain", "list", ...flags, "--json"], { cwd }),
+      )!;
+      if (!Array.isArray(domainResult.domains))
+        throw new Error("Railway domain metadata is unavailable or malformed.");
+      const domains = domainResult.domains.map((value): RailwayIngress["domains"][number] => {
+        const item = record(value);
+        if (
+          !item ||
+          (item.type !== "custom" && item.type !== "service") ||
+          typeof item.domain !== "string" ||
+          !/^(?=.{1,253}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i.test(item.domain) ||
+          (item.targetPort !== null &&
+            (typeof item.targetPort !== "number" ||
+              !Number.isInteger(item.targetPort) ||
+              item.targetPort < 1 ||
+              item.targetPort > 65535))
+        ) {
+          throw new Error("Railway domain metadata is unavailable or malformed.");
+        }
+        targetId(item.id);
+        return { domain: item.domain, targetPort: item.targetPort as number | null };
+      });
+      const instance = serviceInstance(await boundedJson(apiArgs(target), { cwd }));
+      assertManagedServiceSettings(instance);
+      const healthPath = instance.healthcheckPath;
+      if (healthPath !== null) validateHealthPath(healthPath);
+      if (!Number.isSafeInteger(instance.numReplicas) || (instance.numReplicas as number) < 1)
+        throw new Error("Railway replica metadata is unavailable or malformed.");
+      const latest = instance.latestDeployment === null ? null : record(instance.latestDeployment);
+      if (instance.latestDeployment !== null && (!latest || typeof latest.status !== "string"))
+        throw new Error("Railway deployment metadata is unavailable or malformed.");
+      if (!sameTarget(readLinkedTarget(railwayConfigPath, cwd), target))
+        throw new Error("Railway linked target changed during preflight.");
+      return {
+        ...target,
+        serviceName: targetId(instance.serviceName),
+        domains,
+        httpVariables: [
+          "PORT",
+          "AUGGY_PUBLIC_URL",
+          "RAILWAY_PUBLIC_DOMAIN",
+          "RAILWAY_HEALTHCHECK_TIMEOUT_SEC",
+        ].filter((key) => Object.hasOwn(variables, key)),
+        healthPath: healthPath as string | null,
+        replicas: instance.numReplicas as number,
+        latestDeploymentId: latest ? targetId(latest.id) : null,
+      };
+    },
+
+    async inspectVolume({ cwd, target }) {
+      if (!sameTarget(readLinkedTarget(railwayConfigPath, cwd), target))
+        throw new Error("Railway linked target changed during volume inspection.");
+      const value = record(
+        await boundedJson(
+          [
+            "api",
+            volumeQuery,
+            "--variables",
+            JSON.stringify({ projectId: target.projectId, environmentId: target.environmentId }),
+            "--compact",
+          ],
+          { cwd },
+        ),
+      );
+      const environment = record(record(value?.data)?.environment);
+      const volumes = record(environment?.volumeInstances);
+      const edges = volumes?.edges;
+      if (
+        !value ||
+        value.errors !== undefined ||
+        environment?.id !== target.environmentId ||
+        !Array.isArray(edges) ||
+        edges.length > 500 ||
+        record(volumes?.pageInfo)?.hasNextPage !== false
+      )
+        throw new Error(
+          "Railway volume metadata is unavailable, incomplete or exceeds the supported bound.",
+        );
+      const selected: Record<string, unknown>[] = [];
+      const seen = new Set<string>();
+      for (const edge of edges) {
+        const node = record(record(edge)?.node);
+        if (
+          !node ||
+          node.environmentId !== target.environmentId ||
+          (node.serviceId !== null && typeof node.serviceId !== "string")
+        )
+          throw new Error("Railway volume target metadata is malformed.");
+        const id = targetId(record(node.volume)?.id);
+        if (seen.has(id)) throw new Error("Railway volume metadata contains duplicate bindings.");
+        seen.add(id);
+        if (node.serviceId === target.serviceId) selected.push(node);
+      }
+      if (selected.length > 1)
+        throw new Error("Railway service has ambiguous volume bindings; deployment stopped.");
+      const selectedVolume = selected[0];
+      if (
+        selectedVolume &&
+        (selectedVolume.mountPath !== "/app/data" ||
+          selectedVolume.state !== "READY" ||
+          selectedVolume.isPendingDeletion !== false ||
+          selectedVolume.deletedAt !== null)
+      )
+        throw new Error(
+          "Railway requires one ready, retained volume mounted at /app/data. Review the selected service's volume before deploying.",
+        );
+      if (!sameTarget(readLinkedTarget(railwayConfigPath, cwd), target))
+        throw new Error("Railway linked target changed during volume inspection.");
+      return selectedVolume ? targetId(record(selectedVolume.volume)?.id) : null;
     },
 
     async destroyService({ cwd }) {

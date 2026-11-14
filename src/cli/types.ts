@@ -320,25 +320,12 @@ export interface PidManifest {
   startedAt: string;
   /** How the agent was started. */
   mode: "dev" | "launchd";
+  /** Admitted storage policy. Absent only on manifests from older runtimes. */
+  runtimeData?: { platform: "generic" | "railway"; root: string | null };
 }
 
-/**
- * Cloud deployment record for an agent.
- *
- * v0: only `null` is written. Cloud fields populated by `auggy deploy` (separate PR).
- */
-export type CloudRecord = null | {
-  /** Required on disk; optional only so legacy records can be parsed and rejected safely. */
-  version?: 1;
-  /** Required on disk; optional only so legacy records can be parsed and rejected safely. */
-  agentId?: string;
-  provider: "railway";
-  projectId: string;
-  serviceId: string;
-  url: string;
-  volumeId: string;
-  deployedAt: string;
-};
+/** Validated persisted deployment metadata. Unknown disk JSON is never this type. */
+export type CloudRecord = import("./deploy/contracts").CloudRecord;
 
 /**
  * Runtime view of one agent: filesystem path + metadata derived from the

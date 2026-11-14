@@ -1,8 +1,18 @@
 # 20 — Embedding Auggy in your frontend
 
-> **Primitives reference.** Auggy ships the runtime primitives needed to wire a chat surface (your own widget, your own framework, your own deployment topology) to a running agent. This doc documents the wire contract — identity resolution, the AG-UI event shape on the response, visitor-token rotation, and the visitorAuth verify endpoint. It deliberately does **not** ship a copy-paste recipe.
+This page describes the visitor-facing wire contract: identity, AG-UI streaming,
+visitor-token rotation and verification. For an application that already has
+login and permissions, start with the optional
+[company application reference](../examples/company-app/README.md) and
+[delegated authorization](./26-delegated-authorization.md). The reference has a
+separate Next.js service and independently deployed Auggy agent. It leaves the
+production session verifier unconfigured until you connect your own trusted
+backend; it provides no demo identity fallback.
 
-**Why no recipe?** A copy-paste integration recipe is a security-sensitive artifact at the adopter's application layer (origin policy, CSRF gates, cookie domain, token storage, framework idioms). The right shape for those decisions depends on the adopter's stack and topology. Auggy ships clean primitives; you compose them.
+A frontend calls its own backend for a short-lived assertion, then sends the
+assertion directly to its agent's `POST /agent/run`. Application cookies and
+Auggy creator credentials stay out of that cross-service request. Telegram and
+other channels remain optional and do not require this frontend.
 
 **Creator-side chat (skip this doc):** if you want to chat with your own agent, use `auggy run <name>` and open `/console/chat`, or use `telegramTransport` for mobile. See `docs/21-console.md` and `docs/14-telegram-transport.md`.
 
@@ -19,6 +29,7 @@ POST <agent-url>/agent/run
 Content-Type: application/json
 Authorization: <optional — see "Identity resolution" below>
 x-visitor-token: <optional — see "Identity resolution">
+x-auggy-auth-assertion: <fresh app-signed assertion for an app-authenticated request>
 x-auggy-anonymous-session: <send the capability returned on first anonymous contact>
 x-agent-id, x-agent-secret: <optional — agent-to-agent only>
 Idempotency-Key: <recommended — durable execution replay on retry>
@@ -48,6 +59,12 @@ Full event taxonomy (TEXT_MESSAGE_*, TOOL_CALL_*, RUN_ERROR, etc.) lives in `doc
 ---
 
 ## Identity resolution
+
+A verified external app assertion resolves to `public` / `recognized` and carries
+explicit delegated scopes/grants. It never promotes an app administrator to
+creator. Do not combine it with operator or agent credentials. The full
+[delegated-auth precedence](./26-delegated-authorization.md)
+and failure rules apply; the table below describes the other credential paths.
 
 `webTransport.identify()` (`src/transports/web-transport.ts`) resolves each request to one of four mutually-exclusive identity paths:
 
