@@ -303,7 +303,23 @@ export async function runTelegramContainerIntegration(options: TelegramContainer
     beforeSHA256: applicationHash(before),
     afterSHA256: applicationHash(after),
   });
-  const env = applicationEnvironment(options.home, options.temporaryDirectory);
+  const env: Record<string, string> = applicationEnvironment(
+    options.home,
+    options.temporaryDirectory,
+  );
+  // Match the generic container runner: select a local socket explicitly while
+  // keeping the operator's Docker config and credentials out of the fixture HOME.
+  if (process.env.DOCKER_HOST) {
+    check(
+      /^unix:\/\/\//.test(process.env.DOCKER_HOST),
+      "Container acceptance requires a local Docker socket",
+    );
+    env.DOCKER_HOST = process.env.DOCKER_HOST;
+  }
+  // Resolve before using the intentionally minimal child PATH (which need not
+  // include Docker Desktop's /usr/local/bin installation).
+  const dockerBinary = options.dockerBinary ?? Bun.which("docker");
+  check(dockerBinary, "Docker CLI is unavailable");
   const secret = randomBytes(32).toString("hex");
   const privateValues = [
     secret,
@@ -405,7 +421,7 @@ export async function runTelegramContainerIntegration(options: TelegramContainer
     {
       cwd: consumer,
       env,
-      binary: options.dockerBinary,
+      binary: dockerBinary,
       secrets: privateValues,
       runId: options.runId,
       signal: options.signal,
