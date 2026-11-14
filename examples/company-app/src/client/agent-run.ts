@@ -1,3 +1,15 @@
+/** The browser request surface used by this client, independent of Bun fetch extensions. */
+export interface BrowserFetchOptions {
+  method?: "POST";
+  credentials: "same-origin" | "omit";
+  cache: "no-store";
+  redirect: "error";
+  signal: AbortSignal;
+  headers?: Record<string, string>;
+  body?: string;
+}
+export type BrowserFetch = (input: string | URL, options: BrowserFetchOptions) => Promise<Response>;
+
 export type RunState = "connecting" | "streaming" | "completed" | "failed" | "interrupted";
 export interface AgentOperation {
   readonly key: string;
@@ -64,7 +76,7 @@ async function boundedJson(response: Response, limit: number): Promise<unknown> 
   }
 }
 
-export async function loadAgentConfiguration(fetchImpl: typeof fetch = fetch): Promise<string> {
+export async function loadAgentConfiguration(fetchImpl: BrowserFetch = fetch): Promise<string> {
   const response = await fetchImpl("/api/auggy-config", {
     credentials: "same-origin",
     cache: "no-store",
@@ -87,7 +99,7 @@ export async function runAgentOperation(options: {
   operation: AgentOperation;
   signal?: AbortSignal;
   onUpdate: (update: RunUpdate) => void;
-  fetch?: typeof fetch;
+  fetch?: BrowserFetch;
 }): Promise<RunUpdate> {
   const fetchImpl = options.fetch ?? fetch;
   const deadline = new AbortController();

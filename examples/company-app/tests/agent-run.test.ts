@@ -1,14 +1,17 @@
 import { expect, test } from "bun:test";
-import { createAgentOperation, runAgentOperation, type RunUpdate } from "../src/client/agent-run";
+import {
+  type BrowserFetch,
+  type BrowserFetchOptions,
+  createAgentOperation,
+  runAgentOperation,
+  type RunUpdate,
+} from "../src/client/agent-run";
 
 const encode = (event: unknown) => new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`);
 function fakeFetch(
-  handler: (input: string | URL | Request, init?: RequestInit) => Response | Promise<Response>,
-): typeof fetch {
-  return Object.assign(
-    async (input: string | URL | Request, init?: RequestInit) => handler(input, init),
-    { preconnect: () => {} },
-  ) as typeof fetch;
+  handler: (input: string | URL, init: BrowserFetchOptions) => Response | Promise<Response>,
+): BrowserFetch {
+  return async (input, init) => handler(input, init);
 }
 function deferred() {
   let resolve!: () => void;
@@ -23,7 +26,7 @@ test("content arrives before completion and credentials stay on their intended o
   const finish = deferred();
   const operation = createAgentOperation("Read my order", "thread-one");
   const updates: RunUpdate[] = [];
-  const calls: { input: string; init?: RequestInit }[] = [];
+  const calls: { input: string; init: BrowserFetchOptions }[] = [];
   const fetchImpl = fakeFetch(async (input, init) => {
     calls.push({ input: String(input), init });
     if (String(input).startsWith("/api/")) return Response.json({ assertion: "fresh-assertion" });
@@ -56,8 +59,10 @@ test("content arrives before completion and credentials stay on their intended o
   expect((await running).text).toBe("Your order has shipped.");
   expect(calls[0]!.input).toBe("/api/auggy-auth-assertion");
   expect(calls[0]!.init?.credentials).toBe("same-origin");
+  expect(calls[0]!.init.cache).toBe("no-store");
   expect(calls[1]!.input).toBe("https://agent.example/agent/run");
   expect(calls[1]!.init?.credentials).toBe("omit");
+  expect(calls[1]!.init.cache).toBe("no-store");
   expect(calls[1]!.init?.redirect).toBe("error");
   const headers = new Headers(calls[1]!.init?.headers);
   expect(headers.get("x-auggy-auth-assertion")).toBe("fresh-assertion");
