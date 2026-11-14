@@ -496,3 +496,68 @@ ready to merge or publish.
 Root strict typecheck, repository lint (767 files) and tracked test inventory
 (372 runtime, 34 console, 8 isolated external tests across 17 shards) pass on
 the settled repair source. No dependency lock or package version changed.
+
+
+### Committed 3363581 execution and second harness repair pass
+
+Clean macOS run `7942034e-792d-4005-9d8a-8ab27d9c2376` used revision
+`3363581bc95d72ce22e33a3c5e6e03650412f502`, tree
+`8d95774b3a40551d5b42eefda0c85415fcf247f7`. It remains failed. Installed Telegram
+and generic storage recovery passed with complete cleanup. Actual Chromium driver
+execution and browser observations completed, but the supervisor marked lingering
+children as orphaned immediately after an intentional graceful stop. The three
+application rows therefore failed before the later unknown-outcome phase. The
+polling-container row was unavailable because its default Docker lookup ran under
+the deliberately minimal child PATH. All scenario artifact hashes were checked;
+independent review found no private configs, SQLite or actual cookie/control
+credentials among the 102 evidence files. Failed workspace inputs are retained
+privately for diagnosis.
+
+The corresponding Linux run also passed installed Telegram and both actual
+container rows. Its app stopped before Chromium launch because the pinned Linux
+executable exceeds the inherited 256 MiB bound. Primary archive central-directory
+inspection established `chrome-linux64/chrome` is 311,672,136 bytes in the
+[pinned official Linux archive](https://cdn.playwright.dev/builds/cft/159.0.8154.6/linux64/chrome-linux64.zip).
+`89cbf00` gives only Chromium executable verification a documented 512 MiB limit,
+retaining stable no-follow reads, exact hash and executable/private mode checks.
+Node, source, archive, output and process bounds remain unchanged. Independent
+13 tests /60 assertions cover the observed size, hash mismatch and excess; actual
+Linux execution remains required.
+
+`d99b53c` repairs intentional shutdown supervision. Descendants receive the
+existing 15-second graceful deadline, followed when necessary by forced termination
+and the existing 5-second reap. Lifetime expiry and output overflow override grace;
+unexpected orphaning and unknown cleanup still fail. Independent ownership tests
+include real delayed descendants, a process surviving until forced termination,
+and inherited-pipe uncertainty. Producer verification passed 50 tests /251
+assertions; independent focused verification passed 9 tests /35 assertions.
+
+`59a5f3d` resolves Docker before isolating PATH and carries only an explicitly
+selected local Unix socket, matching the generic container runner. Independent
+fresh default-binary execution passed all polling replacement/effect checks with
+complete cleanup; no explicit dockerBinary option was supplied.
+
+Release rehearsal on the earlier head exposed a stale expectation that the
+bundler embeds the agent name in its temporary directory. `fc3d6b3` instead owns
+an explicit private staging parent, validates the returned direct child and its
+device/inode, and removes only that identity-checked owned parent. Independent
+10 tests /33 assertions reject outside, linked, nonprivate and replaced paths.
+Actual packed336 generated consumer proof passed 25 source files, changed/missing
+source negative controls, private exclusions and cleanup.
+
+Root accepts M5-06's standalone-channel scope on committed336 artifacts after
+macOS/Linux results and independent evidence review. The separate aggregate and
+hosted gates are still open. Updated tracked operator and harness shards passed
+1,904 and 288 tests respectively. PostgreSQL17 CI completed all 13 required cases.
+Full CodeQL run43561767380 completed analysis2166413523 on336 with 103 rules and
+the same five triaged results; no alert states changed. Fresh settled-head CI and
+release certification remain required after these harness repairs.
+
+Hosted preparation now recommends two agent services plus an optional temporary
+recovery target, using bounded control over exact Railway SSH instances to the
+existing loopback fixtures. A third fixture service/private DNS rewrite is not
+required. This still needs a real HTTP/model/tool sibling fixture, durable sealed
+per-generation journals, remote command termination proof, exact environment
+admission and quiescent maintenance. The action annex must count distinct created
+volumes honestly when restoring both profiles. Login, exact target discovery and
+concrete approval remain outstanding; no hosted work has been executed.

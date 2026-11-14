@@ -78,8 +78,8 @@
         "Final accepted local/container evidence on settled artifacts",
         "Renewed Railway authentication for read-only target discovery; current login is expired",
         "Exact isolated workspace/project/environment and verified resource limits",
-        "Reviewed private fixture control, environment binding and maintenance/recovery operations",
-        "Approval contract binding ancillary resources and source-built remote image identity",
+        "Reviewed loopback fixture control via exact Railway SSH instance, environment binding, per-generation durable journal seal/export and maintenance/recovery operations",
+        "Approval contract amendment binding source-built image provenance and exact action/recovery resources (two agents plus optional recovery; no third fixture service required)",
         "Explicit approval of the final concrete hosted action manifest; login is not authorization"
       ]
     },
@@ -174,7 +174,8 @@
         "Exact staged source snapshot: 375 tests / 1613 assertions and strict typecheck passed; repository lint passed (765 files)",
         "Final help-only version wording clarified and focused regression rechecked; no hosted execution claimed",
         "Integrated compatibility-archive privacy gap repaired with shared raw source/state inventory and staged validation; independent 166 tests /1085 assertions plus actual runDeploy upload-boundary counterexample accepted. Private source remains unchanged and nonempty mutable memory refuses before Railway access."
-      ]
+      ],
+      "supplementalRepairCommit": "1cd4eb5"
     },
     {
       "id": "M5-04",
@@ -210,27 +211,29 @@
         "Implementation checkpoint 714db5e: app/source security review, isolated frozen install, real Node production build, 14 tests / 264 assertions and audit passed",
         "Independent actual installed HTTP/production/browser rerun passed all three rows; one browser effect and one committed unknown effect, zero duplicate/unauthorized effects; all process groups cleaned",
         "Private evidence and intentional crash oracle repairs independently accepted; final committed artifact rerun pending",
-        "Clean CI company-app typing repair157132a passed on74249c1. Browser runtime selection repairc7e56c2 independently accepted with actual native Node execution; safe original locations retained, shared writable source gets private verified copy. Fresh complete artifact execution still required."
+        "Clean CI company-app typing repair157132a passed on74249c1. Browser runtime selection repairc7e56c2 independently accepted with actual native Node execution; safe original locations retained, shared writable source gets private verified copy. Fresh complete artifact execution still required.",
+        "3363581 macOS browser driver/behavior passed but intentional Chromium shutdown transiently set orphanedGroup; aggregate remained failed. Supervisor repaird99b53c accepted independently; fresh complete artifact proof required. Linux reached Chromium size preflight; browser-only bound repair89cbf00 accepted, actual Linux rerun required."
       ]
     },
     {
       "id": "M5-06",
       "title": "Standalone channel acceptance",
       "specialist": "Channel harness engineer",
-      "status": "review",
+      "status": "accepted",
       "dependsOn": [
         "M5-00",
         "M5-02"
       ],
       "blockedBy": [],
       "acceptanceDependsOn": [],
-      "acceptedCommit": null,
+      "acceptedCommit": "3363581bc95d72ce22e33a3c5e6e03650412f502",
       "evidence": [
         "Independent actual installed normalworker passed2authorizedeffects0duplicates0unauthorized",
         "Two harness findings repaired; mutatedanonymous-to-recognized runtime and stale-poll controls correctlyfail with cleanprocesscleanup",
         "Final committedartifact rerun remains pending",
         "Reviewed installed Telegram harness checkpoint committed at 214bef2; final settled artifact rerun pending",
-        "Installed Telegram passes in macOS and Linux artifact runs through 74249c1, with cleanup. Actual polling-container row eaa76e5 separately accepted after normal/replay-bypass/trust-escalation Docker controls."
+        "Installed Telegram passes in macOS and Linux artifact runs through 74249c1, with cleanup. Actual polling-container row eaa76e5 separately accepted after normal/replay-bypass/trust-escalation Docker controls.",
+        "Root accepts standalone-channel scope on committed3363581 artifacts: macOS and Linux installed Telegram rows passed serialization, creator/recognized/anonymous/group/admitted mapping, replay replacement, owned source edit, conflict/quarantine and cleanup. Independent evidence review confirms source identity and sanitized artifacts. This does not accept the separate aggregate/container/hosted gate."
       ]
     },
     {
@@ -263,7 +266,10 @@
         "fcfd194 tracked runtime/console run: 5755 passed, 0 failed, 13 local PostgreSQL skips. Actual PostgreSQL17 CI on 74249c1 completed all13 registered cases (server170010).",
         "Generic container recovery passes actual macOS/Linux runs with default ./data restore mount handling; aggregate canonical scenario identity corrected at74249c1.",
         "A12 polling-container proof eaa76e5: actual normal run2effects/0duplicates/0unauthorized; replay mutant fails with duplicate1, trust escalation mutant fails with unauthorized1; all owned resources cleaned.",
-        "Fresh all-stage proof remains pending: 74249c1 Linux app failed Node permission preflight, and operator shard had two timing assumptions fixed independently atfe97c60. No failed row waived."
+        "Fresh all-stage proof remains pending: 74249c1 Linux app failed Node permission preflight, and operator shard had two timing assumptions fixed independently atfe97c60. No failed row waived.",
+        "3363581 Linux actual HTTP storage-recovery and Telegram polling container rows both passed with cleanup. macOS polling default CLI lookup was unavailable under isolated PATH;59a5f3d independently accepted with actual fresh default-binary Docker proof.",
+        "Release rehearsal found stale bundler prefix oracle. Ownership repairfc3d6b3 independently accepted; actual packed336 consumer verifies25sourcefiles, private exclusions and complete cleanup.",
+        "3363581 aggregate remains failed: browser supervisor race on macOS, pinned Linux Chromium executable exceeds inherited256MiB bound. Repairsd99b53c/89cbf00 preserve shutdown/reap and non-browser limits; new final artifact run required."
       ]
     },
     {
@@ -287,7 +293,8 @@
         "134 relative links/anchors and five actual CLI help surfaces verified; Markdown structure and diff checks passed",
         "Root clarified that bundled built-ins follow auggy, while separate capability/provider packages follow their own manifest and lockfile selection",
         "Supplemental passive-inspection teaching correction39ee525 accepted independently across generated README, canonical starter skill and both mirrors; actual Bun preload trap and strict documented v2 cloud record validated."
-      ]
+      ],
+      "supplementalRepairCommit": "39ee525"
     },
     {
       "id": "M5-09",
@@ -306,7 +313,6 @@
       ],
       "blockedBy": [
         "M5-05",
-        "M5-06",
         "M5-07"
       ],
       "acceptanceDependsOn": [],
@@ -343,7 +349,7 @@
     "Each company owns a separate deployment; no managed platform or shared-company tenancy.",
     "Channels are optional; Next.js and HTTP are not runtime requirements.",
     "Only root changes gate/task acceptance; producers cannot accept themselves.",
-    "G0/G1 and M5-00/01/02/03/04/08 accepted. M5-05/06 remain in review; M5-07 actual final committed artifact and hosted gates remain open."
+    "G0/G1 and M5-00/01/02/03/04/06/08 accepted for their scopes. M5-05 remains in review; M5-07 complete artifact and hosted gates remain open."
   ],
   "preparation": {
     "status": "accepted",
@@ -394,11 +400,12 @@
     "initialLocalDocker": "unavailable: configured socket absent"
   },
   "verificationCheckpoint": {
-    "revision": "74249c1e51dd29f5a0b958b1de0fcb7c5ba5b74c",
-    "ci": 43560679799,
-    "ciConclusion": "failure: browser Node preflight and two timing-test assumptions; repairs in progress",
-    "fullCodeQL": 43560734516,
-    "analysis": 2166381175,
+    "revision": "3363581bc95d72ce22e33a3c5e6e03650412f502",
+    "tree": "8d95774b3a40551d5b42eefda0c85415fcf247f7",
+    "ci": 43561655348,
+    "ciConclusion": "failed portable browser preflight; other completed required shards passed",
+    "fullCodeQL": 43561767380,
+    "analysis": 2166413523,
     "codeQLRules": 103,
     "codeQLResults": 5,
     "openAlertTriage": {
