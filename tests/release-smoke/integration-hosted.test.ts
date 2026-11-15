@@ -936,3 +936,17 @@ describe("hosted readback bindings; no network calls", () => {
     );
   });
 });
+
+test("service admission enforces NEVER while retaining the inactive provider retry count", () => {
+  for (const retries of [0, 10]) {
+    const accepted = serviceFixture();
+    accepted.readback.data.serviceInstance.restartPolicyMaxRetries = retries;
+    expect(bindHostedServiceAdmission(accepted).serviceId).toBe(uuid(4));
+    for (const policy of ["ON_FAILURE", "ALWAYS"]) {
+      const rejected = serviceFixture();
+      rejected.readback.data.serviceInstance.restartPolicyType = policy;
+      rejected.readback.data.serviceInstance.restartPolicyMaxRetries = retries;
+      expect(() => bindHostedServiceAdmission(rejected)).toThrow("caps/policy");
+    }
+  }
+});

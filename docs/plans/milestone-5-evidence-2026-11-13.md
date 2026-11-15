@@ -94,6 +94,46 @@ Evidence remains in the two attempt directories under `/private/tmp`; focused
 placement review is `/private/tmp/m5-g4-placement-repair-acceptance.json` and the
 current handoff is `/private/tmp/m5-g4-current-status.json`. G4 remains unaccepted.
 
+## Volume provisioning and deployment admission
+
+Attempt `2ae0a736-r2` retained the initial volume readback: the newly created,
+owned volume had no instances after 1.15 seconds. A read before service deletion
+showed its expected attached READY instance within 6.51 seconds. The private
+controller now permits at most six read-only observations, with five one-second
+pauses, only for that exact zero-instance provisioning state. It performs one
+creation and retains every observation; the original strict binder remains the
+only acceptance path. Independent review and 34 tests / 242 assertions passed.
+Both original volumes subsequently passed after two observations in `r3`.
+
+The first deployment then stopped before native domain creation or upload. The
+private guard now retains separate pre-native refusal receipts and bounded,
+sanitized observations before assertions. Raw errors, environment config,
+variables and unfiltered deployment metadata are excluded. Independent review,
+40 focused tests / 388 assertions and private typecheck passed.
+
+Attempt `r4` identified the exact refusal: the service remained on restart policy
+`NEVER`, but its inactive retry count changed from 0 to 10. Earlier native calls
+only read provider state or linked local CLI configuration; none wrote this
+value. The provider-side trigger for the change is unproven. Railway documents
+that [NEVER disables automatic restarts](https://docs.railway.com/deployments/restart-policy).
+The shared admission helper now requires strict `NEVER` without treating its
+inactive retry count as enabled restarts. The setter still requests zero;
+ownership, placement, replica, CPU, memory and sleep checks remain unchanged.
+Regressions accept NEVER with 0 or 10 and reject ON_FAILURE and ALWAYS with either
+count. Independent review, 18 focused tests / 250 assertions, repository lint and
+typecheck, and both private typechecks passed.
+
+All attempts through `r4` ended with complete automatic cleanup: owned projects
+and temporary key registrations absent, no cleanup failures or unknown
+allocations. No workload action completed. These repairs do not certify G4.
+Corrective attempts remain inside the original 2026-11-15T23:24:39.437Z execution
+deadline and 23:34:39.437Z cleanup deadline; no new two-hour window is granted.
+The release artifacts remain those recorded for `3a15bb4`.
+
+Private focused receipts are `m5-g4-volume-provisioning-acceptance.json`,
+`m5-g4-pre-native-diagnostics-acceptance.json`, and
+`m5-g4-effective-restart-policy-acceptance.json` under `/private/tmp`.
+
 ## Preservation and entry checks
 
 The user authorized implementation of the approved M5 plan. Root preserved the

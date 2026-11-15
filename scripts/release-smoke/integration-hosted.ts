@@ -888,6 +888,15 @@ export function assertHostedServicePlacement(options: {
   );
 }
 
+/** NEVER disables automatic restarts; its inactive retry count may retain the provider default.
+ * https://docs.railway.com/deployments/restart-policy
+ */
+export function hostedAutomaticRestartsDisabled(instance: {
+  restartPolicyType?: unknown;
+}): boolean {
+  return instance.restartPolicyType === "NEVER";
+}
+
 /** Initial admission requires an empty service, accepted setters and exact effective cap readback. */
 export function bindHostedServiceAdmission(options: {
   prepared: ReturnType<typeof prepareHostedIntegration>;
@@ -938,8 +947,7 @@ export function bindHostedServiceAdmission(options: {
     limits.cpu === plan.limits.maxCpuPerService &&
       limits.memoryBytes === plan.limits.maxMemoryBytesPerService &&
       instance.numReplicas === 1 &&
-      instance.restartPolicyType === "NEVER" &&
-      instance.restartPolicyMaxRetries === 0 &&
+      hostedAutomaticRestartsDisabled(instance) &&
       instance.sleepApplication === false,
     "Hosted effective caps/policy differ from approval; workload must not start",
   );
