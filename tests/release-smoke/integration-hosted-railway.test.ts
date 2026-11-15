@@ -733,6 +733,130 @@ test("pagination is explicit and bounded; inventory reads cannot carry variables
   ).toBe("query-failed");
 });
 
+test("cleanup uses an explicitly active inventory; allocation still includes deleted history", async () => {
+  const prepared = prepareHostedIntegration(plan());
+  const history = prepareHostedRailwayAction(prepared, {
+    actionId: "before",
+    operation: "workspace-projects",
+  });
+  const active = prepareHostedRailwayAction(prepared, {
+    actionId: "absent",
+    operation: "workspace-active-projects",
+    after: "next",
+  });
+  expect(history.query).toContain("includeDeleted:true");
+  expect(active.query).toContain("includeDeleted:false");
+  expect(active.query).toContain("deletedAt");
+  expect(JSON.parse(active.input.toString())).toEqual({ workspaceId: id(1), after: "next" });
+  for (const deletedAt of [undefined, "2026-11-15T00:00:00Z", null]) {
+    const s = setup(async () =>
+      child({ projects: page([{ ...createdProject.data.projectCreate, deletedAt }]) }),
+    );
+    const result = await s.api.run({ actionId: "absent", operation: "workspace-active-projects" });
+    expect(result.outcome).toBe(deletedAt === null ? "response" : "query-failed");
+  }
+});
+
+test("service schema failures retain only bounded structural paths, codes and types", async () => {
+  const s = setup(async () =>
+    child(
+      {
+        serviceInstance: {
+          id: "credential-canary",
+          serviceId: id(4),
+          environmentId: id(3),
+          numReplicas: "credential-canary",
+          region: "private-region-canary",
+          restartPolicyType: "NEVER",
+          restartPolicyMaxRetries: 0,
+          sleepApplication: false,
+          latestDeployment: null,
+          "private-key-canary": "credential-canary",
+        },
+        serviceInstanceLimits: { containers: { cpu: "credential-canary", memoryBytes: null } },
+        serviceInstanceLimitOverride: null,
+        "private-key-canary": "credential-canary",
+      },
+      { stderr: "credential-canary" },
+    ),
+  );
+  const result = await s.api.run({ actionId: "read", operation: "service-read", service });
+  expect(result.outcome).toBe("query-failed");
+  expect(result.reason).toBe("invalid-response");
+  expect(result.response).toBeNull();
+  expect(result.diagnostic?.stage).toBe("schema");
+  expect(result.diagnostic?.issues).toContainEqual({
+    path: "serviceInstanceLimits.containers.cpu",
+    code: "invalid_type",
+  });
+  expect(result.diagnostic?.structure).toContainEqual({
+    path: "serviceInstanceLimits.containers.memoryBytes",
+    type: "null",
+  });
+  expect(result.diagnostic?.issues.length).toBeLessThanOrEqual(24);
+  expect(result.diagnostic?.structure.length).toBeLessThanOrEqual(24);
+  expect(JSON.stringify(result)).not.toContain("canary");
+  expect(JSON.stringify(result).length).toBeLessThan(5000);
+});
+
+test("failed service queries distinguish child failure and GraphQL envelope failure without leaking messages", async () => {
+  for (const failedChild of [true, false]) {
+    const s = setup(async () =>
+      child(
+        {},
+        {
+          timedOut: failedChild,
+          stdout: JSON.stringify({
+            data: { serviceInstance: null },
+            errors: [{ message: "credential-canary", path: ["private-key-canary"] }],
+          }),
+          stderr: "credential-canary",
+        },
+      ),
+    );
+    const result = await s.api.run({ actionId: "read", operation: "service-read", service });
+    expect(result.outcome).toBe("query-failed");
+    expect(result.reason).toBe(failedChild ? "child-failure" : "invalid-response");
+    expect(result.diagnostic?.stage).toBe(failedChild ? undefined : "envelope");
+    if (!failedChild)
+      expect(result.diagnostic?.issues).toEqual([{ path: "errors", code: "too_big" }]);
+    expect(JSON.stringify(result)).not.toContain("canary");
+  }
+});
+
+test("native exit-one GraphQL service failures expose only allowlisted paths and never become responses", async () => {
+  const stdout = JSON.stringify({
+    data: null,
+    errors: [
+      { message: "credential-canary", path: ["serviceInstance"] },
+      { message: "credential-canary", path: ["serviceInstanceLimitOverride"] },
+      { path: ["private-key-canary"] },
+    ],
+  });
+  for (const change of [
+    {},
+    { timedOut: true },
+    { exceededOutput: true },
+    { inputComplete: false },
+    { cleanupConfirmed: false },
+  ]) {
+    const s = setup(async () => child({}, { exitCode: 1, stdout, ...change }));
+    const result = await s.api.run({ actionId: "read", operation: "service-read", service });
+    expect(result.outcome).toBe("query-failed");
+    expect(result.reason).toBe("child-failure");
+    expect(result.response).toBeNull();
+    if (Object.keys(change).length === 0) {
+      expect(result.diagnostic?.stage).toBe("envelope");
+      expect(result.diagnostic?.graphqlErrorPaths).toEqual([
+        "serviceInstance",
+        "serviceInstanceLimitOverride",
+        "[unlisted]",
+      ]);
+    } else expect(result.diagnostic).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain("canary");
+  }
+});
+
 test("mutation variables are owned before an asynchronous admission callback", async () => {
   const target = { ...project };
   let actual: unknown;

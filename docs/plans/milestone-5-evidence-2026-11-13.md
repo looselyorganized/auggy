@@ -1,9 +1,68 @@
 # Milestone 5 execution evidence
 
-Current status: G0/G1 and M5-00/01/02/03/04/08 accepted. M5-05/06 source and provisional
-installed runs have independent review. Final
-committed installed/browser/container and hosted acceptance remain open. Earlier entries below
-record historical gate states; the task ledger is the current source of status.
+Current status: G0/G1/G3 and M5-00/01/02/03/04/05/06/08 are accepted for their
+recorded scopes. Approved hosted execution on 2026-11-15 did not pass; M5-07,
+M5-09 and M5-10 remain open. Earlier entries record historical gate states.
+
+## Hosted execution on 2026-11-15
+
+The operator explicitly approved the isolated Railway proposal. The first
+attempt stopped after a successful account read: Railway refreshed its OAuth
+credentials, changing a file the private executor had incorrectly frozen by raw
+bytes. No hosted resource was allocated in that attempt. A narrow private harness
+repair binds the stable account ID while allowing token refresh; six focused
+synthetic tests and the compiled executable's preflight passed. Live API identity
+readback matched the pinned account. Product source and release artifacts were
+unchanged.
+
+One retry retained the same target, artifacts, resource limits, key and relay
+trust, with a shorter runtime within the original deadline. It created the
+isolated project and its first HTTP service, successfully applied cap and policy
+mutations, then failed service admission. No workload, volume or SSH registration
+was reached. The failure receipt retained only a generic readback/binding error,
+so the exact rejected field is unknown; no service-compatibility fix is claimed.
+
+The executor confirmed project deletion. Its absence oracle then failed because
+it queried deleted projects and rejected Railway's retained tombstone. Independent
+complete inventory readback confirms the project is absent from active projects,
+its history record has a deletion timestamp, and the temporary key is absent.
+No additional hosted retry is active. Preserve service-read diagnostics and fix
+the deleted-project oracle before another rehearsal; hosted acceptance remains
+failed, not waived.
+
+Private evidence: `/private/tmp/m5-g4-current-status.json`,
+`/private/tmp/auggy-m5-token-refresh-review.json`, and
+`/private/tmp/auggy-m5-retry1-cleanup-readback.json`. Both attempt directories and
+receipts are retained. The failed frozen attempt was not rewritten or replayed.
+
+## Focused hosted-harness repairs on 2026-11-15
+
+The Railway adapter now retains bounded, allowlisted structural diagnostics for
+service-read failures, including complete native exit-one GraphQL responses.
+Failed responses remain failed. The private controller preserves service readback
+before binding and records the specific failed admission predicates. CPU, memory,
+replica, region, restart and identity checks remain strict. The original provider
+mismatch is still unknown because its readback was discarded by the old code.
+
+Cleanup now queries the complete active-project inventory and rejects deleted
+records in that response. Preallocation continues to include project history;
+workspace, owned-ID/name, pagination and unknown-allocation checks remain intact.
+A separate reviewer found no blockers in these changes or the native identity
+repair. Focused verification passed 44 tests/348 assertions; repository lint and
+typecheck and private-controller typecheck passed. Lint retained the existing
+Biome schema-version informational notice.
+
+The exact compiled replacement passed local preflight. Its proposal uses new
+project `auggy-m5-g4-2ae0a736`, the same six release artifacts, four-service/four-
+volume limits, $5 monitored threshold and two-hour execution plus ten-minute
+cleanup allowance. Read-only preparation verified the account and absence of the
+proposed project/key. The earlier approval window expired; this candidate is
+prepared, not approved or executed. No hosted acceptance is claimed.
+
+Frozen proposal: `/private/tmp/auggy-m5-run-2ae0a736/approval-proposal.md`.
+Plan SHA-256: `de51e95d827c34deaba7098ab042184a65cd3edbc76ef5f1e6b00801ff1268a9`.
+Focused review: `/private/tmp/m5-g4-diagnostics-repair-acceptance.json`.
+Execution handoff: `/private/tmp/m5-g4-ready-2ae0a736.json`.
 
 ## Preservation and entry checks
 

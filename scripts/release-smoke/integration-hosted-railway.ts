@@ -157,6 +157,11 @@ const OPERATIONS = {
     query: `query HostedProjects($workspaceId:String!,$after:String) { projects(workspaceId:$workspaceId,first:100,after:$after,includeDeleted:true) { edges { node { id name workspaceId } } ${PAGE} } }`,
     schema: z.object({ projects: connection(projectIdentity) }),
   },
+  "workspace-active-projects": {
+    kind: "query",
+    query: `query HostedActiveProjects($workspaceId:String!,$after:String) { projects(workspaceId:$workspaceId,first:100,after:$after,includeDeleted:false) { edges { node { id name workspaceId deletedAt } } ${PAGE} } }`,
+    schema: z.object({ projects: connection(projectIdentity.extend({ deletedAt: z.null() })) }),
+  },
   "workspace-keys": {
     kind: "query",
     query: `query HostedKeys($workspaceId:String!,$after:String) { sshPublicKeys(workspaceId:$workspaceId,first:100,after:$after) { edges { node { ${KEY} } } ${PAGE} } }`,
@@ -292,7 +297,10 @@ export type HostedCreatedService = {
 type ServiceTarget = HostedServiceBinding | HostedCreatedService;
 export type HostedRailwayAction = { actionId: string } & (
   | { operation: "workspace-capacity" }
-  | { operation: "workspace-projects" | "workspace-keys"; after?: string }
+  | {
+      operation: "workspace-projects" | "workspace-active-projects" | "workspace-keys";
+      after?: string;
+    }
   | { operation: "project-create"; before: HostedProjectInventory }
   | { operation: "project-read"; project: HostedProjectBinding }
   | { operation: "project-read"; before: HostedProjectInventory; creation: unknown }
@@ -314,6 +322,13 @@ export interface HostedRailwayAttempt {
   inputSHA256: string;
 }
 export type HostedRailwayChildOutcome = Omit<Child, "stdout" | "stderr">;
+export interface HostedRailwayResponseDiagnostic {
+  stage: "response-size" | "json" | "envelope" | "schema";
+  issues: { path: string; code: string }[];
+  issuesTruncated: boolean;
+  structure: { path: string; type: string }[];
+  graphqlErrorPaths?: string[];
+}
 export interface HostedRailwayResult extends HostedRailwayAttempt {
   kind: "query" | "mutation";
   /** A valid Boolean false is a response, never proof that no effects occurred. */
@@ -321,6 +336,89 @@ export interface HostedRailwayResult extends HostedRailwayAttempt {
   reason: "none" | "child-failure" | "invalid-response" | "admission-changed";
   child: HostedRailwayChildOutcome | null;
   response: { data: Record<string, unknown> } | null;
+  /** Fixed paths and type labels only; never provider values, keys, messages or Zod input. */
+  diagnostic?: HostedRailwayResponseDiagnostic;
+}
+const SERVICE_DIAGNOSTIC_PATHS = [
+  "serviceInstance",
+  ...[
+    "id",
+    "serviceId",
+    "environmentId",
+    "numReplicas",
+    "region",
+    "restartPolicyType",
+    "restartPolicyMaxRetries",
+    "sleepApplication",
+    "latestDeployment",
+    "latestDeployment.id",
+    "latestDeployment.status",
+  ].map((path) => `serviceInstance.${path}`),
+  ...["serviceInstanceLimits", "serviceInstanceLimitOverride"].flatMap((path) => [
+    path,
+    `${path}.containers`,
+    `${path}.containers.cpu`,
+    `${path}.containers.memoryBytes`,
+  ]),
+];
+function responseDiagnostic(
+  stage: HostedRailwayResponseDiagnostic["stage"],
+  operation: HostedRailwayOperation,
+  data: unknown,
+  error: unknown,
+): HostedRailwayResponseDiagnostic {
+  const paths =
+    stage === "envelope"
+      ? ["data", "errors"]
+      : stage === "schema" && operation === "service-read"
+        ? SERVICE_DIAGNOSTIC_PATHS
+        : [];
+  const issues = error instanceof z.ZodError ? error.issues : [];
+  return {
+    stage,
+    issues: issues.slice(0, 24).map((issue) => {
+      const path = issue.path.join(".");
+      return {
+        path: path === "" ? "$" : paths.includes(path) ? path : "[unlisted]",
+        code: issue.code,
+      };
+    }),
+    issuesTruncated: issues.length > 24,
+    structure: paths.map((path) => {
+      let value = data;
+      for (const key of path.split(".")) {
+        value =
+          value && typeof value === "object" && !Array.isArray(value)
+            ? (value as Record<string, unknown>)[key]
+            : undefined;
+      }
+      return {
+        path,
+        type:
+          value === undefined
+            ? "missing"
+            : value === null
+              ? "null"
+              : Array.isArray(value)
+                ? "array"
+                : typeof value,
+      };
+    }),
+    ...(stage === "envelope" && operation === "service-read"
+      ? {
+          graphqlErrorPaths:
+            z
+              .object({ errors: z.array(z.unknown()) })
+              .safeParse(data)
+              .data?.errors.slice(0, 24)
+              .map((error) => {
+                const parsed = z.object({ path: z.array(z.string()).max(4) }).safeParse(error);
+                const path = parsed.success ? parsed.data.path.join(".") : "";
+                return SERVICE_DIAGNOSTIC_PATHS.includes(path) ? path : "[unlisted]";
+              }) ?? [],
+        }
+      : {}),
+  };
 }
 function check(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -383,6 +481,7 @@ export function prepareHostedRailwayAction(
       variables = { workspaceId: plan.railway.workspaceId };
       break;
     case "workspace-projects":
+    case "workspace-active-projects":
     case "workspace-keys":
       variables = {
         workspaceId: plan.railway.workspaceId,
@@ -713,15 +812,32 @@ function adapter(
           child: childFacts(raw),
           response: null,
         };
-        if (successful(result.child!)) {
+        const childSucceeded = successful(result.child!);
+        // Native GraphQL errors can exit 1. Diagnose only complete, bounded service reads;
+        // a failed child never supplies a response or successful admission.
+        const rejectedService =
+          built.operation === "service-read" &&
+          raw.exitCode === 1 &&
+          successful({ ...result.child!, exitCode: 0 });
+        if (childSucceeded || rejectedService) {
+          let stage: HostedRailwayResponseDiagnostic["stage"] = "response-size";
+          let decoded: unknown;
           try {
             check(Buffer.byteLength(raw.stdout) <= BYTES, "Hosted API response exceeded bounds");
-            const data = OPERATIONS[built.operation].schema.parse(body(JSON.parse(raw.stdout)));
-            result.response = { data };
-            result.outcome = "response";
-            result.reason = "none";
-          } catch {
-            result.reason = "invalid-response";
+            stage = "json";
+            decoded = JSON.parse(raw.stdout);
+            stage = "envelope";
+            decoded = body(decoded);
+            stage = "schema";
+            const data = OPERATIONS[built.operation].schema.parse(decoded);
+            if (childSucceeded) {
+              result.response = { data };
+              result.outcome = "response";
+              result.reason = "none";
+            }
+          } catch (error) {
+            if (childSucceeded) result.reason = "invalid-response";
+            result.diagnostic = responseDiagnostic(stage, built.operation, decoded, error);
           }
         }
       } catch {
