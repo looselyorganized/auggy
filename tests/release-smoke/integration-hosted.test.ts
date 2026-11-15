@@ -9,6 +9,7 @@ import {
   bindHostedSshKey,
   bindHostedVolumeAllocation,
   prepareHostedIntegration,
+  projectHostedServicePlacement,
   type HostedIntegrationPlan,
   type HostedProjectInventory,
   type HostedSourceArtifact,
@@ -213,13 +214,19 @@ function serviceFixture() {
     capMutation: data({ serviceInstanceLimitsUpdate: true }),
     policyMutation: data({ serviceInstanceUpdate: true }),
     readback: data({
+      servicePlacement: {
+        environmentId: uuid(3),
+        projectId: uuid(2),
+        serviceId: uuid(4),
+        multiRegionConfig: { "us-west2": { numReplicas: 1 } },
+      },
       serviceInstance: {
         id: uuid(5),
         serviceId: uuid(4),
         environmentId: uuid(3),
         latestDeployment: null,
         numReplicas: 1,
-        region: "us-west2",
+        region: null as string | null,
         restartPolicyType: "NEVER",
         restartPolicyMaxRetries: 0,
         sleepApplication: false,
@@ -775,6 +782,69 @@ describe("hosted readback bindings; no network calls", () => {
     const existing = serviceFixture();
     Object.assign(existing.readback.data.serviceInstance, { latestDeployment: { id: uuid(8) } });
     expect(() => bindHostedServiceAdmission(existing)).toThrow("existing workload");
+  });
+
+  test("service placement requires exact owned identities and a sole approved region/replica", () => {
+    const fixture = serviceFixture();
+    const valid = fixture.readback.data.servicePlacement;
+    const invalid: unknown[] = [
+      undefined,
+      null,
+      {},
+      ...["environmentId", "projectId", "serviceId"].map((field) => ({
+        ...valid,
+        [field]: uuid(99),
+      })),
+      ...[
+        undefined,
+        null,
+        [],
+        {},
+        { "us-east4-eqdc4a": { numReplicas: 1 } },
+        { "us-west2": { numReplicas: 1 }, "us-east4-eqdc4a": { numReplicas: 1 } },
+        ...[0, 2, -1, 1.5, "1", null, undefined].map((count) => ({
+          "us-west2": { numReplicas: count },
+        })),
+      ].map((multiRegionConfig) => ({ ...valid, multiRegionConfig })),
+    ];
+    for (const servicePlacement of invalid)
+      expect(() =>
+        bindHostedServiceAdmission({
+          ...fixture,
+          readback: data({ ...fixture.readback.data, servicePlacement }),
+        }),
+      ).toThrow();
+    expect(bindHostedServiceAdmission(fixture).serviceId).toBe(uuid(4));
+    fixture.readback.data.serviceInstance.region = "us-west2";
+    expect(bindHostedServiceAdmission(fixture).serviceId).toBe(uuid(4));
+    fixture.readback.data.serviceInstance.region = "us-east4-eqdc4a";
+    expect(() => bindHostedServiceAdmission(fixture)).toThrow("contradicts");
+  });
+
+  test("placement projection excludes variables, other services and unselected deploy fields", () => {
+    const environment = {
+      id: uuid(3),
+      projectId: uuid(2),
+      config: {
+        variables: { token: "secret-canary" },
+        services: {
+          [uuid(4)]: {
+            variables: { token: "secret-canary" },
+            deploy: {
+              registryCredentials: { password: "secret-canary" },
+              multiRegionConfig: { "us-west2": { numReplicas: 1, token: "secret-canary" } },
+            },
+          },
+          [uuid(99)]: { token: "secret-canary" },
+        },
+      },
+    };
+    const placement = projectHostedServicePlacement(environment, uuid(4));
+    expect(placement).toEqual(serviceFixture().readback.data.servicePlacement);
+    expect(JSON.stringify(placement)).not.toContain("secret-canary");
+    expect(() => projectHostedServicePlacement(environment, uuid(98))).toThrow("missing");
+    for (const config of [undefined, null, [], {}, { services: {} }])
+      expect(() => projectHostedServicePlacement({ ...environment, config }, uuid(4))).toThrow();
   });
 
   test("volume admission counts historical IDs, exact provider capacity, attachment and readiness", () => {

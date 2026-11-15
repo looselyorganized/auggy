@@ -272,7 +272,7 @@ test("fixed builders derive exact allocation, policy, capacity, usage and cleanu
     vars({ actionId: "policy", operation: "service-policy", service: createdService }).input,
   ).toEqual({
     numReplicas: 1,
-    region: "us-west2",
+    multiRegionConfig: { "us-west2": { numReplicas: 1 } },
     restartPolicyType: "NEVER",
     restartPolicyMaxRetries: 0,
     sleepApplication: false,
@@ -794,9 +794,89 @@ test("service schema failures retain only bounded structural paths, codes and ty
     type: "null",
   });
   expect(result.diagnostic?.issues.length).toBeLessThanOrEqual(24);
-  expect(result.diagnostic?.structure.length).toBeLessThanOrEqual(24);
+  expect(result.diagnostic?.structure.length).toBeLessThanOrEqual(32);
   expect(JSON.stringify(result)).not.toContain("canary");
   expect(JSON.stringify(result).length).toBeLessThan(5000);
+});
+
+test("service read projects only owned placement from nondecrypted environment config", async () => {
+  const raw = {
+    environment: {
+      id: id(3),
+      projectId: id(2),
+      config: {
+        sharedVariables: { token: { value: "secret-canary" } },
+        services: {
+          [id(4)]: {
+            variables: { token: { value: "secret-canary" } },
+            deploy: {
+              multiRegionConfig: { "us-west2": { numReplicas: 1 } },
+              registryCredentials: { password: "secret-canary" },
+            },
+          },
+          [id(99)]: { variables: { token: { value: "secret-canary" } } },
+        },
+      },
+    },
+    serviceInstance: {
+      id: id(5),
+      serviceId: id(4),
+      environmentId: id(3),
+      numReplicas: 1,
+      region: null,
+      restartPolicyType: "NEVER",
+      restartPolicyMaxRetries: 0,
+      sleepApplication: false,
+      latestDeployment: null,
+    },
+    serviceInstanceLimits: { containers: { cpu: 4, memoryBytes: 4000000000 } },
+    serviceInstanceLimitOverride: null,
+    servicePlacement: { secret: "secret-canary" },
+  };
+  const s = setup(async (input) => {
+    expect(input.command[2]).toContain("config(decryptVariables:false)");
+    return child(raw);
+  });
+  const result = await s.api.run({ actionId: "read", operation: "service-read", service });
+  expect(result.outcome).toBe("response");
+  expect(result.response?.data.servicePlacement).toEqual({
+    environmentId: id(3),
+    projectId: id(2),
+    serviceId: id(4),
+    multiRegionConfig: { "us-west2": { numReplicas: 1 } },
+  });
+  expect(result.response?.data.environment).toBeUndefined();
+  expect(JSON.stringify(result)).not.toContain("secret-canary");
+  for (const config of [
+    undefined,
+    null,
+    { services: {} },
+    {
+      services: {
+        [id(4)]: { deploy: { multiRegionConfig: { "secret-canary": "secret-canary" } } },
+      },
+    },
+  ]) {
+    const failed = setup(async () =>
+      child({ ...raw, environment: { ...raw.environment, config } }),
+    );
+    const observation = await failed.api.run({
+      actionId: "read",
+      operation: "service-read",
+      service,
+    });
+    expect(observation.outcome).toBe("query-failed");
+    expect(observation.response).toBeNull();
+    expect(observation.diagnostic?.stage).toBe("placement");
+    expect(observation.diagnostic?.issues).toEqual([
+      { path: "servicePlacement", code: "projection-refused" },
+    ]);
+    expect(observation.diagnostic?.structure).toContainEqual({
+      path: "environment.config.services.[selected].deploy.multiRegionConfig",
+      type: config?.services?.[id(4)] ? "object" : "missing",
+    });
+    expect(JSON.stringify(observation)).not.toContain("secret-canary");
+  }
 });
 
 test("failed service queries distinguish child failure and GraphQL envelope failure without leaking messages", async () => {

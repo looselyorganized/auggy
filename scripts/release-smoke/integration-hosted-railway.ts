@@ -10,6 +10,7 @@ import {
   assertHostedIntegrationApproval,
   assertHostedProjectAvailable,
   prepareHostedIntegration,
+  projectHostedServicePlacement,
   type HostedDeploymentBinding,
   type HostedProjectBinding,
   type HostedProjectInventory,
@@ -199,7 +200,7 @@ const OPERATIONS = {
   "service-read": {
     kind: "query",
     query:
-      "query HostedService($serviceId:String!,$environmentId:String!) { serviceInstance(serviceId:$serviceId,environmentId:$environmentId) { id serviceId environmentId numReplicas region restartPolicyType restartPolicyMaxRetries sleepApplication latestDeployment { id status } } serviceInstanceLimits(serviceId:$serviceId,environmentId:$environmentId) serviceInstanceLimitOverride(serviceId:$serviceId,environmentId:$environmentId) }",
+      "query HostedService($serviceId:String!,$environmentId:String!) { environment(id:$environmentId) { id projectId config(decryptVariables:false) } serviceInstance(serviceId:$serviceId,environmentId:$environmentId) { id serviceId environmentId numReplicas region restartPolicyType restartPolicyMaxRetries sleepApplication latestDeployment { id status } } serviceInstanceLimits(serviceId:$serviceId,environmentId:$environmentId) serviceInstanceLimitOverride(serviceId:$serviceId,environmentId:$environmentId) }",
     schema: z.object({
       serviceInstance: z.object({
         id: uuid,
@@ -323,7 +324,7 @@ export interface HostedRailwayAttempt {
 }
 export type HostedRailwayChildOutcome = Omit<Child, "stdout" | "stderr">;
 export interface HostedRailwayResponseDiagnostic {
-  stage: "response-size" | "json" | "envelope" | "schema";
+  stage: "response-size" | "json" | "envelope" | "schema" | "placement";
   issues: { path: string; code: string }[];
   issuesTruncated: boolean;
   structure: { path: string; type: string }[];
@@ -340,6 +341,11 @@ export interface HostedRailwayResult extends HostedRailwayAttempt {
   diagnostic?: HostedRailwayResponseDiagnostic;
 }
 const SERVICE_DIAGNOSTIC_PATHS = [
+  "environment",
+  "environment.id",
+  "environment.projectId",
+  "environment.config",
+  "environment.config.services",
   "serviceInstance",
   ...[
     "id",
@@ -366,30 +372,45 @@ function responseDiagnostic(
   operation: HostedRailwayOperation,
   data: unknown,
   error: unknown,
+  placementServiceId?: string,
 ): HostedRailwayResponseDiagnostic {
   const paths =
-    stage === "envelope"
-      ? ["data", "errors"]
-      : stage === "schema" && operation === "service-read"
-        ? SERVICE_DIAGNOSTIC_PATHS
-        : [];
+    stage === "placement"
+      ? [
+          "environment",
+          "environment.id",
+          "environment.projectId",
+          "environment.config",
+          "environment.config.services",
+          "environment.config.services.[selected]",
+          "environment.config.services.[selected].deploy",
+          "environment.config.services.[selected].deploy.multiRegionConfig",
+        ]
+      : stage === "envelope"
+        ? ["data", "errors"]
+        : stage === "schema" && operation === "service-read"
+          ? SERVICE_DIAGNOSTIC_PATHS
+          : [];
   const issues = error instanceof z.ZodError ? error.issues : [];
   return {
     stage,
-    issues: issues.slice(0, 24).map((issue) => {
-      const path = issue.path.join(".");
-      return {
-        path: path === "" ? "$" : paths.includes(path) ? path : "[unlisted]",
-        code: issue.code,
-      };
-    }),
+    issues:
+      stage === "placement"
+        ? [{ path: "servicePlacement", code: "projection-refused" }]
+        : issues.slice(0, 24).map((issue) => {
+            const path = issue.path.join(".");
+            return {
+              path: path === "" ? "$" : paths.includes(path) ? path : "[unlisted]",
+              code: issue.code,
+            };
+          }),
     issuesTruncated: issues.length > 24,
     structure: paths.map((path) => {
       let value = data;
       for (const key of path.split(".")) {
         value =
           value && typeof value === "object" && !Array.isArray(value)
-            ? (value as Record<string, unknown>)[key]
+            ? (value as Record<string, unknown>)[key === "[selected]" ? placementServiceId! : key]
             : undefined;
       }
       return {
@@ -542,7 +563,7 @@ export function prepareHostedRailwayAction(
         environmentId: target.environmentId,
         input: {
           numReplicas: 1,
-          region: plan.railway.region,
+          multiRegionConfig: { [plan.railway.region]: { numReplicas: 1 } },
           restartPolicyType: "NEVER",
           restartPolicyMaxRetries: 0,
           sleepApplication: false,
@@ -767,6 +788,10 @@ function adapter(
         gate && { startedAt: gate.startedAt, now: Date.now() },
       );
       const mutation = built.kind === "mutation";
+      const placementServiceId =
+        action.operation === "service-read"
+          ? serviceTarget(prepared, action.service).serviceId
+          : undefined;
       if (mutation) check(gate, "Explicit hosted approval is required for every mutation");
       if (gate) assertRemaining(gate, prepared, built.operation);
       verifyExecutable();
@@ -829,7 +854,14 @@ function adapter(
             stage = "envelope";
             decoded = body(decoded);
             stage = "schema";
-            const data = OPERATIONS[built.operation].schema.parse(decoded);
+            const data: Record<string, unknown> = OPERATIONS[built.operation].schema.parse(decoded);
+            if (placementServiceId) {
+              stage = "placement";
+              data.servicePlacement = projectHostedServicePlacement(
+                (decoded as Record<string, unknown>).environment,
+                placementServiceId,
+              );
+            }
             if (childSucceeded) {
               result.response = { data };
               result.outcome = "response";
@@ -837,7 +869,13 @@ function adapter(
             }
           } catch (error) {
             if (childSucceeded) result.reason = "invalid-response";
-            result.diagnostic = responseDiagnostic(stage, built.operation, decoded, error);
+            result.diagnostic = responseDiagnostic(
+              stage,
+              built.operation,
+              decoded,
+              error,
+              placementServiceId,
+            );
           }
         }
       } catch {

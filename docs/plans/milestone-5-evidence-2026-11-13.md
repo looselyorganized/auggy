@@ -64,6 +64,36 @@ Plan SHA-256: `de51e95d827c34deaba7098ab042184a65cd3edbc76ef5f1e6b00801ff1268a9`
 Focused review: `/private/tmp/m5-g4-diagnostics-repair-acceptance.json`.
 Execution handoff: `/private/tmp/m5-g4-ready-2ae0a736.json`.
 
+## Live placement verification and volume gate
+
+The explicitly approved `2ae0a736` run stopped before deployment because the
+legacy `serviceInstance.region` readback was null; all other settings matched.
+Automatic cleanup completed with project/key absence verified. Official Railway
+CLI/configuration sources and live schema inspection identified explicit
+`multiRegionConfig` and encrypted environment-config readback as the current
+placement representation.
+
+The focused repair sets exactly one approved region/replica, projects only the
+owned service's placement from `config(decryptVariables:false)`, and applies a
+shared assertion at service admission, volume preflight, upload admission and
+platform checks. Missing/conflicting placement is rejected; no null-only fallback
+or weaker physical-volume region check was introduced. Independent review found
+no blockers; 104 focused tests/1,087 assertions, repository lint/typecheck and
+both private typechecks passed.
+
+Corrective attempt `2ae0a736-r1` retained the original execution deadline and
+resource/cost/key limits. All four actual service bindings passed. It then stopped
+at the first volume binding before workloads or SSH registration. Automatic
+cleanup completed without failures or unknown allocations. The initial volume
+readback was not retained. A later cleanup snapshot followed service deletion,
+so its missing service attachment does not establish the initial failure cause.
+The next narrow repair retains the initial volume readback and rejected
+predicates without weakening admission or inferring a timing/attachment fix.
+
+Evidence remains in the two attempt directories under `/private/tmp`; focused
+placement review is `/private/tmp/m5-g4-placement-repair-acceptance.json` and the
+current handoff is `/private/tmp/m5-g4-current-status.json`. G4 remains unaccepted.
+
 ## Preservation and entry checks
 
 The user authorized implementation of the approved M5 plan. Root preserved the

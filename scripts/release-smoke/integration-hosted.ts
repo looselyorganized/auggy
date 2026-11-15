@@ -823,6 +823,71 @@ export function bindHostedProjectAllocation(options: {
   };
 }
 
+export interface HostedServicePlacement {
+  environmentId: string;
+  projectId: string;
+  serviceId: string;
+  multiRegionConfig: Record<string, { numReplicas: number }>;
+}
+
+/** Retain only the selected service's bounded placement, never environment variables or sources. */
+export function projectHostedServicePlacement(
+  environment: unknown,
+  serviceId: string,
+): HostedServicePlacement {
+  id(serviceId);
+  const value = object(environment);
+  id(value.id);
+  id(value.projectId);
+  const services = object(object(value.config).services);
+  check(Object.hasOwn(services, serviceId), "Hosted placement service is missing");
+  const regions = object(object(object(services[serviceId]).deploy).multiRegionConfig);
+  const entries = Object.entries(regions);
+  check(entries.length > 0 && entries.length <= 16, "Hosted placement map is missing or unbounded");
+  const multiRegionConfig = Object.fromEntries(
+    entries.map(([region, config]) => {
+      name(region);
+      const count = object(config).numReplicas;
+      check(
+        typeof count === "number" && Number.isSafeInteger(count) && count >= 0,
+        "Invalid hosted placement replica count",
+      );
+      return [region, { numReplicas: count }];
+    }),
+  );
+  return { environmentId: value.id, projectId: value.projectId, serviceId, multiRegionConfig };
+}
+
+/** Explicit stored placement is required before deployment; legacy fields may not contradict it. */
+export function assertHostedServicePlacement(options: {
+  prepared: ReturnType<typeof prepareHostedIntegration>;
+  service: Pick<HostedServiceBinding, "projectId" | "environmentId" | "serviceId">;
+  readback: unknown;
+}): void {
+  const data = responseData(options.readback);
+  const placement = object(data.servicePlacement);
+  const service = options.service;
+  check(
+    placement.environmentId === service.environmentId &&
+      placement.projectId === service.projectId &&
+      placement.serviceId === service.serviceId,
+    "Hosted placement target differs from owned service",
+  );
+  const regions = object(placement.multiRegionConfig);
+  const approved = options.prepared.plan.railway.region;
+  check(
+    Object.keys(regions).length === 1 &&
+      Object.hasOwn(regions, approved) &&
+      object(regions[approved]).numReplicas === 1,
+    "Hosted placement must have exactly the approved region and one replica",
+  );
+  const instance = object(data.serviceInstance);
+  check(
+    instance.region === null || instance.region === approved,
+    "Hosted legacy region contradicts explicit placement",
+  );
+}
+
 /** Initial admission requires an empty service, accepted setters and exact effective cap readback. */
 export function bindHostedServiceAdmission(options: {
   prepared: ReturnType<typeof prepareHostedIntegration>;
@@ -858,6 +923,11 @@ export function bindHostedServiceAdmission(options: {
   const data = responseData(options.readback);
   const instance = object(data.serviceInstance);
   const limits = object(object(data.serviceInstanceLimits).containers);
+  assertHostedServicePlacement({
+    prepared: options.prepared,
+    service: { ...options.project, serviceId: service.id },
+    readback: options.readback,
+  });
   check(
     instance.serviceId === service.id &&
       instance.environmentId === options.project.environmentId &&
@@ -868,7 +938,6 @@ export function bindHostedServiceAdmission(options: {
     limits.cpu === plan.limits.maxCpuPerService &&
       limits.memoryBytes === plan.limits.maxMemoryBytesPerService &&
       instance.numReplicas === 1 &&
-      instance.region === plan.railway.region &&
       instance.restartPolicyType === "NEVER" &&
       instance.restartPolicyMaxRetries === 0 &&
       instance.sleepApplication === false,
