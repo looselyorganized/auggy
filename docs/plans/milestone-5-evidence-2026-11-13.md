@@ -7,8 +7,8 @@ M5-09 and M5-10 remain open. Earlier entries record historical gate states.
 Final attempt `2ae0a736-r6` is stopped. Volume admission observed an owned READY
 volume instance with `serviceId: null` and mount path `/tmp`, instead of the
 requested service and `/app/data`. The first two observations had no instances;
-the third failed the attachment and mount checks. Whether this is an intermediate
-provider state is not established. No deployment or workload ran in this attempt,
+the third failed the attachment and mount checks. The subsequent RCA below confirms this was an intermediate
+provider state. No deployment or workload ran in this attempt,
 so the timing correction has focused-test acceptance only.
 
 Automatic cleanup completed: owned project and temporary SSH key absent, no
@@ -17,6 +17,27 @@ this rehearsal. The remaining blocker is evidence-backed handling of volume
 attachment readiness, followed by actual hosted behavior coverage; M5 is not
 ready to merge. Final receipt:
 `/private/tmp/auggy-m5-run-2ae0a736-r6/evidence/root-result.json`.
+
+### Confirmed RCA of the final volume refusal
+
+The retained `cleanup-http-service-precondition.json` resolves the cause. Before
+any service deletion, the exact same volume and instance had attached to the
+expected HTTP service at `/app/data`. This was recorded about four seconds after
+the harness refused it. The create request's reconstructed digest matches the
+recorded mutation input; the request contained the intended service and mount.
+
+The private controller's retry condition permits only zero volume instances.
+Once the intermediate unattached instance appeared, it classified unfinished
+attachment as a terminal configuration failure. This is a harness state-machine
+error. Tests encoded the same assumption: zero instances could become fully
+attached, while an existing unattached instance was always rejected immediately.
+They omitted the observed multi-stage transition.
+
+The required correction is a bounded wait for attachment of the exact newly
+created owned volume, followed by unchanged strict service/mount checks, with
+regressions for intermediate attachment and deadline exhaustion. No correction
+or additional hosted call was performed for this RCA. Evidence hashes and timing
+are recorded in `/private/tmp/m5-g4-r6-rca.json`.
 
 ## Hosted execution on 2026-11-15
 
