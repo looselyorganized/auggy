@@ -6,6 +6,7 @@ import { redactEvidence } from "./evidence-redaction";
 export const APPLICATION_BOUNDS = Object.freeze({
   readinessMs: 60_000,
   scenarioMs: 120_000,
+  deploymentMs: 780_000,
   shutdownMs: 15_000,
   reapMs: 5_000,
   outputBytes: 2 * 1024 * 1024,
@@ -31,13 +32,23 @@ export function startApplicationChild(options: {
   /** Private structured command input; never included in evidence or argv. */
   input?: Uint8Array;
   timeoutMs?: number;
+  /** Explicit hosted deployment supervision; ordinary fixture commands retain the 120s ceiling. */
+  lifetimeProfile?: "hosted-deployment";
   maxOutputBytes?: number;
 }) {
   check(options.command.length > 0, "Fixture child requires a command");
   const timeoutMs = options.timeoutMs ?? APPLICATION_BOUNDS.scenarioMs;
   const maxOutputBytes = options.maxOutputBytes ?? APPLICATION_BOUNDS.outputBytes;
   check(
-    Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= APPLICATION_BOUNDS.scenarioMs,
+    options.lifetimeProfile === undefined || options.lifetimeProfile === "hosted-deployment",
+    "Invalid child lifetime profile",
+  );
+  const ceiling =
+    options.lifetimeProfile === "hosted-deployment"
+      ? APPLICATION_BOUNDS.deploymentMs
+      : APPLICATION_BOUNDS.scenarioMs;
+  check(
+    Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= ceiling,
     "Invalid child lifetime bound",
   );
   check(

@@ -134,6 +134,37 @@ Private focused receipts are `m5-g4-volume-provisioning-acceptance.json`,
 `m5-g4-pre-native-diagnostics-acceptance.json`, and
 `m5-g4-effective-restart-policy-acceptance.json` under `/private/tmp`.
 
+Attempt `r5` passed native domain creation and source upload. The public CLI was
+then killed by the harness at 120,029 ms before its managed deployment record
+completed. Its native status reads retained hashes, so the evidence does not
+establish whether it was still building or waiting for HTTP health. Cleanup
+completed with project/key absence and no unknown allocations.
+
+The harness timing was inconsistent with the public CLI's supported 600-second
+Railway wait plus 90-second HTTP readiness wait. Its separate 60-second readiness
+and 105-second stop checks also started at upload, incorrectly consuming fixture
+time during provider build. The focused correction gives managed deployments a
+780-second supervision ceiling clipped to the original normal execution and
+approval deadlines, including reap reserve. Ordinary child commands retain their
+120-second ceiling. The earliest hash-bound exact-deployment SUCCESS observation
+anchors a separate 105-second scheduling budget, never a guarantee of stopping
+before the watchdog. The unchanged 110-second artifact watchdog remains the
+runtime limit; expiry still invalidates evidence. Upload provenance and complete
+upload-to-confirmed-stop log coverage are preserved with bounded output.
+
+Upload-only maintenance readiness permits at most 120 read-only observations,
+five seconds apart, within the same deployment/global deadlines. This avoids
+consuming fixture time during a cold build; managed post-CLI observation retains
+its existing bounds. The native CLI's 128-call limit is unchanged and exhaustion
+is explicitly diagnosed. Independent review, 53 focused tests / 584 assertions,
+repository lint/typecheck and both private typechecks passed. Four existing
+build/process tests were intentionally not repeated. Private acceptance is
+`/private/tmp/m5-g4-deployment-timing-acceptance.json`.
+
+Only one further hosted attempt is permitted within the original deadline. On a
+further failure, stop the rehearsal and report the exact blocker. No subsequent
+hosted acceptance is claimed.
+
 ## Preservation and entry checks
 
 The user authorized implementation of the approved M5 plan. Root preserved the
