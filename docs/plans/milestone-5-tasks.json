@@ -75,11 +75,9 @@
         "concrete hosted execution approval"
       ],
       "pending": [
-        "Complete and independently review the finite managed-deploy/channel/recovery executor and exact action/source manifest",
-        "Finalize guard lifetime and attached callback supervision, hosted TTL180 artifacts, and complete executor integration; existing local recovery prerequisites are independently accepted",
-        "Freshly verify isolated allocation/capacity, exact ephemeral workspace key and first-use relay pin before approved execution",
-        "Obtain explicit approval of the final concrete target, source inputs, resource/time/spend/retention and cleanup envelope; login is not approval",
-        "Execute actual hosted HTTP and polling deployment/replacement/recovery and independently verify owned teardown"
+        "Resolve exact owned-volume attachment readiness using retained evidence; no automatic repair/retry under this rehearsal",
+        "Complete actual hosted HTTP and polling deployment/replacement/recovery coverage and independently verify teardown",
+        "Verify final candidate CI and final M5 review before merge"
       ],
       "discovery": {
         "status": "authenticated_read_only",
@@ -135,14 +133,41 @@
         "newCandidateCIRequired": true,
         "candidateExecutor": {
           "logicalActions": 90,
-          "frozen": false,
-          "approved": false,
+          "frozen": true,
+          "approved": true,
           "services": 4,
           "volumes": 4,
           "hostedHttpTtlSeconds": 180,
           "stoppedControllerWaitMs": 240000,
-          "scope": "Prepared action sequence; actual integrated executor and exact hosted artifacts still pending"
+          "scope": "Reviewed frozen executor was explicitly authorized and executed; final attempt stopped before deployment. No hosted acceptance."
         }
+      },
+      "lastExecution": {
+        "date": "2026-11-15",
+        "runId": "2ae0a736-r6",
+        "status": "incomplete",
+        "planSHA256": "f3b5b3df6f1c3b676bd97df43c8ea595b9448e3f6d17cb24f04869f1eeaca94d",
+        "completedRootActions": 0,
+        "failureStage": "http-original-bind",
+        "failedPredicates": [
+          "serviceId",
+          "mountPath"
+        ],
+        "observed": {
+          "state": "READY",
+          "serviceId": null,
+          "mountPath": "/tmp"
+        },
+        "cleanup": {
+          "complete": true,
+          "failures": [],
+          "projectAbsent": true,
+          "keyAbsent": true,
+          "unknownAllocations": []
+        },
+        "automaticRetriesRemaining": 0,
+        "timingCorrectionLiveExercised": false,
+        "privateResultSHA256": "86b73ef16893a9d82dbc4c1b1b1d6ba504f2dd35fe21c736eaee221df5896c3c"
       }
     },
     "G1": {
@@ -359,7 +384,8 @@
         "2026-11-15 actual2ae0a736 run identified legacy region:null as sole service admission failure; cleanup complete. Explicit multiRegionConfig/projected owned-service placement repair independently accepted (104focused tests/1087assertions, lint/typechecks). Corrective r1 verified all4service bindings live, then failed initial volume binding before workloads; cleanup fully confirmed. Initial volume readback absent; post-service-deletion snapshot is not causal evidence. Retain initial volume diagnostics before another attempt; original deadline/resource/cost limits preserved.",
         "2026-11-15 r2 proved asynchronous volume provisioning; bounded read-only observation accepted independently (34 tests/242 assertions), and r3 volumes passed after two reads. Pre-native diagnostics accepted (40 tests/388 assertions). r4 isolated NEVER/retry10 mismatch before domain/upload; shared strict-NEVER semantics repair accepted independently (18 tests/250 assertions, lint and all typechecks), keeping setter0 and all other limits. All attempts through r4 fully cleaned; zero completed workload actions. G4 remains open; original execution deadline23:24:39UTC unchanged. See evidence document and private current-status handoff.",
         "2026-11-15 r5 passed native domain and upload, then outer120s CLI supervisor timed out; provider status values were not retained, so build vs health wait is unknown. Cleanup fully confirmed. Public CLI allows600s Railway plus90s HTTP waits; private platform also incorrectly counted build time in upload-based60s readiness/105s stop windows. Narrow timing-boundary repair in progress with unchanged110s artifact watchdog, full upload-to-stop logs, original global deadline and cleanup. G4 remains open.",
-        "2026-11-15 timing correction accepted independently: managed-only780s supervision clipped to original normal execution/approval minus reap; ordinary120s unchanged. Earliest hash-bound exact SUCCESS anchors scheduling only; unchanged110s watchdog and expiry rejection remain authoritative, with full upload-to-stop logs. Maintenance uses at most120 read-only polls/5s within original deadlines; native128call limit unchanged.53 focused tests/584 assertions and all lint/typechecks passed. One further hosted attempt only; stop and report any further failure. No hosted acceptance claimed."
+        "2026-11-15 timing correction accepted independently: managed-only780s supervision clipped to original normal execution/approval minus reap; ordinary120s unchanged. Earliest hash-bound exact SUCCESS anchors scheduling only; unchanged110s watchdog and expiry rejection remain authoritative, with full upload-to-stop logs. Maintenance uses at most120 read-only polls/5s within original deadlines; native128call limit unchanged.53 focused tests/584 assertions and all lint/typechecks passed. One further hosted attempt only; stop and report any further failure. No hosted acceptance claimed.",
+        "2026-11-15 final r6 stopped at first volume admission: observations1/2 had no instances; observation3 returned owned READY instance with serviceId:null and mountPath:/tmp. Expected exact service and /app/data; strict checks refused. No deployment/workload ran, so timing correction remains locally verified only. Provider intermediate-state explanation unproven. Cleanup complete with project/key absent and no failures/unknown allocations. No further automatic retries; G4/M5 remain incomplete."
       ]
     },
     {
@@ -445,7 +471,8 @@
     "2026-11-15 actual2ae0a736 run identified legacy region:null as sole service admission failure; cleanup complete. Explicit multiRegionConfig/projected owned-service placement repair independently accepted (104focused tests/1087assertions, lint/typechecks). Corrective r1 verified all4service bindings live, then failed initial volume binding before workloads; cleanup fully confirmed. Initial volume readback absent; post-service-deletion snapshot is not causal evidence. Retain initial volume diagnostics before another attempt; original deadline/resource/cost limits preserved.",
     "2026-11-15 r2 proved asynchronous volume provisioning; bounded read-only observation accepted independently (34 tests/242 assertions), and r3 volumes passed after two reads. Pre-native diagnostics accepted (40 tests/388 assertions). r4 isolated NEVER/retry10 mismatch before domain/upload; shared strict-NEVER semantics repair accepted independently (18 tests/250 assertions, lint and all typechecks), keeping setter0 and all other limits. All attempts through r4 fully cleaned; zero completed workload actions. G4 remains open; original execution deadline23:24:39UTC unchanged. See evidence document and private current-status handoff.",
     "2026-11-15 r5 passed native domain and upload, then outer120s CLI supervisor timed out; provider status values were not retained, so build vs health wait is unknown. Cleanup fully confirmed. Public CLI allows600s Railway plus90s HTTP waits; private platform also incorrectly counted build time in upload-based60s readiness/105s stop windows. Narrow timing-boundary repair in progress with unchanged110s artifact watchdog, full upload-to-stop logs, original global deadline and cleanup. G4 remains open.",
-    "2026-11-15 timing correction accepted independently: managed-only780s supervision clipped to original normal execution/approval minus reap; ordinary120s unchanged. Earliest hash-bound exact SUCCESS anchors scheduling only; unchanged110s watchdog and expiry rejection remain authoritative, with full upload-to-stop logs. Maintenance uses at most120 read-only polls/5s within original deadlines; native128call limit unchanged.53 focused tests/584 assertions and all lint/typechecks passed. One further hosted attempt only; stop and report any further failure. No hosted acceptance claimed."
+    "2026-11-15 timing correction accepted independently: managed-only780s supervision clipped to original normal execution/approval minus reap; ordinary120s unchanged. Earliest hash-bound exact SUCCESS anchors scheduling only; unchanged110s watchdog and expiry rejection remain authoritative, with full upload-to-stop logs. Maintenance uses at most120 read-only polls/5s within original deadlines; native128call limit unchanged.53 focused tests/584 assertions and all lint/typechecks passed. One further hosted attempt only; stop and report any further failure. No hosted acceptance claimed.",
+    "2026-11-15 final r6 stopped at first volume admission: observations1/2 had no instances; observation3 returned owned READY instance with serviceId:null and mountPath:/tmp. Expected exact service and /app/data; strict checks refused. No deployment/workload ran, so timing correction remains locally verified only. Provider intermediate-state explanation unproven. Cleanup complete with project/key absent and no failures/unknown allocations. No further automatic retries; G4/M5 remain incomplete."
   ],
   "preparation": {
     "status": "accepted",

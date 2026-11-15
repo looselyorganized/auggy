@@ -4,6 +4,20 @@ Current status: G0/G1/G3 and M5-00/01/02/03/04/05/06/08 are accepted for their
 recorded scopes. Approved hosted execution on 2026-11-15 did not pass; M5-07,
 M5-09 and M5-10 remain open. Earlier entries record historical gate states.
 
+Final attempt `2ae0a736-r6` is stopped. Volume admission observed an owned READY
+volume instance with `serviceId: null` and mount path `/tmp`, instead of the
+requested service and `/app/data`. The first two observations had no instances;
+the third failed the attachment and mount checks. Whether this is an intermediate
+provider state is not established. No deployment or workload ran in this attempt,
+so the timing correction has focused-test acceptance only.
+
+Automatic cleanup completed: owned project and temporary SSH key absent, no
+failures or unknown allocations. No further automatic attempt is permitted under
+this rehearsal. The remaining blocker is evidence-backed handling of volume
+attachment readiness, followed by actual hosted behavior coverage; M5 is not
+ready to merge. Final receipt:
+`/private/tmp/auggy-m5-run-2ae0a736-r6/evidence/root-result.json`.
+
 ## Hosted execution on 2026-11-15
 
 The operator explicitly approved the isolated Railway proposal. The first
