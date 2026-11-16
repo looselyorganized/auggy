@@ -1,9 +1,48 @@
 # Milestone 5 execution evidence
 
 Current status: G0/G1/G3 and M5-00/01/02/03/04/05/06/08 are accepted for their
-recorded scopes. The latest authorized hosted attempt, r7 on 2026-11-16 UTC,
+recorded scopes. The latest authorized hosted attempt, r8 on 2026-11-16 UTC,
 remains incomplete; M5-07, M5-09 and M5-10 remain open. Earlier entries record
 historical gate states.
+
+## Diagnostic implementation and r8 validation
+
+The approved diagnostic patch is implemented in the private platform and runner.
+Platform reads now retain sanitized observations before assertions, fixed failure
+stages/codes and bounded reader diagnostics. Observation records replace existing
+pending records; failure receipts use a separate bounded slot. The runner retains
+explicit CLI-reported platform/HTTP readiness from the exact summary line;
+ambiguous or incomplete output remains unknown. These fields do not participate
+in acceptance. No public CLI, runtime, artifact, deadline or polling changes were
+introduced.
+
+Independent principal review accepted both changes. Focused verification passed
+34 platform tests / 452 assertions and 8 runner tests / 82 assertions. Combined
+executor typecheck and changed-file Biome checks passed; nonblocking private style
+warnings remain. Source hashes and verification results are recorded in
+`/private/tmp/m5-g4-post-deployment-diagnostics-acceptance.json`.
+
+The user-authorized implementation plan included one fresh hosted attempt after
+local acceptance. R8 passed compiled preflight and used the same artifact/resource
+limits, a 60-minute execution ceiling and ten-minute cleanup reserve. It stopped
+before deployment: the worker volume had no instance in all six permitted
+observations. The retained cleanup snapshot before any service deletion shows
+that exact volume subsequently attached correctly to the worker at `/app/data`.
+Thus provisioning completed after the observation window. Neither new diagnostic
+path was exercised live, and no hosted behavior scenario completed.
+
+Cleanup reported `complete:false` with failed step `cleanup-http-original`.
+Individual service deletions and project deletion proceeded; project deletion
+returned true, and complete active-project and key inventories confirmed absence.
+Do not rewrite the failed step or claim successful individual volume deletion.
+Independent review identified a likely cleanup-inventory mismatch: cleanup reuses
+the admission binder but permits only successfully bound volumes, omitting the
+known worker volume whose creation succeeded and binding failed. Adjacent retained
+snapshots support this explanation; the exact failed cleanup readback was not
+persisted, so its predicate is not directly proven.
+
+No repair or automatic retry followed. The complete result and evidence hashes
+are in `/private/tmp/m5-g4-r8-result.json`. M5 remains incomplete.
 
 ## Renewed hosted attempt r7: deployment completed, verification incomplete
 

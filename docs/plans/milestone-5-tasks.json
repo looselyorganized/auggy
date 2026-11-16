@@ -75,8 +75,8 @@
         "concrete hosted execution approval"
       ],
       "pending": [
-        "Identify subsequent post-deployment platform verification failure; current evidence lacks precise predicate. No automatic retry.",
-        "Complete actual hosted HTTP and polling deployment/replacement/recovery coverage and independently verify teardown",
+        "Resolve observed volume-provisioning-window exhaustion and likely cleanup inventory mismatch; no automatic repair/retry",
+        "Exercise accepted post-deployment diagnostics and complete actual hosted behavior/recovery coverage",
         "Verify final candidate CI and final M5 review before merge"
       ],
       "discovery": {
@@ -144,29 +144,30 @@
       },
       "lastExecution": {
         "status": "incomplete",
-        "runId": "2ae0a736-r7",
-        "planSHA256": "229d61b23a4b419148cd77fc8945cfedbf6ce4b160e27f4e3d18b6a2ea5ed648",
-        "authorization": "/private/tmp/m5-g4-explicit-approval-r7.json",
-        "volumeSetup": "both original volumes bound successfully after two observations each",
-        "unattachedIntermediateStateObserved": false,
-        "managedCli": {
-          "completed": true,
-          "exitCode": 0,
-          "durationMs": 180717,
-          "issues": []
-        },
-        "railwayDeploymentStatus": "SUCCESS",
-        "httpHealth": "not-established-by-retained-evidence; CLI can complete while health is pending",
-        "lastRetainedPlatformStage": "domain binding passed",
-        "failureStage": "subsequent platform verification before completed deployment binding",
-        "failurePredicate": "not retained; root outcome generic unknown",
+        "runId": "2ae0a736-r8",
+        "planSHA256": "1c8d47a915056966d92d7f4cfe4141991487c0c91872b4fab21319cc4502cfc8",
+        "authorization": "/private/tmp/m5-g4-explicit-approval-r8.json",
+        "diagnosticsAcceptance": "/private/tmp/m5-g4-post-deployment-diagnostics-acceptance.json",
+        "failureStage": "worker-original-bind",
+        "failure": "six observations exhausted with zero volume instances",
+        "eventualAttachment": "exact owned worker volume correctly attached at/app/data in cleanup-http-service-precondition before any service deletion",
+        "postDeploymentDiagnosticsLiveExercised": false,
         "completedRootActions": 0,
         "cleanup": {
-          "complete": true,
-          "failures": [],
+          "complete": false,
+          "failures": [
+            "cleanup-http-original"
+          ],
           "projectAbsent": true,
           "keyAbsent": true,
           "unknownAllocations": []
+        },
+        "cleanupReview": {
+          "reviewer": "volume_plan_review",
+          "likelyCause": "Cleanup inventory permits successfully bound volumes only; known created-but-unbound worker volume is omitted and rejected as unexpected during HTTP volume cleanup.",
+          "confidence": "strongly supported by code and adjacent retained snapshots; exact failed cleanup readback not retained",
+          "confirmed": "projectDelete:true plus complete active-project/key inventories establish project/key absence",
+          "notClaimed": "individual volume-delete calls succeeded or cleanup.complete is true"
         },
         "automaticRetriesRemaining": 0
       },
@@ -205,6 +206,34 @@
             "verification": "locally_verified",
             "acceptanceReceipt": "/private/tmp/m5-g4-volume-attachment-acceptance.json"
           }
+        },
+        {
+          "status": "incomplete",
+          "runId": "2ae0a736-r7",
+          "planSHA256": "229d61b23a4b419148cd77fc8945cfedbf6ce4b160e27f4e3d18b6a2ea5ed648",
+          "authorization": "/private/tmp/m5-g4-explicit-approval-r7.json",
+          "volumeSetup": "both original volumes bound successfully after two observations each",
+          "unattachedIntermediateStateObserved": false,
+          "managedCli": {
+            "completed": true,
+            "exitCode": 0,
+            "durationMs": 180717,
+            "issues": []
+          },
+          "railwayDeploymentStatus": "SUCCESS",
+          "httpHealth": "not-established-by-retained-evidence; CLI can complete while health is pending",
+          "lastRetainedPlatformStage": "domain binding passed",
+          "failureStage": "subsequent platform verification before completed deployment binding",
+          "failurePredicate": "not retained; root outcome generic unknown",
+          "completedRootActions": 0,
+          "cleanup": {
+            "complete": true,
+            "failures": [],
+            "projectAbsent": true,
+            "keyAbsent": true,
+            "unknownAllocations": []
+          },
+          "automaticRetriesRemaining": 0
         }
       ]
     },
@@ -426,7 +455,8 @@
         "2026-11-15 final r6 stopped at first volume admission: observations1/2 had no instances; observation3 returned owned READY instance with serviceId:null and mountPath:/tmp. Expected exact service and /app/data; strict checks refused. No deployment/workload ran, so timing correction remains locally verified only. Provider intermediate-state explanation unproven. Cleanup complete with project/key absent and no failures/unknown allocations. No further automatic retries; G4/M5 remain incomplete.",
         "R6 RCA confirmed from retained pre-deletion cleanup evidence: exact same volume/instance attached to expected service at /app/data about4s after refusal. Reconstructed create-input SHA matches recorded mutation. Harness retries only zero instances and prematurely rejects existing unattached provisioning state; tests encode this assumption and miss the multi-stage transition. No RCA live calls or implementation. Required correction: bounded owned-volume attachment convergence with strict final checks.",
         "Volume-attachment fix locally verified and independently reviewed: narrow owned READY/unattached singleton at /tmp or approved mount may wait, with instance identity pinned before subsequent binding. Six-read/five-pause bounds, strict acceptance, deadline, one creation/claim, evidence/privacy and cleanup preserved.56 controller tests/490 assertions, private typecheck and two-file Biome check passed. Frozen r6 closure and RCA hashes unchanged. No build or hosted call; G4 remains open. Receipt /private/tmp/m5-g4-volume-attachment-acceptance.json.",
-        "2026-11-16UTC renewed user-authorized r7 used fixed attachment code, fresh60minute ceiling and same resource limits. Both volumes bound after2reads; intermediate unattached state did not recur. Domain/upload passed; Railway SUCCESS; managed CLI exit0 after180717ms with no runner issues. CLI success does not certify HTTP health, which retained evidence does not establish. Post-CLI domain binding passed; subsequent platform verification failed with generic unknown and no retained predicate/target observation. Zero completed root workload actions. Cleanup complete; no automatic retry. Receipt /private/tmp/m5-g4-r7-result.json."
+        "2026-11-16UTC renewed user-authorized r7 used fixed attachment code, fresh60minute ceiling and same resource limits. Both volumes bound after2reads; intermediate unattached state did not recur. Domain/upload passed; Railway SUCCESS; managed CLI exit0 after180717ms with no runner issues. CLI success does not certify HTTP health, which retained evidence does not establish. Post-CLI domain binding passed; subsequent platform verification failed with generic unknown and no retained predicate/target observation. Zero completed root workload actions. Cleanup complete; no automatic retry. Receipt /private/tmp/m5-g4-r7-result.json.",
+        "Diagnostic patch locally accepted:34platform tests/452assertions +8runner tests/82assertions, combined typecheck and focused lint passed. r8 single authorized hosted validation stopped before deployment: six worker-volume observations had zero instances; pre-first-service-deletion cleanup snapshot later showed correct attachment. New diagnostic paths not exercised live. Cleanup complete:false, failed cleanup-http-original; projectDelete:true and complete project/key absence confirmed. Likely cleanup permitted-inventory bug excludes created-but-unbound worker volume; exact failed cleanup readback absent. No automatic repair/retry. Receipts /private/tmp/m5-g4-post-deployment-diagnostics-acceptance.json and /private/tmp/m5-g4-r8-result.json."
       ]
     },
     {
@@ -516,7 +546,8 @@
     "2026-11-15 final r6 stopped at first volume admission: observations1/2 had no instances; observation3 returned owned READY instance with serviceId:null and mountPath:/tmp. Expected exact service and /app/data; strict checks refused. No deployment/workload ran, so timing correction remains locally verified only. Provider intermediate-state explanation unproven. Cleanup complete with project/key absent and no failures/unknown allocations. No further automatic retries; G4/M5 remain incomplete.",
     "R6 RCA confirmed from retained pre-deletion cleanup evidence: exact same volume/instance attached to expected service at /app/data about4s after refusal. Reconstructed create-input SHA matches recorded mutation. Harness retries only zero instances and prematurely rejects existing unattached provisioning state; tests encode this assumption and miss the multi-stage transition. No RCA live calls or implementation. Required correction: bounded owned-volume attachment convergence with strict final checks.",
     "Volume-attachment fix locally verified and independently reviewed: narrow owned READY/unattached singleton at /tmp or approved mount may wait, with instance identity pinned before subsequent binding. Six-read/five-pause bounds, strict acceptance, deadline, one creation/claim, evidence/privacy and cleanup preserved.56 controller tests/490 assertions, private typecheck and two-file Biome check passed. Frozen r6 closure and RCA hashes unchanged. No build or hosted call; G4 remains open. Receipt /private/tmp/m5-g4-volume-attachment-acceptance.json.",
-    "2026-11-16UTC renewed user-authorized r7 used fixed attachment code, fresh60minute ceiling and same resource limits. Both volumes bound after2reads; intermediate unattached state did not recur. Domain/upload passed; Railway SUCCESS; managed CLI exit0 after180717ms with no runner issues. CLI success does not certify HTTP health, which retained evidence does not establish. Post-CLI domain binding passed; subsequent platform verification failed with generic unknown and no retained predicate/target observation. Zero completed root workload actions. Cleanup complete; no automatic retry. Receipt /private/tmp/m5-g4-r7-result.json."
+    "2026-11-16UTC renewed user-authorized r7 used fixed attachment code, fresh60minute ceiling and same resource limits. Both volumes bound after2reads; intermediate unattached state did not recur. Domain/upload passed; Railway SUCCESS; managed CLI exit0 after180717ms with no runner issues. CLI success does not certify HTTP health, which retained evidence does not establish. Post-CLI domain binding passed; subsequent platform verification failed with generic unknown and no retained predicate/target observation. Zero completed root workload actions. Cleanup complete; no automatic retry. Receipt /private/tmp/m5-g4-r7-result.json.",
+    "Diagnostic patch locally accepted:34platform tests/452assertions +8runner tests/82assertions, combined typecheck and focused lint passed. r8 single authorized hosted validation stopped before deployment: six worker-volume observations had zero instances; pre-first-service-deletion cleanup snapshot later showed correct attachment. New diagnostic paths not exercised live. Cleanup complete:false, failed cleanup-http-original; projectDelete:true and complete project/key absence confirmed. Likely cleanup permitted-inventory bug excludes created-but-unbound worker volume; exact failed cleanup readback absent. No automatic repair/retry. Receipts /private/tmp/m5-g4-post-deployment-diagnostics-acceptance.json and /private/tmp/m5-g4-r8-result.json."
   ],
   "preparation": {
     "status": "accepted",
