@@ -13,9 +13,8 @@ so the timing correction has focused-test acceptance only.
 
 Automatic cleanup completed: owned project and temporary SSH key absent, no
 failures or unknown allocations. No further automatic attempt is permitted under
-this rehearsal. The remaining blocker is evidence-backed handling of volume
-attachment readiness, followed by actual hosted behavior coverage; M5 is not
-ready to merge. Final receipt:
+this rehearsal. The volume-attachment correction is now locally verified, as recorded below.
+Actual hosted behavior coverage remains incomplete; M5 is not ready to merge. Final receipt:
 `/private/tmp/auggy-m5-run-2ae0a736-r6/evidence/root-result.json`.
 
 ### Confirmed RCA of the final volume refusal
@@ -26,7 +25,8 @@ expected HTTP service at `/app/data`. This was recorded about four seconds after
 the harness refused it. The create request's reconstructed digest matches the
 recorded mutation input; the request contained the intended service and mount.
 
-The private controller's retry condition permits only zero volume instances.
+At the time of r6, the private controller's retry condition permitted only zero
+volume instances.
 Once the intermediate unattached instance appeared, it classified unfinished
 attachment as a terminal configuration failure. This is a harness state-machine
 error. Tests encoded the same assumption: zero instances could become fully
@@ -38,6 +38,30 @@ created owned volume, followed by unchanged strict service/mount checks, with
 regressions for intermediate attachment and deadline exhaustion. No correction
 or additional hosted call was performed for this RCA. Evidence hashes and timing
 are recorded in `/private/tmp/m5-g4-r6-rca.json`.
+
+### Volume-attachment correction: locally verified
+
+The private controller now also waits for a single newly created, owned READY
+instance whose service attachment is null and whose mount is `/tmp` or the
+approved mount. All other identity, environment, region, capacity, usage and
+deletion checks must pass. After observing this state, its instance ID is pinned;
+replacement, disappearance or duplication refuses before the strict binder can
+accept a later read. The binder remains the only success path.
+
+The existing six-read limit, five one-second pauses, execution deadlines, one
+creation and binding claim, observation hashes and cleanup behavior are retained.
+Regressions reproduce zero → zero → unattached → attached, the approved-mount
+variant, persistent unattached exhaustion, invalid ownership/fields, instance
+identity changes and deadline expiry. Existing privacy and cleanup assertions
+remain in place.
+
+Independent principal review found no blockers. The controller suite passed
+56 tests / 490 assertions; private-controller typecheck and Biome checks on the
+two changed files passed. Biome used the repository's disabled-assist policy.
+The frozen r6 closure and retained RCA evidence hashes were verified unchanged.
+No build or hosted call was performed, and no hosted acceptance is claimed.
+Source hashes and verification commands are recorded in
+`/private/tmp/m5-g4-volume-attachment-acceptance.json`.
 
 ## Hosted execution on 2026-11-15
 

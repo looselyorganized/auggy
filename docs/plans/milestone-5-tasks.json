@@ -75,7 +75,7 @@
         "concrete hosted execution approval"
       ],
       "pending": [
-        "Resolve exact owned-volume attachment readiness using retained evidence; no automatic repair/retry under this rehearsal",
+        "Validate the locally verified volume-attachment correction during a separately authorized hosted rehearsal; no automatic retry under the completed rehearsal",
         "Complete actual hosted HTTP and polling deployment/replacement/recovery coverage and independently verify teardown",
         "Verify final candidate CI and final M5 review before merge"
       ],
@@ -172,7 +172,9 @@
           "cause": "harness-provisioning-state-error",
           "confirmedBy": "cleanup-http-service-precondition before any service deletion",
           "privateReceipt": "/private/tmp/m5-g4-r6-rca.json",
-          "fixImplemented": false
+          "fixImplemented": true,
+          "verification": "locally_verified",
+          "acceptanceReceipt": "/private/tmp/m5-g4-volume-attachment-acceptance.json"
         }
       }
     },
@@ -392,7 +394,8 @@
         "2026-11-15 r5 passed native domain and upload, then outer120s CLI supervisor timed out; provider status values were not retained, so build vs health wait is unknown. Cleanup fully confirmed. Public CLI allows600s Railway plus90s HTTP waits; private platform also incorrectly counted build time in upload-based60s readiness/105s stop windows. Narrow timing-boundary repair in progress with unchanged110s artifact watchdog, full upload-to-stop logs, original global deadline and cleanup. G4 remains open.",
         "2026-11-15 timing correction accepted independently: managed-only780s supervision clipped to original normal execution/approval minus reap; ordinary120s unchanged. Earliest hash-bound exact SUCCESS anchors scheduling only; unchanged110s watchdog and expiry rejection remain authoritative, with full upload-to-stop logs. Maintenance uses at most120 read-only polls/5s within original deadlines; native128call limit unchanged.53 focused tests/584 assertions and all lint/typechecks passed. One further hosted attempt only; stop and report any further failure. No hosted acceptance claimed.",
         "2026-11-15 final r6 stopped at first volume admission: observations1/2 had no instances; observation3 returned owned READY instance with serviceId:null and mountPath:/tmp. Expected exact service and /app/data; strict checks refused. No deployment/workload ran, so timing correction remains locally verified only. Provider intermediate-state explanation unproven. Cleanup complete with project/key absent and no failures/unknown allocations. No further automatic retries; G4/M5 remain incomplete.",
-        "R6 RCA confirmed from retained pre-deletion cleanup evidence: exact same volume/instance attached to expected service at /app/data about4s after refusal. Reconstructed create-input SHA matches recorded mutation. Harness retries only zero instances and prematurely rejects existing unattached provisioning state; tests encode this assumption and miss the multi-stage transition. No RCA live calls or implementation. Required correction: bounded owned-volume attachment convergence with strict final checks."
+        "R6 RCA confirmed from retained pre-deletion cleanup evidence: exact same volume/instance attached to expected service at /app/data about4s after refusal. Reconstructed create-input SHA matches recorded mutation. Harness retries only zero instances and prematurely rejects existing unattached provisioning state; tests encode this assumption and miss the multi-stage transition. No RCA live calls or implementation. Required correction: bounded owned-volume attachment convergence with strict final checks.",
+        "Volume-attachment fix locally verified and independently reviewed: narrow owned READY/unattached singleton at /tmp or approved mount may wait, with instance identity pinned before subsequent binding. Six-read/five-pause bounds, strict acceptance, deadline, one creation/claim, evidence/privacy and cleanup preserved.56 controller tests/490 assertions, private typecheck and two-file Biome check passed. Frozen r6 closure and RCA hashes unchanged. No build or hosted call; G4 remains open. Receipt /private/tmp/m5-g4-volume-attachment-acceptance.json."
       ]
     },
     {
@@ -480,7 +483,8 @@
     "2026-11-15 r5 passed native domain and upload, then outer120s CLI supervisor timed out; provider status values were not retained, so build vs health wait is unknown. Cleanup fully confirmed. Public CLI allows600s Railway plus90s HTTP waits; private platform also incorrectly counted build time in upload-based60s readiness/105s stop windows. Narrow timing-boundary repair in progress with unchanged110s artifact watchdog, full upload-to-stop logs, original global deadline and cleanup. G4 remains open.",
     "2026-11-15 timing correction accepted independently: managed-only780s supervision clipped to original normal execution/approval minus reap; ordinary120s unchanged. Earliest hash-bound exact SUCCESS anchors scheduling only; unchanged110s watchdog and expiry rejection remain authoritative, with full upload-to-stop logs. Maintenance uses at most120 read-only polls/5s within original deadlines; native128call limit unchanged.53 focused tests/584 assertions and all lint/typechecks passed. One further hosted attempt only; stop and report any further failure. No hosted acceptance claimed.",
     "2026-11-15 final r6 stopped at first volume admission: observations1/2 had no instances; observation3 returned owned READY instance with serviceId:null and mountPath:/tmp. Expected exact service and /app/data; strict checks refused. No deployment/workload ran, so timing correction remains locally verified only. Provider intermediate-state explanation unproven. Cleanup complete with project/key absent and no failures/unknown allocations. No further automatic retries; G4/M5 remain incomplete.",
-    "R6 RCA confirmed from retained pre-deletion cleanup evidence: exact same volume/instance attached to expected service at /app/data about4s after refusal. Reconstructed create-input SHA matches recorded mutation. Harness retries only zero instances and prematurely rejects existing unattached provisioning state; tests encode this assumption and miss the multi-stage transition. No RCA live calls or implementation. Required correction: bounded owned-volume attachment convergence with strict final checks."
+    "R6 RCA confirmed from retained pre-deletion cleanup evidence: exact same volume/instance attached to expected service at /app/data about4s after refusal. Reconstructed create-input SHA matches recorded mutation. Harness retries only zero instances and prematurely rejects existing unattached provisioning state; tests encode this assumption and miss the multi-stage transition. No RCA live calls or implementation. Required correction: bounded owned-volume attachment convergence with strict final checks.",
+    "Volume-attachment fix locally verified and independently reviewed: narrow owned READY/unattached singleton at /tmp or approved mount may wait, with instance identity pinned before subsequent binding. Six-read/five-pause bounds, strict acceptance, deadline, one creation/claim, evidence/privacy and cleanup preserved.56 controller tests/490 assertions, private typecheck and two-file Biome check passed. Frozen r6 closure and RCA hashes unchanged. No build or hosted call; G4 remains open. Receipt /private/tmp/m5-g4-volume-attachment-acceptance.json."
   ],
   "preparation": {
     "status": "accepted",
