@@ -1,8 +1,39 @@
 # Milestone 5 execution evidence
 
 Current status: G0/G1/G3 and M5-00/01/02/03/04/05/06/08 are accepted for their
-recorded scopes. Approved hosted execution on 2026-11-15 did not pass; M5-07,
-M5-09 and M5-10 remain open. Earlier entries record historical gate states.
+recorded scopes. The latest authorized hosted attempt, r7 on 2026-11-16 UTC,
+remains incomplete; M5-07, M5-09 and M5-10 remain open. Earlier entries record
+historical gate states.
+
+## Renewed hosted attempt r7: deployment completed, verification incomplete
+
+The user explicitly requested one new test after the attachment fix. A fresh
+one-hour execution ceiling and ten-minute cleanup reserve replaced the expired
+prior window; resource, monitored-spend, SSH/relay and artifact limits stayed the
+same. The reviewed fix and unchanged release artifacts passed compiled preflight.
+
+Both original volumes bound after two observations each. Each went from no
+instance directly to correctly attached READY at `/app/data`; the newly supported
+unattached intermediate state did not recur in this run. Domain creation and
+upload passed. Railway reported SUCCESS, and the public managed-deploy CLI
+completed with exit zero in 180,717 ms, with no runner issues. The earlier
+120-second supervision cutoff no longer prevented CLI completion.
+
+CLI completion does not establish HTTP health: the public command can complete
+and save its deployment record while health is pending. The runner retains only
+output hashes and a fixed stage, so this evidence does not certify HTTP health.
+Post-CLI domain binding passed, then platform verification failed before a
+completed deployment binding was persisted. No target observation or precise
+failed predicate was retained for this failure; the root receipt is generic
+`unknown`. No hosted behavior scenario completed, and no root workload action was
+accepted. The cause of this subsequent verification failure is not established.
+
+Automatic cleanup completed with owned project and SSH key absent, no failures
+or unknown allocations. No automatic repair/retry followed. Result and evidence
+hashes: `/private/tmp/m5-g4-r7-result.json`. The final attempt receipt is
+`/private/tmp/auggy-m5-run-2ae0a736-r7/evidence/root-result.json`.
+
+## Previous stopped attempt and attachment RCA
 
 Final attempt `2ae0a736-r6` is stopped. Volume admission observed an owned READY
 volume instance with `serviceId: null` and mount path `/tmp`, instead of the
