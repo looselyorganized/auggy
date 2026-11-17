@@ -3,15 +3,45 @@
 Current status: G0/G1/G3 and M5-00/01/02/03/04/05/06/08 are accepted for their
 recorded scopes. Candidate `13bf80df` and harness `f41526ef` passed all 28 reported
 PR checks. HTTP and polling lifecycle/replacement are now accepted at that runtime
-candidate. The latest HTTP recovery attempt passed backup, fresh-volume restore
-and reconciliation, then failed when its first controller command tried to seal
-an uninitialized fixture. All owned resources were deleted and absence verified.
-The narrow initialization correction passes a real local fixture regression;
-it has not been retried on Railway. M5-07, M5-09 and M5-10 remain open: both
+candidate. The latest targeted HTTP recovery attempt passed backup, fresh-volume
+restore/reconciliation and the corrected initialization/hold/seal. It then failed
+because the harness incorrectly required a new Railway instance ID across a
+process restart. Logs prove a second live startup on the same image and ID.
+All owned resources were deleted and absence verified. M5-07, M5-09 and M5-10 remain open: both
 hosted recovery rows and final review/current-revision CI remain incomplete. The
 [change and validation audit](./milestone-5-audit-2026-11-16.md) records exact
 scope, defects and the proposed smaller harness. Earlier entries record
 historical gate states; their incomplete full-run outcomes remain unchanged.
+
+## Targeted initialization follow-up on `32cdb854`
+
+The initialization correction from `ea05e7a7` passed all 28 CI checks. Four new
+real-fixture negative controls prove that wrong generation/checkpoint prevents
+the probe and actual model/domain work prevents hold acceptance. The two affected
+suites passed 23 tests / 462 assertions; typecheck and lint passed. All 28 CI
+checks subsequently passed on the test-only follow-up `32cdb854` as well.
+
+One authorized hosted recovery attempt ran for 542 seconds. Baseline, backup,
+replacement, restore/reconciliation, restored initialization, expected 503 hold
+and unchanged-checkpoint zero-work seal passed. The restart command acknowledged
+the exact deployment. Before/after API reads retained the same deployment, image,
+singleton RUNNING status and instance ID. Provider logs contain the first live
+startup, fixture quiescence and a second live startup, all tagged with that ID.
+The runtime restarted; the harness falsely waited for an ID change until its
+60-second bound expired. The prior review's assumption that restart necessarily
+changes the provider instance ID was wrong. No timeout extension is warranted.
+
+The first hold response/sealed snapshot, restart acknowledgment, API reads and
+log window are bound in [the targeted evidence](./milestone-5-http-recovery-targeted-evidence-2026-11-16.json).
+Post-restart hold, expiry and post-hold operations remain unverified. The raw
+result stays failed. Both services/volumes, the project and temporary key were
+deleted, exact deletion IDs matched creation IDs, and complete inventories verify
+absence. Cleanup has no warnings, failures or unknown mutations.
+
+The next narrow fix must prove fresh-process readiness through the existing
+fixture state reset and successful reinitialization while keeping target/image
+checks. It is not implemented by this follow-up. No automatic hosted retry,
+production source change or polling recovery run occurred.
 
 ## Bounded hosted execution on `f41526ef`
 

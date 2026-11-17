@@ -143,7 +143,7 @@ test defects warranted correction before the outstanding hosted rows:
 | Finding | Failure mode | Narrow correction |
 |---|---|---|
 | High: phase evidence writes could throw outside protected work | Cleanup could be skipped, or a scenario with missing evidence could report success | Protect phase recording; always attempt driver cleanup; retain the original failure and fail acceptance when evidence recording fails |
-| High: a rebuild was inside the 210-second restored-auth hold | Build speed could consume the security observation window and produce an inconclusive failure | Use one bounded restart of the existing deployment/image during the hold; require the exact deployment and a new singleton running instance |
+| High: a rebuild was inside the 210-second restored-auth hold | Build speed could consume the security observation window and produce an inconclusive failure | Use one bounded restart of the existing deployment/image during the hold; require the exact deployment/image and fresh-process evidence |
 | Medium: timing assumptions and auth failures were underspecified | A mismatched fixture or unrelated 503 could be mistaken for the expected recovery behavior | Validate the 180-second fixture TTL and durable stores before allocation; require the auth error JSON and bounded Retry-After, followed by expired-token rejection and successful fresh work |
 
 The restart is a test-only provider operation. Railway's
@@ -151,9 +151,12 @@ The restart is a test-only provider operation. Railway's
 and [restart documentation](https://docs.railway.com/cli/restart) establish reuse
 of the existing image. The source also shows that `--json` returns after the
 restart request, so its exit status is not readiness evidence. The runner binds
-the acknowledged deployment ID, verifies the same image digest and waits for a
-different running instance with no other active instance. Terminal historical
-instances are permitted; live or duplicate identities still fail. It checks the
+the acknowledged deployment ID and verifies the same image digest. The initial
+implementation additionally required a different running instance ID. The
+targeted hosted run below disproves that assumption: Railway preserved the ID
+while restarting the process. That readiness check still needs correction;
+removing it alone would allow stale readiness to pass. Terminal historical
+instances are permitted; multiple active or duplicate identities still fail. The remaining flow checks the
 old instance's quiescence marker, then uses a fresh signed assertion to observe
 the persisted hold. After sealing and stopping, the hold expires with workloads
 stopped. Only the later, post-hold deployment may rebuild.
@@ -175,7 +178,7 @@ fixtures; a harness-only change does not require repacking the runtime.
 | Row | Required proof | Maximum allocated resources | Current result |
 |---|---|---|---|
 | `http` | Installed CLI readiness, authenticated stream/tool effect, edited-source replacement on the same volume, state/completed replay continuity, quiescent stop | One service and volume | Passed, 229 seconds, verified cleanup |
-| `recovery-http` | Baseline stopped backup, newer downstream effect, restore/reconcile on a fresh volume, persisted auth hold across same-image restart, real expiry, replay and new work, quiescent stop | Two services and volumes, workloads sequential | Failed at missing fixture initialization; corrected locally, no retry |
+| `recovery-http` | Baseline stopped backup, newer downstream effect, restore/reconcile on a fresh volume, persisted auth hold across same-image restart, real expiry, replay and new work, quiescent stop | Two services and volumes, workloads sequential | Initialization passed on Railway; incorrect instance-ID readiness requirement blocks remaining acceptance |
 | `recovery-polling` | Back up confirmed deliveries 1/2/3, restore/reconcile the exact namespace, duplicate 1 does no work, delivery 4 succeeds, no ingress, quiescent stop | Two services and volumes, workloads sequential | Not run after HTTP recovery failure |
 
 Each row ends with exact owned-resource deletion and complete absence readbacks.
@@ -214,3 +217,19 @@ Retain first-hold evidence, verify the same-image restart and real hold expiry,
 then require replay/new work and quiescent stop. Always verify exact owned-resource
 cleanup. No automatic retry or product change follows a failure. Polling recovery
 and final M5 review remain separate work.
+
+The single targeted hosted attempt completed in 542 seconds with verified cleanup.
+Initialization, first auth hold and zero-work seal passed. The native restart was
+acknowledged; logs show quiescence followed by a second live startup on the same
+deployment, image and instance ID. The runner exhausted its 60-second readiness
+wait solely because it required that ID to change. Post-restart hold and post-hold
+operations were not reached. No additional run or product change was performed.
+See [the hash-bound evidence](./milestone-5-http-recovery-targeted-evidence-2026-11-16.json).
+
+The next correction must use the existing controller lifecycle to establish a
+fresh process: observe the fixture reset from its sealed state to waiting, then
+successfully initialize it and observe the hold. Keep exact deployment/image,
+singleton, deadline and quiescence checks. Do not accept an unchanged RUNNING API
+readback alone, extend the timeout, or add a product endpoint/boot-ID interface.
+This readiness correction remains unimplemented. All 28 CI checks passed on
+the test-only follow-up `32cdb854`; that does not close hosted recovery acceptance.
