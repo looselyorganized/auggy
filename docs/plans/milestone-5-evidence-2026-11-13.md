@@ -3,15 +3,53 @@
 Current status: G0/G1/G3 and M5-00/01/02/03/04/05/06/08 are accepted for their
 recorded scopes. Candidate `13bf80df` and harness `f41526ef` passed all 28 reported
 PR checks. HTTP and polling lifecycle/replacement are now accepted at that runtime
-candidate. The latest targeted HTTP recovery attempt passed backup, fresh-volume
-restore/reconciliation and the corrected initialization/hold/seal. It then failed
-because the harness incorrectly required a new Railway instance ID across a
-process restart. Logs prove a second live startup on the same image and ID.
-All owned resources were deleted and absence verified. M5-07, M5-09 and M5-10 remain open: both
-hosted recovery rows and final review/current-revision CI remain incomplete. The
+candidate. HTTP recovery is now accepted: the `c99497b4` runner completed backup,
+fresh-volume restore/reconciliation, persisted auth hold across restart, real
+expiry, completed replay, fresh work and quiescent shutdown. All owned resources
+were deleted and absence verified. All 28 CI checks passed on that runner source.
+M5-07, M5-09 and M5-10 remain open: hosted polling recovery and final integrated
+review/final-revision CI and findings disposition remain incomplete. The
 [change and validation audit](./milestone-5-audit-2026-11-16.md) records exact
 scope, defects and the proposed smaller harness. Earlier entries record
 historical gate states; their incomplete full-run outcomes remain unchanged.
+
+## Accepted HTTP recovery on `c99497b4`
+
+One isolated recovery attempt completed successfully in 650 seconds on the verified
+runtime package from `13bf80df`. All ten execution phases and cleanup passed.
+Backup preceded the newer downstream effect; fresh-volume restore/reconciliation
+preserved that effect and the restore guard. The controller proved an empty
+waiting process after restart while Railway retained the same deployment, image
+and instance ID. Reinitialization and the actual auth hold passed, with Retry-After
+decreasing from 109 to 97 seconds and zero model/domain work in both held seals.
+
+The restored agent stopped while the remaining hold expired. After restart, the
+retained expired assertion returned 401/unauthorized, the completed operation
+replayed the original response digest, and one fresh operation succeeded. The
+downstream checkpoint progressed from two preserved effects to three, with zero
+duplicate or unauthorized effects. Final application quiescence and stopped-state
+proof passed; all six stop receipts, including maintenance operations, are retained.
+
+Exact deletion intents matched creation IDs for the two services/volumes, project
+and temporary key. Complete post-deletion project/key inventories confirm absence;
+cleanup has no warnings, failures or unknown mutations. Copied runtimes and auth
+files were removed by the runner after verified cleanup. The
+[hash-bound assessment](./milestone-5-http-recovery-evidence-2026-11-16.json)
+binds channel results, first/restarted hold evidence, fresh-controller observation,
+expired assertion, stop receipts, request/response identities and cleanup.
+
+The fix changed only the test runner: exact target/image checks plus a bounded
+fresh-process observer replace the false instance-ID requirement. Stale sealed
+state cannot pass, and mutating commands are not repeated. The later shutdown
+proof excludes only the old process's specifically observed quiescence timestamp
+when the provider reuses the ID; it still requires a new event and sealed receipt.
+Focused verification passed 36 tests / 542 assertions, typecheck and lint. All 28
+CI checks passed on the exact runner commit before hosted execution. No product
+source, volume behavior, fixture schema or authentication timing changed.
+
+Earlier failed attempts remain recorded below. No additional hosted scenario was
+run after this acceptance. Polling recovery and final integrated review/CI/findings
+disposition remain required; M5 is not complete or authorized for merge/publication.
 
 ## Targeted initialization follow-up on `32cdb854`
 

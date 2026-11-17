@@ -16,10 +16,10 @@ passed on `83dca71`, including the six integration rows and all 13 PostgreSQL 17
 cases. Supplemental scaffold diagnostics and the Alpine atomic-publication repair
 passed final-package verification. Railway access was verified read-only on
 2026-11-14. G4 now has accepted HTTP/polling lifecycle and replacement evidence
-with verified cleanup. HTTP recovery passed backup/restore/reconciliation and
-the corrected fixture initialization/hold/seal on Railway. Its restart readiness
-check incorrectly required a changed instance ID; both hosted recovery rows
-remain open. M5-07, M5-09 and M5-10 remain
+with verified cleanup. HTTP recovery is accepted on `c99497b4`: backup/restore,
+reconciliation, auth hold across restart, expiry, replay/new work and shutdown
+passed with verified cleanup. Hosted polling recovery remains open, followed by
+final integrated review and CI/findings disposition. M5-07, M5-09 and M5-10 remain
 open; draft PR #230 is not ready to merge or publish. See the
 [task ledger](./milestone-5-tasks.json) and
 [evidence](./milestone-5-evidence-2026-11-13.md) for exact accepted revisions.

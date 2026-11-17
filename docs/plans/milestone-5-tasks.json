@@ -75,7 +75,7 @@
         "concrete hosted execution approval"
       ],
       "pending": [
-        "Complete HTTP recovery after correcting the new-instance-ID readiness assumption, then separate polling recovery; retain accepted HTTP/polling lifecycle and first restored hold evidence",
+        "Complete hosted polling recovery; retain accepted HTTP/polling lifecycles and accepted HTTP recovery on c99497b4 with verified cleanup",
         "Complete integrated review, final revision CI and full CodeQL findings disposition before PR handoff"
       ],
       "discovery": {
@@ -488,7 +488,8 @@
         "2026-11-16UTC renewed user-authorized r7 used fixed attachment code, fresh60minute ceiling and same resource limits. Both volumes bound after2reads; intermediate unattached state did not recur. Domain/upload passed; Railway SUCCESS; managed CLI exit0 after180717ms with no runner issues. CLI success does not certify HTTP health, which retained evidence does not establish. Post-CLI domain binding passed; subsequent platform verification failed with generic unknown and no retained predicate/target observation. Zero completed root workload actions. Cleanup complete; no automatic retry. Receipt /private/tmp/m5-g4-r7-result.json.",
         "Diagnostic patch locally accepted:34platform tests/452assertions +8runner tests/82assertions, combined typecheck and focused lint passed. r8 single authorized hosted validation stopped before deployment: six worker-volume observations had zero instances; pre-first-service-deletion cleanup snapshot later showed correct attachment. New diagnostic paths not exercised live. Cleanup complete:false, failed cleanup-http-original; projectDelete:true and complete project/key absence confirmed. Likely cleanup permitted-inventory bug excludes created-but-unbound worker volume; exact failed cleanup readback absent. No automatic repair/retry. Receipts /private/tmp/m5-g4-post-deployment-diagnostics-acceptance.json and /private/tmp/m5-g4-r8-result.json.",
         "f41526ef hosted HTTP lifecycle passed in229s; HTTP recovery backup/restore/reconciliation passed but first seal rejected uninitialized fixture in463s. Both cleanups verified with no unknown mutations. Actual local fixture reproduced rejection and corrected restored/restarted sequence passed. HTTP recovery and polling recovery remain open; no automatic retry. See milestone-5-hosted-evidence-2026-11-16.json.",
-        "32cdb854 targeted HTTP recovery542s: corrected initialization and initial auth hold/seal passed; same-image restart logs show fresh live startup while Railway retained the instance ID. Harness falsely required an ID change and timed out. Post-restart hold and post-hold operation not reached. Complete owned-resource cleanup verified. Actual negative controls23tests/462assertions, typecheck/lint and all28CIchecks passed. No automatic retry. See milestone-5-http-recovery-targeted-evidence-2026-11-16.json."
+        "32cdb854 targeted HTTP recovery542s: corrected initialization and initial auth hold/seal passed; same-image restart logs show fresh live startup while Railway retained the instance ID. Harness falsely required an ID change and timed out. Post-restart hold and post-hold operation not reached. Complete owned-resource cleanup verified. Actual negative controls23tests/462assertions, typecheck/lint and all28CIchecks passed. No automatic retry. See milestone-5-http-recovery-targeted-evidence-2026-11-16.json.",
+        "c99497b4 HTTP recovery accepted in650s on verified13bf80df packages. Backup/fresh-volume restore/reconciliation, fresh-process readiness with stable provider ID, 503hold before/after restart with zero work, real expiry while stopped, expired401, completed replay, fresh third downstream effect and shutdown passed. Six stop receipts include maintenance. Exact owned resource deletion and complete absence readbacks passed, no warnings/unknown mutations. Focused36tests/542assertions, typecheck/lint and all28CIchecks passed. See milestone-5-http-recovery-evidence-2026-11-16.json. Only hosted polling recovery and final integrated gates remain."
       ]
     },
     {
@@ -559,7 +560,7 @@
     }
   ],
   "activeOwnership": {
-    "root": "No hosted resources remain. Initialization fix verified on Railway; next correction is fresh-process readiness without requiring a new instance ID. Both hosted recovery rows and final review remain open.",
+    "root": "No hosted resources remain. HTTP/polling lifecycles and HTTP recovery accepted at candidate13bf80df. Hosted polling recovery and final integrated review/CI remain open.",
     "m5_g4_platform_review": "Attached readonly guard callback and bounded provider log/domain observations; controller repair independently accepted",
     "m5_g4_fixture_review": "Independent root/runner review and actual managed-image remote-directory verification; maintenance prerequisites independently accepted",
     "m5_g4_http_engineer": "Guard lifetime/parent-death supervision, then separately inventoried hosted TTL180 contexts; no hosted calls"
@@ -834,6 +835,23 @@
         "newReadinessCorrection": "not implemented",
         "automaticRetry": false,
         "productSourceChanged": false
+      },
+      "freshProcessReadinessCorrection": {
+        "sourceRevision": "c99497b4bf7f9a139a54dd7fc19507b9c0238b25",
+        "focusedTests": 36,
+        "assertions": 542,
+        "typecheck": "passed",
+        "lint": "passed",
+        "sourceCI": "28 passed",
+        "httpRecovery": "accepted at runtime candidate 13bf80df",
+        "elapsedSeconds": 650,
+        "evidence": "milestone-5-http-recovery-evidence-2026-11-16.json",
+        "cleanup": "verified complete; no unknown mutations or warnings",
+        "productSourceChanged": false,
+        "remaining": [
+          "hosted polling recovery",
+          "integrated review and final-revision CI/CodeQL findings disposition"
+        ]
       }
     }
   }

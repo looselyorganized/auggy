@@ -154,8 +154,9 @@ restart request, so its exit status is not readiness evidence. The runner binds
 the acknowledged deployment ID and verifies the same image digest. The initial
 implementation additionally required a different running instance ID. The
 targeted hosted run below disproves that assumption: Railway preserved the ID
-while restarting the process. That readiness check still needs correction;
-removing it alone would allow stale readiness to pass. Terminal historical
+while restarting the process. The corrected implementation requires fresh waiting
+fixture state before readiness; removing the ID check alone would allow stale
+readiness to pass. Terminal historical
 instances are permitted; multiple active or duplicate identities still fail. The remaining flow checks the
 old instance's quiescence marker, then uses a fresh signed assertion to observe
 the persisted hold. After sealing and stopping, the hold expires with workloads
@@ -178,7 +179,7 @@ fixtures; a harness-only change does not require repacking the runtime.
 | Row | Required proof | Maximum allocated resources | Current result |
 |---|---|---|---|
 | `http` | Installed CLI readiness, authenticated stream/tool effect, edited-source replacement on the same volume, state/completed replay continuity, quiescent stop | One service and volume | Passed, 229 seconds, verified cleanup |
-| `recovery-http` | Baseline stopped backup, newer downstream effect, restore/reconcile on a fresh volume, persisted auth hold across same-image restart, real expiry, replay and new work, quiescent stop | Two services and volumes, workloads sequential | Initialization passed on Railway; incorrect instance-ID readiness requirement blocks remaining acceptance |
+| `recovery-http` | Baseline stopped backup, newer downstream effect, restore/reconcile on a fresh volume, persisted auth hold across same-image restart, real expiry, replay and new work, quiescent stop | Two services and volumes, workloads sequential | Passed on `c99497b4`, 650 seconds, verified cleanup |
 | `recovery-polling` | Back up confirmed deliveries 1/2/3, restore/reconcile the exact namespace, duplicate 1 does no work, delivery 4 succeeds, no ingress, quiescent stop | Two services and volumes, workloads sequential | Not run after HTTP recovery failure |
 
 Each row ends with exact owned-resource deletion and complete absence readbacks.
@@ -252,3 +253,12 @@ Focused local verification passed 36 tests / 542 assertions, typecheck and lint.
 No runtime source, volume behavior, authentication timing or fixture schema
 changed. Require corrective-source CI, then one isolated `recovery-http` attempt
 with verified cleanup; retain the result without an automatic retry.
+
+The single hosted verification on `c99497b4` passed end to end in 650 seconds.
+Fresh-process readiness, persisted 503 hold, zero work while held, real expiry
+while stopped, expired assertion rejection, completed replay, fresh work and final
+quiescent shutdown all passed. Six stop receipts include maintenance operations.
+Exact resource deletion and complete absence inventories passed with no warnings
+or unknown mutations. See [the accepted HTTP recovery evidence](./milestone-5-http-recovery-evidence-2026-11-16.json).
+All 28 CI checks passed on the exact corrective source. Hosted polling recovery
+and final M5 integrated review/CI/findings disposition remain open.
