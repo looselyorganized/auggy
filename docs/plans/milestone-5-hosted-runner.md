@@ -199,3 +199,18 @@ fixture to reproduce the old 400 and prove both corrected process lifetimes.
 Local focused suites pass 82 tests / 970 assertions; no product code changed.
 The failed hosted result and complete cleanup remain recorded, and both hosted
 recovery rows remain open.
+
+### Targeted initialization verification
+
+The approved follow-up retains correction `ea05e7a7` and adds real-fixture negative
+controls: wrong generation/checkpoint prevents the probe, and actual model/domain
+activity rejects acceptance. The two affected fixture suites passed 23 tests /
+462 assertions; repository typecheck and lint passed. All 28 CI checks passed on
+the corrective commit. The follow-up changes tests/documentation only; hosted
+runner source and the selected runtime archive remain identical to that commit.
+
+Execute one `recovery-http` row with fresh isolated resources and existing limits.
+Retain first-hold evidence, verify the same-image restart and real hold expiry,
+then require replay/new work and quiescent stop. Always verify exact owned-resource
+cleanup. No automatic retry or product change follows a failure. Polling recovery
+and final M5 review remain separate work.

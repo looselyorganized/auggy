@@ -8,6 +8,7 @@ import {
 import { createHostedHttpFixture } from "../../scripts/release-smoke/integration-fixtures/http-container/startup";
 import { parseHostedHttpSnapshot } from "../../scripts/release-smoke/integration-hosted-http";
 import { createSyntheticOrdersStore } from "../../examples/company-app/fixtures/synthetic-orders";
+import { PROVIDER_FIXTURE_API_KEY } from "../../scripts/release-smoke/provider-fixture";
 
 const fixture = (ttl = 180) => ({
   augments: [
@@ -62,7 +63,7 @@ test("generic 503s, malformed retries and unrelated 401s cannot pass recovery", 
   ).toThrow();
 });
 
-test("restored and restarted real fixtures require checkpoint initialization before hold/seal", async () => {
+function savedCheckpoint() {
   const store = createSyntheticOrdersStore(":memory:");
   let saved: ReturnType<typeof store.checkpoint>;
   try {
@@ -87,6 +88,11 @@ test("restored and restarted real fixtures require checkpoint initialization bef
   } finally {
     store.close();
   }
+  return saved;
+}
+
+test("restored and restarted real fixtures require checkpoint initialization before hold/seal", async () => {
+  const saved = savedCheckpoint();
   for (const generationId of ["restored", "restarted"]) {
     const controlToken = "1".repeat(64);
     const peer = await createHostedHttpFixture({
@@ -132,5 +138,115 @@ test("restored and restarted real fixtures require checkpoint initialization bef
     } finally {
       await peer.stop();
     }
+  }
+});
+
+test.each(["generation", "checkpoint"] as const)(
+  "wrong %s prevents the hold probe",
+  async (mismatch) => {
+    const saved = savedCheckpoint();
+    const peer = await createHostedHttpFixture({
+      controlToken: "1".repeat(64),
+      serviceToken: "2".repeat(64),
+      expectedCheckpointSHA256: saved.sha256,
+      ports: { model: 0, domain: 0, control: 0 },
+    });
+    let probed = false;
+    try {
+      await expect(
+        observeHostedHttpHold({
+          checkpoint:
+            mismatch === "checkpoint" ? { ...saved.checkpoint, effects: [] } : saved.checkpoint,
+          generationId: "expected",
+          control: async () => {
+            // Return a valid initialized peer with a different binding, not malformed evidence.
+            const response = await fetch(`${peer.controlOrigin}/control`, {
+              method: "POST",
+              headers: { "content-type": "application/json", "x-fixture-control": "1".repeat(64) },
+              body: JSON.stringify({ operation: "initialize", checkpoint: saved.checkpoint }),
+              signal: AbortSignal.timeout(2000),
+            });
+            expect(response.status).toBe(200);
+            return {
+              generationId: mismatch === "generation" ? "wrong" : "expected",
+              snapshot: await response.text(),
+            };
+          },
+          request: async () => {
+            probed = true;
+            throw Error("Must not probe a different fixture");
+          },
+        }),
+      ).rejects.toThrow(mismatch === "generation" ? "generation changed" : "checkpoint changed");
+      expect(probed).toBe(false);
+    } finally {
+      await peer.stop();
+    }
+  },
+);
+
+test.each(["model", "domain"] as const)("%s work prevents hold acceptance", async (work) => {
+  const saved = savedCheckpoint();
+  const peer = await createHostedHttpFixture({
+    controlToken: "1".repeat(64),
+    serviceToken: "2".repeat(64),
+    expectedCheckpointSHA256: saved.sha256,
+    ports: { model: 0, domain: 0, control: 0 },
+  });
+  const control = async (input: unknown) => {
+    const response = await fetch(`${peer.controlOrigin}/control`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-fixture-control": "1".repeat(64) },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(2000),
+    });
+    expect(response.status).toBe(200);
+    return { generationId: "expected", snapshot: await response.text() };
+  };
+  try {
+    await expect(
+      observeHostedHttpHold({
+        checkpoint: saved.checkpoint,
+        generationId: "expected",
+        control,
+        request: async () => {
+          if (work === "model") await control({ operation: "configure", scenario: "read-a" });
+          const response = await fetch(
+            work === "model"
+              ? `${peer.modelOrigin}/v1/messages`
+              : `${peer.domainOrigin}/authorization`,
+            {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-api-key": PROVIDER_FIXTURE_API_KEY,
+                authorization: `Bearer ${"2".repeat(64)}`,
+              },
+              body: JSON.stringify(
+                work === "model"
+                  ? {
+                      model: "fixture-model",
+                      stream: true,
+                      tools: [{ name: "read_order" }],
+                      messages: [{ role: "user", content: "read order" }],
+                    }
+                  : {
+                      provider: "fixture-app",
+                      userId: "support-agent",
+                      orgId: "synthetic-company",
+                      roles: [],
+                    },
+              ),
+              signal: AbortSignal.timeout(5000),
+            },
+          );
+          expect(response.status).toBe(200);
+          await response.text();
+          return { status: 503, retryAfter: "120", body: { error: "external_auth_unavailable" } };
+        },
+      }),
+    ).rejects.toThrow("Held ingress performed work");
+  } finally {
+    await peer.stop();
   }
 });
