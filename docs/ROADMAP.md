@@ -98,8 +98,10 @@ Release plan with entry conditions, work items, order, and ledger:
 
 **Exit criterion:** the installed scaffold exposes its actual request and turn
 execution path, preserves runtime safeguards, runs in Docker/Railway, and has
-matching documentation. Packed request, restart, and upgrade checks pass;
-engineers unfamiliar with the repository demonstrate improved traceability.
+matching documentation. Packed request, restart and source-preservation checks
+pass. M6 exposes supported edits in the generated application; a separate
+upgrade campaign and external-engineer usability study are deferred by the
+approved 2026-11-17 scope.
 
 Implementation proceeds through six gated milestones. Milestones 1–2 are accepted
 at verified main `209185d0`. Milestone 3 landed through
@@ -116,13 +118,17 @@ full macOS/Linux release evidence, required CI/PG17 and full CodeQL findings
 passed again on the repaired source; resulting main is verified. No package
 version or npm publication is implied by this merge.
 
-Milestone 5 is executing from that accepted main under its
+Milestone 5 merged through [PR #230](https://github.com/looselyorganized/auggy/pull/230)
+at `f3db4a4f` after all 28 PR checks and independent hosted review passed. Its
 [execution plan](./plans/milestone-5-execution-2026-11-13.md),
 [task ledger](./plans/milestone-5-tasks.json) and
-[evidence](./plans/milestone-5-evidence-2026-11-13.md). Shared interfaces have passed
-compilation and independent review; product implementations and installed,
-container and hosted acceptance remain separate gates. Milestone 6 remains a
-roadmap outcome.
+[final review](./plans/milestone-5-final-review-2026-11-17.md) preserve the scope
+and evidence. Milestone 6 is implemented in
+[PR #231](https://github.com/looselyorganized/auggy/pull/231), with local acceptance
+recorded in the [execution/ownership map](./plans/milestone-6-execution-ownership-map-2026-11-17.md).
+A newly reviewed picomatch advisory now blocks the post-merge M5 and M6 workspace
+audits; the [release plan](./plans/release-0.6.0-the-tree-2026-08-18.md) records this
+external dependency gate. M6 is not merged and 0.6 is not published.
 
 | Milestone | Outcome | Exit gate |
 |---|---|---|
@@ -131,7 +137,7 @@ roadmap outcome.
 | 3. Reference application | Managed startup, visible HTTP wiring, real local orchestration | Local edits affect execution; safeguards hold; project-selected runtime executes |
 | 4. Authoring | Central YAML, custom augments, inspection, migration, CLI scaffold | Fresh packed create/inspect/run/extend works with the agreed layout |
 | 5. Integration | Independently deployed agents with portable Docker and optional app/channel consumers | Explicit authorization, authenticated streaming, durable replay and container/Railway recovery; each company owns a separate deployment |
-| 6. Upgrade and DX | Dependency upgrades and measured developer usability | Customized source survives upgrades; unfamiliar engineers trace execution effectively |
+| 6. Inspectable execution and DX | Visible startup/assembly, HTTP mount and turn loop with supported edits | Installed source edits affect execution while runtime guards hold; generated guidance matches the application |
 
 Milestones are dependency gates, not separate version promises. The
 [milestone 3 execution plan](./plans/milestone-3-execution-2026-11-12.md) assigns
@@ -144,9 +150,9 @@ The M4 packet assigns central configuration, executable scaffolding, custom
 authoring, credential compatibility, passive inspection, migration and installed
 acceptance to bounded specialist roles. Its acceptance uses actual generated CLI
 output. M5 owns generic Docker, channel-aware deployment and an optional
-Next.js-to-Auggy integration; M6 owns supported upgrades and external-engineer DX
-measurement. M4 preserves existing deployment and ownership contracts without
-claiming those later milestones are complete.
+Next.js-to-Auggy integration. M6 owns inspectable execution and supported edits.
+The separate upgrade campaign, external usability study and identity/learned-
+guidance design discussion are deferred; they do not expand this release.
 
 ### 0.7.0 — the visitor
 

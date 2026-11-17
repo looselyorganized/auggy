@@ -31,27 +31,24 @@ git push origin vX.Y.Z
 
 ## Current release state
 
-As of 2026-08-14, npm's stable `latest` version for all six packages is `0.4.4`
-and `next` is `0.5.0-rc.12` for all six. The `v0.5.0-rc.1` through
-`v0.5.0-rc.12` tags are published, immutable release candidates. The RC.12
-GitHub prerelease contains all six verified package tarballs and `SHA256SUMS`,
-and its exact merged commit passed CI, CodeQL, PostgreSQL coordination, the
-AgentMail provider canary, and the AgentMail live mutation E2E. Stable `0.5.0`
-is the next target; it must not be described as available from `latest` until
-its release PR is merged, tagged, and the publish workflow completes.
-Registry metadata and the corresponding Git tag—not a working-tree version—
-remain the authority for release state.
+Verified on 2026-11-17: npm's `latest` version is `0.5.0` for all six public
+packages; `next` remains `0.5.0-rc.12`. Version `0.6.0` is not published for any
+of them. A release-branch manifest version is preparation, not publication.
+Registry metadata, the corresponding Git tag and the publish workflow remain
+the authority for release state.
 
-The next release follows the
-[OSS Production Release Plan](./plans/production-readiness-roadmap-2026-07-24.md).
-On 2026-07-28, the repository became public after the full-history secret and
-artifact audit passed. The protected GitHub Environments, environment-only
-evaluation secret, six npm trusted-publisher connections, and package-level
-token restrictions are configured. All six `0.5.0-rc.12` packages expose npm's
-SLSA provenance attestation. Final `0.5.0` remains a separate release PR and
-requires fresh verification and attestations for its exact six artifacts; prior
-candidates are not evidence for stable. It must publish under `latest` only
-after every remaining RC gate passes.
+The next target is `0.6.0`, covering inspectable applications and portable
+self-hosting. Its current gates are recorded in the
+[0.6 release plan](./plans/release-0.6.0-the-tree-2026-08-18.md). M5 has merged;
+M6 and the dedicated release PR must pass their gates before publication. The
+newly reviewed picomatch advisory currently blocks the full-workspace dependency
+audit; the release plan records its scope and upstream status. Preparing this
+PR does not waive that gate.
+
+The repository's protected GitHub Environments and npm trusted-publisher
+configuration are documented below. Each release requires verification and
+provenance for its exact artifacts; earlier evidence does not certify new
+packages. A stable version publishes through `latest` after its gates pass.
 
 All publishable package manifests contain the exact public GitHub `repository`
 URL required by npm trusted publishing. Reconfirm each attestation on the exact
@@ -193,7 +190,7 @@ In a dedicated branch off `main` (name suggestion: `release/X.Y.Z`):
 ### Cold-machine DX walkthrough
 
 This is mandatory for `1.0.0` and strongly recommended for substantial pre-1.0
-minor releases such as `0.5.0`. Run it from a shell/profile that does not have an
+minor releases such as `0.6.0`. Run it from a shell/profile that does not have an
 existing Auggy state directory. Do not skip the manual browser checks; this gate
 exists to catch first-run and packaging failures that unit tests miss.
 
@@ -281,8 +278,8 @@ auggy augment add visitorAuth
 auggy doctor
 
 cd dx-smoke
-auggy augment create weather --without-skill
-auggy augment test augments/weather
+./node_modules/.bin/auggy augment create weather --with-skill
+bun test tests/augments/weather.test.ts
 auggy doctor
 ```
 

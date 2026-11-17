@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-17
+
+Inspectable agent applications: own startup, request handling and turn
+orchestration while Auggy maintains guarded execution and lifecycle operations.
+
+### Added
+
+- **Visible execution.** Generated `src/main.ts` performs configuration, model,
+  augment and agent assembly before binding transports and starting the host.
+  `src/http.ts` exposes the conversation endpoint; `src/turn.ts` contains the
+  selected inference/tool loop. Finalization observers attach to agent creation.
+- **Application authoring.** Central YAML, non-interactive creation, custom
+  augment scaffolding, passive inspection and generated tests provide a consistent
+  path from a fresh project to a business adapter. Project-owned `AGENTS.md`
+  explains execution, ownership and verification for coding assistants.
+- **Portable integration.** Docker export and Railway deployment support
+  independently operated agents. Application examples cover verified caller
+  identity, streamed HTTP responses and replay. Telegram remains one of several
+  possible transport adapters.
+
+### Changed
+
+- **Ownership and layout.** Fresh projects select their project-local runtime
+  and declare application contract 2. Agent assembly and its observer share
+  `src/main.ts`. YAML remains the sole enabled-capability graph; built-ins and
+  guarded runtime operations remain installed dependencies.
+- **Editable conversation mount.** Console connection guidance follows the
+  application's selected endpoint. The default remains `/agent/run`.
+- **Coordinated packages.** Core, four provider adapters and evaluations move
+  together to `0.6.0`. Existing declared entrypoints and contract-1 composition
+  remain supported; global launchers must support the application's contract.
+
+### Fixed
+
+- **Managed lifecycle.** Assembly stages enforce ordering, host ownership and
+  cleanup after startup failures. Selected HTTP mounts reject conflicting
+  augment routes before registration.
+- **Hosted recovery.** The supported SQLite path preserves populated-volume
+  compatibility, durable replay and restore/reconcile guards. HTTP and polling
+  replacement, recovery and shutdown have recorded container/Railway acceptance.
+- **Dependency compatibility.** MCP/Zod dependency updates and the published
+  Link 0.2 integration are verified through installed consumers.
+
+### Architecture
+
+- Augments own business capabilities and authorization. Authentication and
+  authorization remain deterministic code decisions; application databases and
+  durable workflows remain systems of record.
+- Each company operates its own agent. One process/replica per logical agent
+  with SQLite remains the supported deployment; PostgreSQL coordination remains
+  an internal, disabled profile.
+- Identity and learned-guidance filenames and loading remain unchanged. Their
+  longer-term separation remains a follow-up design question.
+
 ## [0.5.0] - 2026-08-18
 
 Auggy 0.5 is the first stable public-preview release of the TypeScript augment

@@ -1,18 +1,39 @@
 # Release 0.6.0 — inspectable agent applications
 
-Status: milestones 1–2 accepted on verified main `209185d0`. Link 0.2.0 is
-published and integrated; foundation PR #226 is merged, and fresh main CI and
-CodeQL passed. Milestone 3 is implemented in PR #227; its final certification
-and review handoff are tracked in the acceptance evidence.
-Worktree retirement remains separately deferred for preservation review.
-Revised: 2026-11-12. Governing direction: [Roadmap](../ROADMAP.md).
+Status: milestones 1–5 are merged. M5 merged as `f3db4a4f` through
+[PR #230](https://github.com/looselyorganized/auggy/pull/230). M6 is implemented
+and locally verified in [PR #231](https://github.com/looselyorganized/auggy/pull/231),
+awaiting its merge gates. Version/documentation preparation is isolated on
+`release/0.6.0`; no 0.6 package or tag has been published.
+Worktree retirement remains deferred for preservation review.
+Revised: 2026-11-17. Governing direction: [Roadmap](../ROADMAP.md).
 Delete this implementation plan when 0.6.0 ships; retain accepted ADRs.
 
 This replaces the earlier instruction to merge Central YAML worktree B. Both
 experimental authoring implementations are salvage sources only. Historical
 worktree test counts are not evidence about main.
 
-## Current tranche: milestones 1 and 2
+## Current release gates
+
+- M5's reviewed PR passed 28 checks before merge. A newly reviewed upstream
+  advisory now fails both resulting-main and M6 workspace audits:
+  [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf), high
+  severity ReDoS in picomatch. The lockfile selects 4.0.5 through the console's
+  Vite/fdir/tinyglobby build dependencies. On 2026-11-17 npm's latest is 4.0.7,
+  and the advisory affects versions through 4.0.7 with no patched release listed.
+  The same locked graph reproduces the finding locally. No audit exception,
+  dependency replacement or build-system change has been made.
+- Resolve that dependency gate before merging M6. Keep the existing complete
+  CI, CodeQL and packed-release checks; do not treat a failed audit as acceptance.
+- Rebase or merge the dedicated version/documentation branch onto accepted M6
+  main, submit the release PR, and verify its exact artifacts and registry-version
+  admission. Coordinate all six published package versions at 0.6.0.
+- Run applicable trusted default-branch canaries after merge and before tagging,
+  using protected credentials only as described in [RELEASING](../RELEASING.md).
+- The identity/learned-guidance design discussion, separate upgrade campaign
+  and external-engineer usability study are deferred by the approved scope.
+
+## Historical foundation plan: milestones 1 and 2
 
 Baseline: committed main `29147dfc7af0de59c3631c34a164ed3f3f6f4d5c`.
 The current main checkout has unrelated local changes. Implement in an isolated
@@ -200,7 +221,8 @@ Foundation gate G0 is accepted at verified main `209185d0`. Milestone 3 now has
 a working reference, reviewed managed execution, and installed-artifact
 acceptance; see [the evidence](./milestone-3-evidence-2026-11-13.md) and
 [PR #227](https://github.com/looselyorganized/auggy/pull/227) for final gates.
-Milestones 4–6 remain unimplemented. These documents do not authorize publication.
+M3 subsequently merged through PR #227 and its scoped follow-up #228. The
+historical plan and evidence remain available; current release gates are above.
 
 ## Milestone 4: detailed authoring plan
 
@@ -209,23 +231,24 @@ The [M4 execution plan](./milestone-4-execution-2026-11-13.md),
 creation, Central YAML writers, custom augments, passive source inspection,
 explicit migration and actual installed-generator acceptance. Specialized
 producers report to the CTO / AI Engineering Lead; independent adversarial review
-precedes certification. This is planning only. Implementation requires the
-reviewed M3 merge, verified resulting main and implementation authorization.
+precedes certification. M4 subsequently merged through PR #229 at `c39b746`.
 
-## Milestones 5–6: roadmap only
+## Milestones 5–6: implemented scope
 
-The [roadmap](../ROADMAP.md) records outcomes and exit gates for the reference
-application, authoring/scaffold, standalone-service integration, and upgrade/DX
-certification. M5 covers the Next.js frontend beside a standalone Auggy service,
-Railway persistence/recovery and generic Docker product work. M6 covers supported
-dependency upgrades, breaking-change guidance and measured developer usability.
-Do not implement those outcomes as incidental M4 harness work. M4's source
-preservation smoke check does not substitute for M6 upgrade certification.
+M5 covers the optional Next.js frontend beside a standalone Auggy service,
+Railway persistence/recovery and generic Docker. Its accepted scope and evidence
+are in the [final review](./milestone-5-final-review-2026-11-17.md).
+
+M6 exposes real startup/assembly in `main.ts`, the conversation mount in `http.ts`,
+and turn orchestration in `turn.ts`, plus project-owned `AGENTS.md`. Its
+[execution/ownership map](./milestone-6-execution-ownership-map-2026-11-17.md)
+records supported edits and installed acceptance. Built-ins remain installed
+dependencies and managed runtime safeguards stay in force.
 
 ## Measurable developer experience
 
-Capture the current task outcomes before the new scaffold ships: locating the
-HTTP endpoint, following a request into the turn loop, tracing an augment call,
-first authenticated response, and a safe customization. M6 repeats those tasks
-with unfamiliar engineers. Five minutes to trace endpoint through augment is a
-proposed target, not a result established by this tranche.
+The original proposed external study is deferred. Current acceptance checks
+locating the HTTP endpoint, following the executed turn program and making
+supported source edits against installed packages. The user reviews the actual
+generated project. No five-minute traceability result or external usability
+certification is claimed.
