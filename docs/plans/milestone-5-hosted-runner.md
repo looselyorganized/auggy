@@ -124,3 +124,12 @@ experiment. Record its failure or success and cleanup once. A failure stops that
 row and gets a specific diagnosis before further hosted work. HTTP replacement
 and both recovery rows remain distinct required acceptance work. M5 closes only
 after those rows, integrated review, final CI and CodeQL findings disposition.
+
+The first hosted polling lifecycle has now passed its operation, replacement and
+shutdown assertions with verified owned-resource absence. Its original aggregate
+result retains a post-deletion telemetry failure; see the
+[evidence assessment](./milestone-5-polling-evidence-2026-11-16.json).
+Generated project names are capped at 32 characters before allocation. Usage is
+collected before deleting the project; telemetry warnings never prevent cleanup
+of resources whose ownership is established. Failed/ambiguous resource deletion
+continues to fail cleanup. No more live runs were used to test those corrections.

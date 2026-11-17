@@ -75,9 +75,8 @@
         "concrete hosted execution approval"
       ],
       "pending": [
-        "Tracked scenario runner locally verified; perform bounded outstanding rows independently without replaying consumed journals",
-        "Complete outstanding hosted HTTP replacement, polling lifecycle, and separate HTTP/polling recovery; preserve candidate13bf80df HTTP startup/channel/stop evidence",
-        "Complete integrated review, final changed-revision CI and CodeQL findings disposition before PR handoff"
+        "Complete hosted HTTP replacement/persistence and separate HTTP/polling recovery; retain accepted HTTP startup/channel/stop and polling lifecycle evidence",
+        "Complete integrated review, final revision CI and full CodeQL findings disposition before PR handoff"
       ],
       "discovery": {
         "status": "authenticated_read_only",
@@ -776,8 +775,8 @@
       "lifecycleServices": 1,
       "recoveryServices": 2,
       "verification": {
-        "tests": 56,
-        "assertions": 473,
+        "tests": 58,
+        "assertions": 484,
         "typecheck": "passed",
         "lint": "passed",
         "pollingLocalPreflight": "passed",
@@ -785,7 +784,16 @@
         "linuxBackupRestore": "passed"
       },
       "productRuntimeChanges": false,
-      "hostedExecution": "next: one polling lifecycle; no new hosted run yet"
+      "hostedExecution": {
+        "scenario": "polling",
+        "runtimeRevision": "13bf80df4ead1bbf0b53ee0cc1b221df10868999",
+        "harnessRevision": "9461532f",
+        "execution": "passed",
+        "ownedResourceCleanup": "verified-complete",
+        "rawAggregateResult": "failed: final usage query after project deletion; preserved unchanged",
+        "assessment": "milestone-5-polling-evidence-2026-11-16.json",
+        "corrections": "32-character project-name limit; usage before deletion; telemetry warnings separate from resource cleanup; no product runtime changes"
+      }
     }
   }
 }

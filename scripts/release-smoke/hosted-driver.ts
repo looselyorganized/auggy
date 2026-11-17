@@ -55,6 +55,15 @@ const guardSchema = z
     guardSHA256: z.string().regex(/^[a-f0-9]{64}$/),
   })
   .passthrough();
+export function stoppedScenarioInstance(expectedId: string, instances: unknown[]) {
+  check(instances.length === 1, "Expected one stopped instance");
+  const instance = z
+    .object({ id: z.string().uuid(), status: z.enum(["STOPPED", "EXITED", "REMOVED"]) })
+    .strict()
+    .parse(instances[0]);
+  check(instance.id === expectedId, "Stopped instance identity changed");
+  return instance;
+}
 
 export function createHostedDriver(
   ctx: HostedContext,
@@ -257,6 +266,7 @@ export function createHostedDriver(
       "Fixture lifetime expired; result invalid",
     );
     if (!c.maintenance) {
+      const observedInstance = stoppedScenarioInstance(c.deployment.instanceId, state.instances);
       const marker = http
         ? "auggy-hosted-http-fixtures:quiescent"
         : "auggy-telegram-container-fixtures:quiescent";
@@ -276,7 +286,7 @@ export function createHostedDriver(
         imageDigest: c.deployment.imageDigest,
         volumeId: c.service.volumeId,
         deploymentStopped: true as const,
-        instances: [{ id: c.deployment.instanceId, status: "STOPPED" as const }],
+        instances: [observedInstance],
         sealedGenerationReceiptSHA256: c.sealedSHA256,
         quiescenceReceiptSHA256: hash(JSON.stringify(matching)),
         observedAtMs: Date.now(),

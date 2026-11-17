@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   createHostedContext,
   hostedInputSchema,
@@ -29,7 +30,7 @@ test("generated resource names fit Railway's project-name limit before allocatio
   expect(() => hostedResourceName("unvalidated-project-name")).toThrow();
 });
 function fixture(fail?: "unknown-service" | "foreign-volume") {
-  const base = mkdtempSync("/private/tmp/m5-provider-test-");
+  const base = mkdtempSync(join(realpathSync(tmpdir()), "m5-provider-test-"));
   roots.push(base);
   const env = join(base, "fixture.env");
   writeFileSync(env, "FIXTURE_SECRET=private-fixture-token\n");
@@ -211,6 +212,7 @@ function fixture(fail?: "unknown-service" | "foreign-volume") {
         data = { sshPublicKeyCreate: key() };
         break;
       case "HostedUsage":
+        if (!projectExists) throw Error("Project not found");
         data = { usage: [] };
         break;
       case "HostedVolumeDelete":
@@ -246,7 +248,7 @@ function fixture(fail?: "unknown-service" | "foreign-volume") {
     >;
   };
   const ctx = { ...real, command, nativeIdentity() {} };
-  return { provider: createScenarioRailway(ctx), calls, root: real.root };
+  return { provider: createScenarioRailway(ctx, "/mock/railway"), calls, root: real.root };
 }
 
 test.each([false, true])(
@@ -259,6 +261,7 @@ test.each([false, true])(
     expect(calls.filter((c) => c === "HostedVolumeDelete")).toHaveLength(recovery ? 2 : 1);
     expect(calls).toContain("HostedProjectDelete");
     expect(calls).toContain("HostedKeyDelete");
+    expect(calls.lastIndexOf("HostedUsage")).toBeLessThan(calls.indexOf("HostedProjectDelete"));
   },
 );
 

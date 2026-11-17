@@ -1,7 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { parseHostedArguments } from "../../scripts/release-smoke/hosted-runner";
+import { stoppedScenarioInstance } from "../../scripts/release-smoke/hosted-driver";
 import { createHostedContext, hostedInputSchema } from "../../scripts/release-smoke/hosted-context";
 
 const roots: string[] = [];
@@ -9,7 +11,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 function context() {
-  const root = mkdtempSync("/private/tmp/m5-runner-test-");
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "m5-runner-test-"));
   roots.push(root);
   const env = join(root, "fixture.env");
   writeFileSync(env, "AUGGY_AUTH_SECRET=private-fixture-secret\n", { mode: 0o600 });
@@ -41,6 +43,18 @@ test("hosted execution is explicit and malformed/duplicate flags fail before all
     [],
   ])
     expect(() => parseHostedArguments(args)).toThrow();
+});
+test("stopped proof preserves the observed status and refuses substituted or live instances", () => {
+  const id = "00000000-0000-4000-8000-000000000001";
+  for (const status of ["STOPPED", "EXITED", "REMOVED"] as const)
+    expect(stoppedScenarioInstance(id, [{ id, status }])).toEqual({ id, status });
+  expect(() => stoppedScenarioInstance(id, [{ id, status: "RUNNING" }])).toThrow();
+  expect(() =>
+    stoppedScenarioInstance(id, [
+      { id: "00000000-0000-4000-8000-000000000002", status: "STOPPED" },
+    ]),
+  ).toThrow();
+  expect(() => stoppedScenarioInstance(id, [])).toThrow();
 });
 
 test("readable error evidence redacts decoded strings and nested keys", () => {

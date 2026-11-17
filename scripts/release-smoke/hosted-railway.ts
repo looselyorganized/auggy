@@ -44,8 +44,10 @@ const LOGS =
 const DOMAINS =
   "query HostedGuardDomains($projectId:String!,$environmentId:String!,$serviceId:String!) { domains(projectId:$projectId,environmentId:$environmentId,serviceId:$serviceId) { serviceDomains { id domain serviceId environmentId projectId targetPort deletedAt } customDomains { id domain serviceId environmentId projectId targetPort deletedAt } } }";
 
-export function createScenarioRailway(ctx: HostedContext) {
-  const native = Bun.which("railway");
+export function createScenarioRailway(
+  ctx: HostedContext,
+  native: string | null = Bun.which("railway"),
+) {
   check(native, "Install the Railway CLI before hosted execution");
   let sequence = 0;
   let project: { id: string; name: string; environmentId: string } | undefined;
@@ -525,6 +527,11 @@ export function createScenarioRailway(ctx: HostedContext) {
         }
       };
       if (project) {
+        try {
+          await usage(true);
+        } catch (error) {
+          warnings.push(`usage: ${error instanceof Error ? error.message : String(error)}`);
+        }
         for (const s of services)
           await attempt(`stop-${s.id}`, async () => {
             const d = await deployment(s, true);
@@ -609,7 +616,6 @@ export function createScenarioRailway(ctx: HostedContext) {
           }
           check(absent, "Active-project inventory incomplete");
         });
-        await attempt("usage", () => usage(true));
       }
       if (key)
         await attempt("ssh-key", async () => {

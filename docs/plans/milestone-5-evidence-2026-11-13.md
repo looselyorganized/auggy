@@ -6,10 +6,45 @@ hosted attempt on November 16 Vancouver / November 17 UTC passed HTTP deployment
 health, authenticated channel/tool operation, safe replay and stopped-instance
 confirmation, then failed in the recovery test's backup-transfer validator. Both
 latest attempts completed cleanup. M5-07, M5-09 and M5-10 remain open: hosted
-replacement, polling and recovery are not fully accepted. The
+HTTP replacement and recovery are not fully accepted. The
 [change and validation audit](./milestone-5-audit-2026-11-16.md) records exact
 scope, defects and the proposed smaller harness. Earlier entries record
 historical gate states; their incomplete full-run outcomes remain unchanged.
+
+## Replacement runner: hosted polling lifecycle
+
+The tracked runner on `9461532f`, using the verified unpublished runtime package
+from `13bf80df`, completed polling preparation, isolated allocation, baseline
+message/tool/reply and identity-denial checks, quiescent stop, edited-source
+replacement on the same volume, duplicate protection and a second quiescent stop.
+The service had no public domains. Each generation produced exactly one effect,
+zero duplicate effects and zero unauthorized effects. Both exact instances were
+observed STOPPED; no application exit code was invented.
+
+One volume, one service, one project and the temporary workspace SSH key were
+deleted. Their deletion requests are bound to the exact created IDs; complete
+post-deletion project/key inventories confirm absence. No unknown mutation remains.
+Copied runtimes and native credentials were removed after that confirmation.
+
+The raw aggregate result remains failed: a final usage query ran after deleting
+the project and returned `Project not found`. It does not negate the six passed
+execution phases or verified resource deletion. A separate hash-bound
+[assessment and resource proof](./milestone-5-polling-evidence-2026-11-16.json)
+records those scopes without rewriting the original result. The narrow correction
+collects usage before deletion, retains telemetry warnings separately and keeps
+resource cleanup mandatory. Stubbed provider tests now refuse usage after deletion.
+The final focused suites pass 58 tests / 484 assertions; typecheck and lint pass.
+
+Before this live lifecycle, Railway rejected an overlong project name before
+allocation. Complete active inventory confirmed its absence. Generated names now
+fit the provider's 32-character limit with a local regression check. The corrected
+attempt used the remaining time under the original twenty-minute execution bound.
+No further hosted retry is needed for either harness-only correction.
+
+Scoped polling lifecycle evidence is accepted at its selected runtime package;
+HTTP replacement, both hosted recovery rows, integrated review and final CI/
+CodeQL findings disposition remain required for M5. No M5 merge or publication
+has occurred.
 
 ## Tracked scenario runner replacement
 
