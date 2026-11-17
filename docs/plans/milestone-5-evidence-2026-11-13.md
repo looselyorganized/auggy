@@ -1,17 +1,32 @@
 # Milestone 5 execution evidence
 
-Current status: G0/G1/G3 and M5-00/01/02/03/04/05/06/08 are accepted for their
-recorded scopes. Candidate `13bf80df` and harness `f41526ef` passed all 28 reported
-PR checks. HTTP and polling lifecycle/replacement are now accepted at that runtime
-candidate. HTTP recovery is now accepted: the `c99497b4` runner completed backup,
-fresh-volume restore/reconciliation, persisted auth hold across restart, real
-expiry, completed replay, fresh work and quiescent shutdown. All owned resources
-were deleted and absence verified. All 28 CI checks passed on that runner source.
-M5-07, M5-09 and M5-10 remain open: hosted polling recovery and final integrated
-review/final-revision CI and findings disposition remain incomplete. The
+Current status: G0/G1/G3/G4 and M5-00 through M5-09 are accepted for their recorded
+scopes. All hosted lifecycle/recovery rows passed at runtime candidate `13bf80df`;
+all owned resources were deleted and absence verified. Independent review accepted
+the integrated source/evidence at `dfd3bb64`, which passed all 28 CI checks. Root
+certification and the [final review](./milestone-5-final-review-2026-11-17.md) record
+the exact source, artifacts and findings dispositions. Required checks on the
+closing documentation head remain the final PR handoff condition. The
 [change and validation audit](./milestone-5-audit-2026-11-16.md) records exact
 scope, defects and the proposed smaller harness. Earlier entries record
 historical gate states; their incomplete full-run outcomes remain unchanged.
+
+## Accepted polling recovery on `dfd3bb64`
+
+The remaining hosted row passed in 407 seconds. Baseline/replacement and both stops
+preceded a backup containing confirmed updates 1/2/3. Fresh-volume restore and
+reconciliation preserved the exact replay namespace and guard digest. The restored
+worker rejected duplicate update 1 with zero provider calls, then update 4 produced
+one effect, two model calls and one validated tool result. No public ingress,
+duplicate effects or unauthorized effects were observed. Final quiescence and
+stopped-state proof passed; five stop receipts include maintenance operations.
+
+The project, two services/volumes and temporary key were deleted. Exact creation
+and deletion IDs match; complete inventories confirm project/key absence, with no
+warnings, failures or unknown mutations. The independent reviewer verified the
+[assessment](./milestone-5-polling-recovery-evidence-2026-11-16.json) and all 66 raw
+evidence files. This closes G4/M5-07's remaining hosted requirement. Final review
+and current source CI are accepted; closing-head required checks still gate handoff.
 
 ## Accepted HTTP recovery on `c99497b4`
 

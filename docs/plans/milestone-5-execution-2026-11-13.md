@@ -6,7 +6,9 @@ The acceptance matrix remains required; execution, recovery and cleanup results
 are recorded independently. See the [audit](./milestone-5-audit-2026-11-16.md) for
 the accepted hosting evidence and demonstrated harness defects.
 
-Status: implementation in progress. M4 PR #229 was separately authorized and
+Status: implementation and hosted acceptance complete; independent integrated
+review accepted. Closing documentation-head checks gate the final PR handoff.
+M4 PR #229 was separately authorized and
 merged at `c39b746b4b743e5c29dab61a677026c10626d8b8`; G0 is accepted. Contracts,
 storage, packaging, deployment, durable replay, optional application integration,
 standalone channels and teaching have independent acceptance for their scopes.
@@ -18,17 +20,19 @@ passed final-package verification. Railway access was verified read-only on
 2026-11-14. G4 now has accepted HTTP/polling lifecycle and replacement evidence
 with verified cleanup. HTTP recovery is accepted on `c99497b4`: backup/restore,
 reconciliation, auth hold across restart, expiry, replay/new work and shutdown
-passed with verified cleanup. Hosted polling recovery remains open, followed by
-final integrated review and CI/findings disposition. M5-07, M5-09 and M5-10 remain
-open; draft PR #230 is not ready to merge or publish. See the
+passed with verified cleanup. Hosted polling recovery passed on `dfd3bb64` in
+407 seconds. M5-07/M5-09 are accepted; root source certification records green CI
+and independently justified CodeQL dispositions. Final required PR checks must
+pass on the closing evidence head before handoff. Merge/publication remain
+separately authorized gates. See the [final review](./milestone-5-final-review-2026-11-17.md),
 [task ledger](./milestone-5-tasks.json) and
 [evidence](./milestone-5-evidence-2026-11-13.md) for exact accepted revisions.
 
 G4's bounded local fixtures, command receipts, SSH transport, API adapter and
 action journal now have independent acceptance. Exact HTTP and polling source
 artifacts passed local channel/replay/source-edit checks. The tracked scenario
-runner supersedes the private executor; remaining recovery and final review are
-required before acceptance. The
+runner supersedes the private executor; all required hosted rows and integrated
+review now have acceptance. The
 [G4 amendment](./milestone-5-contracts/hosted-rehearsal.md) records the discovered
 allocation, cost and SSH boundaries; it does not grant execution approval.
 

@@ -180,7 +180,7 @@ fixtures; a harness-only change does not require repacking the runtime.
 |---|---|---|---|
 | `http` | Installed CLI readiness, authenticated stream/tool effect, edited-source replacement on the same volume, state/completed replay continuity, quiescent stop | One service and volume | Passed, 229 seconds, verified cleanup |
 | `recovery-http` | Baseline stopped backup, newer downstream effect, restore/reconcile on a fresh volume, persisted auth hold across same-image restart, real expiry, replay and new work, quiescent stop | Two services and volumes, workloads sequential | Passed on `c99497b4`, 650 seconds, verified cleanup |
-| `recovery-polling` | Back up confirmed deliveries 1/2/3, restore/reconcile the exact namespace, duplicate 1 does no work, delivery 4 succeeds, no ingress, quiescent stop | Two services and volumes, workloads sequential | Not run after HTTP recovery failure |
+| `recovery-polling` | Back up confirmed deliveries 1/2/3, restore/reconcile the exact namespace, duplicate 1 does no work, delivery 4 succeeds, no ingress, quiescent stop | Two services and volumes, workloads sequential | Passed on `dfd3bb64`, 407 seconds, verified cleanup |
 
 Each row ends with exact owned-resource deletion and complete absence readbacks.
 One failure stops that row, retains diagnostics and triggers a narrow diagnosis;
@@ -262,3 +262,11 @@ Exact resource deletion and complete absence inventories passed with no warnings
 or unknown mutations. See [the accepted HTTP recovery evidence](./milestone-5-http-recovery-evidence-2026-11-16.json).
 All 28 CI checks passed on the exact corrective source. Hosted polling recovery
 and final M5 integrated review/CI/findings disposition remain open.
+
+Final polling recovery passed in 407 seconds on `dfd3bb64`, with unchanged guard,
+exact restored replay namespace, duplicate 1 rejected, new update 4 accepted, no
+ingress and verified cleanup. All hosted rows are accepted. Independent review
+verified the 83 HTTP and 66 polling raw evidence files and accepted M5-09 with no
+blocking finding. See [final review and handoff](./milestone-5-final-review-2026-11-17.md).
+Closing documentation-head CI is the final PR handoff condition. Earlier entries
+above are historical and do not erase their original failed results.

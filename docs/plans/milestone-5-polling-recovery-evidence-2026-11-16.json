@@ -1,0 +1,74 @@
+{
+  "scope": "Hosted polling recovery accepted at exact candidate",
+  "runtimeRevision": "13bf80df4ead1bbf0b53ee0cc1b221df10868999",
+  "harnessRevision": "dfd3bb64bf117ac19d0fdf608323fc5019e45a13",
+  "status": "passed",
+  "elapsedWallMs": 407180,
+  "generations": [
+    {
+      "generation": "baseline",
+      "updateId": 1,
+      "effects": 1,
+      "duplicateEffects": 0,
+      "unauthorizedEffects": 0
+    },
+    {
+      "generation": "edited",
+      "updateId": 3,
+      "effects": 1,
+      "duplicateEffects": 0,
+      "unauthorizedEffects": 0
+    },
+    {
+      "generation": "restored",
+      "updateId": 4,
+      "effects": 1,
+      "duplicateEffects": 0,
+      "unauthorizedEffects": 0
+    }
+  ],
+  "recovery": {
+    "backupAfterConfirmedUpdates": [
+      1,
+      2,
+      3
+    ],
+    "freshVolumeRestore": true,
+    "reconcileGuardUnchanged": true,
+    "replayNamespaceSHA256": "bddc9d559f388558c8e45266662329b8075b26e0d3455ea80e27376850cf9560",
+    "restoredReplayClaims": [
+      {
+        "updateId": 1,
+        "namespaceSHA256": "bddc9d559f388558c8e45266662329b8075b26e0d3455ea80e27376850cf9560"
+      },
+      {
+        "updateId": 2,
+        "namespaceSHA256": "bddc9d559f388558c8e45266662329b8075b26e0d3455ea80e27376850cf9560"
+      },
+      {
+        "updateId": 3,
+        "namespaceSHA256": "bddc9d559f388558c8e45266662329b8075b26e0d3455ea80e27376850cf9560"
+      }
+    ],
+    "duplicateUpdate1ProducedNoWork": true,
+    "newUpdate4Succeeded": true,
+    "publicDomains": 0,
+    "verifiedStops": 5
+  },
+  "cleanup": {
+    "verifiedComplete": true,
+    "projectsDeleted": 1,
+    "servicesDeleted": 2,
+    "volumesDeleted": 2,
+    "temporaryKeysDeleted": 1,
+    "projectAbsent": true,
+    "keyAbsent": true,
+    "unknownMutations": 0,
+    "warnings": []
+  },
+  "assessment": {
+    "path": "/private/tmp/m5-polling-recovery-1794898342285/evidence/assessment.json",
+    "sha256": "931a3c3a2a2636d1a90263905c1fb68210efe24e08c3c33c817d4a2f93882c88"
+  },
+  "productSourceChanged": false
+}

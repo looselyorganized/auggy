@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "milestone": 5,
   "plan": "milestone-5-execution-2026-11-13.md",
-  "mode": "execution",
+  "mode": "handoff",
   "orchestrator": "CTO / AI Engineering Lead (root)",
   "maxConcurrentSpecialists": 3,
   "authorization": {
@@ -65,7 +65,7 @@
       "acceptedCommit": "c39b746b4b743e5c29dab61a677026c10626d8b8"
     },
     "G4": {
-      "status": "blocked",
+      "status": "accepted",
       "requires": [
         "accepted local/container evidence",
         "exact isolated Railway target",
@@ -74,10 +74,7 @@
         "private fixture connectivity",
         "concrete hosted execution approval"
       ],
-      "pending": [
-        "Complete hosted polling recovery; retain accepted HTTP/polling lifecycles and accepted HTTP recovery on c99497b4 with verified cleanup",
-        "Complete integrated review, final revision CI and full CodeQL findings disposition before PR handoff"
-      ],
+      "pending": [],
       "discovery": {
         "status": "authenticated_read_only",
         "date": "2026-11-14",
@@ -265,7 +262,14 @@
         "recoveryBlocker": "test transfer path allowlist rejects lost+found; reproduced locally; one-character correction passes Linux backup",
         "freshVolumePreparationDraft": "provisional; full Linux restore not executed",
         "newHostedExecutionsDuringAudit": 0
-      }
+      },
+      "acceptedCommit": "dfd3bb64bf117ac19d0fdf608323fc5019e45a13",
+      "runtimeCandidate": "13bf80df4ead1bbf0b53ee0cc1b221df10868999",
+      "acceptedEvidence": [
+        "milestone-5-hosted-evidence-2026-11-16.json",
+        "milestone-5-http-recovery-evidence-2026-11-16.json",
+        "milestone-5-polling-recovery-evidence-2026-11-16.json"
+      ]
     },
     "G1": {
       "status": "accepted",
@@ -443,7 +447,7 @@
       "id": "M5-07",
       "title": "Installed/container/hosted acceptance",
       "specialist": "Acceptance engineer",
-      "status": "in_progress",
+      "status": "accepted",
       "dependsOn": [
         "M5-00"
       ],
@@ -457,7 +461,7 @@
         "M5-06",
         "M5-08"
       ],
-      "acceptedCommit": null,
+      "acceptedCommit": "dfd3bb64bf117ac19d0fdf608323fc5019e45a13",
       "evidence": [
         "Reviewed foundation checkpoint a352e38; source review and actual protocol controls do not replace final artifact proof",
         "Independent repaired application/browser, artifact-source and aggregate oracles accepted; all packed source bytes now compared with committed files or explicitly identified console build output",
@@ -489,7 +493,8 @@
         "Diagnostic patch locally accepted:34platform tests/452assertions +8runner tests/82assertions, combined typecheck and focused lint passed. r8 single authorized hosted validation stopped before deployment: six worker-volume observations had zero instances; pre-first-service-deletion cleanup snapshot later showed correct attachment. New diagnostic paths not exercised live. Cleanup complete:false, failed cleanup-http-original; projectDelete:true and complete project/key absence confirmed. Likely cleanup permitted-inventory bug excludes created-but-unbound worker volume; exact failed cleanup readback absent. No automatic repair/retry. Receipts /private/tmp/m5-g4-post-deployment-diagnostics-acceptance.json and /private/tmp/m5-g4-r8-result.json.",
         "f41526ef hosted HTTP lifecycle passed in229s; HTTP recovery backup/restore/reconciliation passed but first seal rejected uninitialized fixture in463s. Both cleanups verified with no unknown mutations. Actual local fixture reproduced rejection and corrected restored/restarted sequence passed. HTTP recovery and polling recovery remain open; no automatic retry. See milestone-5-hosted-evidence-2026-11-16.json.",
         "32cdb854 targeted HTTP recovery542s: corrected initialization and initial auth hold/seal passed; same-image restart logs show fresh live startup while Railway retained the instance ID. Harness falsely required an ID change and timed out. Post-restart hold and post-hold operation not reached. Complete owned-resource cleanup verified. Actual negative controls23tests/462assertions, typecheck/lint and all28CIchecks passed. No automatic retry. See milestone-5-http-recovery-targeted-evidence-2026-11-16.json.",
-        "c99497b4 HTTP recovery accepted in650s on verified13bf80df packages. Backup/fresh-volume restore/reconciliation, fresh-process readiness with stable provider ID, 503hold before/after restart with zero work, real expiry while stopped, expired401, completed replay, fresh third downstream effect and shutdown passed. Six stop receipts include maintenance. Exact owned resource deletion and complete absence readbacks passed, no warnings/unknown mutations. Focused36tests/542assertions, typecheck/lint and all28CIchecks passed. See milestone-5-http-recovery-evidence-2026-11-16.json. Only hosted polling recovery and final integrated gates remain."
+        "c99497b4 HTTP recovery accepted in650s on verified13bf80df packages. Backup/fresh-volume restore/reconciliation, fresh-process readiness with stable provider ID, 503hold before/after restart with zero work, real expiry while stopped, expired401, completed replay, fresh third downstream effect and shutdown passed. Six stop receipts include maintenance. Exact owned resource deletion and complete absence readbacks passed, no warnings/unknown mutations. Focused36tests/542assertions, typecheck/lint and all28CIchecks passed. See milestone-5-http-recovery-evidence-2026-11-16.json. Only hosted polling recovery and final integrated gates remain.",
+        "Final polling recovery passed407s atdfd3bb64/runtime13bf80df: confirmed1/2/3 exact replay namespace, duplicate1 no provider calls, new4 one effect/two model calls/one validated result, no ingress and quiescent stop. Exact resource deletion and complete absence inventories verified. Independent reviewer verified all66 raw files and83 HTTP files. All required hosted scopes accepted."
       ]
     },
     {
@@ -520,7 +525,7 @@
       "id": "M5-09",
       "title": "Independent integrated review",
       "specialist": "Architecture/security/harness reviewer",
-      "status": "blocked",
+      "status": "accepted",
       "dependsOn": [
         "M5-01",
         "M5-02",
@@ -531,39 +536,36 @@
         "M5-07",
         "M5-08"
       ],
-      "blockedBy": [
-        "M5-07"
-      ],
+      "blockedBy": [],
       "acceptanceDependsOn": [],
-      "acceptedCommit": null,
+      "acceptedCommit": "dfd3bb64bf117ac19d0fdf608323fc5019e45a13",
       "evidence": [
-        "Preliminary integrated review found compatibility private-state gap and stale inspect/cloud teaching; both repaired and independently accepted. No additional concrete source seam blocker found; final acceptance still depends on final artifact and hosted gates."
+        "Preliminary integrated review found compatibility private-state gap and stale inspect/cloud teaching; both repaired and independently accepted. No additional concrete source seam blocker found; final acceptance still depends on final artifact and hosted gates.",
+        "Independent m5_integrated_review accepted reviewed sourcedfd3bb64 with no blocking findings, supplementing prior specialist reviews. Verified archive hashes, no production delta since13bf80df, HTTP83/polling66 raw records, replay identities and cleanup IDs. Full CodeQL103rules/2results/no diagnostics; alerts134/135 intentional owned-target fixture requests, used-in-tests dismissal independently justified. See milestone-5-final-review-2026-11-17.md."
       ]
     },
     {
       "id": "M5-10",
       "title": "Final certification and PR handoff",
       "specialist": "CTO / orchestrator",
-      "status": "blocked",
+      "status": "accepted",
       "dependsOn": [
         "M5-07",
         "M5-08",
         "M5-09"
       ],
-      "blockedBy": [
-        "M5-07",
-        "M5-09"
-      ],
+      "blockedBy": [],
       "acceptanceDependsOn": [],
-      "acceptedCommit": null,
-      "evidence": []
+      "acceptedCommit": "dfd3bb64bf117ac19d0fdf608323fc5019e45a13",
+      "evidence": [
+        "All28 source checks passed atdfd3bb64. Runtime package source unchanged since13bf80df; all installed/browser/container and hosted rows accepted, independent review accepted, CodeQL dispositions recorded, PR230 description reconciled. Closing commit contains documentation/evidence only; current required PR checks remain authoritative for final head. No merge/version bump/publication. See milestone-5-final-review-2026-11-17.md."
+      ],
+      "acceptanceScope": "Reviewed source/artifact/evidence certification at dfd3bb64; closing documentation-head required checks must pass before PR handoff"
     }
   ],
   "activeOwnership": {
-    "root": "No hosted resources remain. HTTP/polling lifecycles and HTTP recovery accepted at candidate13bf80df. Hosted polling recovery and final integrated review/CI remain open.",
-    "m5_g4_platform_review": "Attached readonly guard callback and bounded provider log/domain observations; controller repair independently accepted",
-    "m5_g4_fixture_review": "Independent root/runner review and actual managed-image remote-directory verification; maintenance prerequisites independently accepted",
-    "m5_g4_http_engineer": "Guard lifetime/parent-death supervision, then separately inventoried hosted TTL180 contexts; no hosted calls"
+    "root": "Source/evidence accepted; verify required checks on closing documentation head before final PR handoff. No hosted resources remain.",
+    "m5_integrated_review": "Independent source, HTTP/polling evidence and final PR/review wording accepted; no blocking findings or required corrections."
   },
   "notes": [
     "Each company owns a separate deployment; no managed platform or shared-company tenancy.",
@@ -580,7 +582,8 @@
     "R6 RCA confirmed from retained pre-deletion cleanup evidence: exact same volume/instance attached to expected service at /app/data about4s after refusal. Reconstructed create-input SHA matches recorded mutation. Harness retries only zero instances and prematurely rejects existing unattached provisioning state; tests encode this assumption and miss the multi-stage transition. No RCA live calls or implementation. Required correction: bounded owned-volume attachment convergence with strict final checks.",
     "Volume-attachment fix locally verified and independently reviewed: narrow owned READY/unattached singleton at /tmp or approved mount may wait, with instance identity pinned before subsequent binding. Six-read/five-pause bounds, strict acceptance, deadline, one creation/claim, evidence/privacy and cleanup preserved.56 controller tests/490 assertions, private typecheck and two-file Biome check passed. Frozen r6 closure and RCA hashes unchanged. No build or hosted call; G4 remains open. Receipt /private/tmp/m5-g4-volume-attachment-acceptance.json.",
     "2026-11-16UTC renewed user-authorized r7 used fixed attachment code, fresh60minute ceiling and same resource limits. Both volumes bound after2reads; intermediate unattached state did not recur. Domain/upload passed; Railway SUCCESS; managed CLI exit0 after180717ms with no runner issues. CLI success does not certify HTTP health, which retained evidence does not establish. Post-CLI domain binding passed; subsequent platform verification failed with generic unknown and no retained predicate/target observation. Zero completed root workload actions. Cleanup complete; no automatic retry. Receipt /private/tmp/m5-g4-r7-result.json.",
-    "Diagnostic patch locally accepted:34platform tests/452assertions +8runner tests/82assertions, combined typecheck and focused lint passed. r8 single authorized hosted validation stopped before deployment: six worker-volume observations had zero instances; pre-first-service-deletion cleanup snapshot later showed correct attachment. New diagnostic paths not exercised live. Cleanup complete:false, failed cleanup-http-original; projectDelete:true and complete project/key absence confirmed. Likely cleanup permitted-inventory bug excludes created-but-unbound worker volume; exact failed cleanup readback absent. No automatic repair/retry. Receipts /private/tmp/m5-g4-post-deployment-diagnostics-acceptance.json and /private/tmp/m5-g4-r8-result.json."
+    "Diagnostic patch locally accepted:34platform tests/452assertions +8runner tests/82assertions, combined typecheck and focused lint passed. r8 single authorized hosted validation stopped before deployment: six worker-volume observations had zero instances; pre-first-service-deletion cleanup snapshot later showed correct attachment. New diagnostic paths not exercised live. Cleanup complete:false, failed cleanup-http-original; projectDelete:true and complete project/key absence confirmed. Likely cleanup permitted-inventory bug excludes created-but-unbound worker volume; exact failed cleanup readback absent. No automatic repair/retry. Receipts /private/tmp/m5-g4-post-deployment-diagnostics-acceptance.json and /private/tmp/m5-g4-r8-result.json.",
+    "Final source/artifact/hosted and independent acceptance complete atdfd3bb64/runtime13bf80df. Closing evidence commit is documentation-only; required final-head PR checks remain the handoff condition. No hosted resources, merge or publication. M6 remains roadmap work."
   ],
   "preparation": {
     "status": "accepted",
@@ -765,7 +768,7 @@
       "fullHostedAcceptance": "outstanding"
     },
     "hostedRunnerReplacement": {
-      "status": "locally_verified",
+      "status": "hosted_accepted",
       "plan": "milestone-5-hosted-runner.md",
       "entrypoint": "scripts/release-smoke/hosted-runner.ts",
       "supersedes": "private executor/controller/generated CLI guards",
@@ -852,7 +855,48 @@
           "hosted polling recovery",
           "integrated review and final-revision CI/CodeQL findings disposition"
         ]
+      },
+      "pollingRecovery": {
+        "status": "accepted",
+        "sourceRevision": "dfd3bb64bf117ac19d0fdf608323fc5019e45a13",
+        "runtimeCandidate": "13bf80df4ead1bbf0b53ee0cc1b221df10868999",
+        "elapsedSeconds": 407,
+        "evidence": "milestone-5-polling-recovery-evidence-2026-11-16.json",
+        "cleanup": "verified complete; no warnings/failures/unknown mutations",
+        "independentReview": "accepted; all66 referenced files verified"
       }
     }
+  },
+  "historicalOwnership": {
+    "root": "No hosted resources remain. HTTP/polling lifecycles and HTTP recovery accepted at candidate13bf80df. Hosted polling recovery and final integrated review/CI remain open.",
+    "m5_g4_platform_review": "Attached readonly guard callback and bounded provider log/domain observations; controller repair independently accepted",
+    "m5_g4_fixture_review": "Independent root/runner review and actual managed-image remote-directory verification; maintenance prerequisites independently accepted",
+    "m5_g4_http_engineer": "Guard lifetime/parent-death supervision, then separately inventoried hosted TTL180 contexts; no hosted calls"
+  },
+  "finalCertification": {
+    "status": "source-and-evidence-accepted",
+    "sourceCommit": "dfd3bb64bf117ac19d0fdf608323fc5019e45a13",
+    "runtimeCandidate": "13bf80df4ead1bbf0b53ee0cc1b221df10868999",
+    "independentReviewer": "m5_integrated_review",
+    "review": "milestone-5-final-review-2026-11-17.md",
+    "sourceCIChecksPassed": 28,
+    "codeql": {
+      "analysis": 2183672374,
+      "mergeCommit": "6d0420b128945d5abd53a2a64afd976871086773",
+      "rules": 103,
+      "results": 2,
+      "errors": 0,
+      "warnings": 0,
+      "dismissedUsedInTests": [
+        134,
+        135
+      ],
+      "sourceSuppressionAdded": false
+    },
+    "closingHeadCondition": "Documentation/evidence-only closing head must pass required PR230 checks and current-ref findings review before handoff; exact head/check identities recorded in PR230",
+    "mergeAuthorized": false,
+    "publicationAuthorized": false,
+    "postMergeFollowUp": "Trusted default-branch paid security canary and resulting-main verification; no branch-controlled code with repository eval keys",
+    "nextMilestone": "M6 upgrade and measured engineer inspectability"
   }
 }
