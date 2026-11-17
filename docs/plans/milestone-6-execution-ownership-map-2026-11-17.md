@@ -47,7 +47,39 @@ Review is split across runtime lifecycle, HTTP/authentication, and scaffold/CLI
 ownership. Existing installed-authoring scenarios verify a renamed endpoint and
 an actual edit to `agent.ts`, including inference count, observer correlation,
 authentication, SSE and durable replay. No new test harness or hosted rehearsal
-is introduced. Verification results are recorded when the integrated checks finish.
+is introduced.
+
+Verification completed on 2026-11-17:
+
+- Product changes: `dd4c1840` (managed assembly), `e30e3954` (HTTP mount),
+  `3668e149` (generated project and CLI). Release-fixture corrections: `4706662f`.
+- Strict typecheck, repository lint and console build passed. Lint retains the
+  pre-existing informational schema-version mismatch.
+- Required runtime shards and all 364 console tests completed. The CLI route
+  diagnostic assertion was updated and its 20-test file rerun; already passing
+  shards were retained, and remaining shards were then completed. Thirteen
+  existing disabled-coordination cases remained skipped. The final fixture
+  changes passed a further 20 focused tests.
+- Packaged installation, console serving, authenticated requests, durable replay,
+  dependency checks and foundation upgrade checks passed in `smoke:release`.
+  That shell run stopped at historical fixture mismatches. After correcting the
+  fixtures, `application-suite.ts` and `authoring-suite.ts` were resumed against
+  the same tarballs; the earlier passing release stages were not repeated.
+- All 16 installed reference acceptance rows passed, including lifecycle,
+  recovery, launcher selection and the existing macOS service checks. Generated
+  authoring passed for all four provider selections, inspection, service,
+  ownership and deployment-file generation.
+- The generated application's actual endpoint and execution-option edits passed
+  through direct startup, local run/dev and global run/dev. Authentication, SSE,
+  replay before and after restart, inference counts and correlated finalization
+  observations were checked. Cleanup was confirmed.
+
+The verified local evidence index and six package artifacts are retained at
+`/private/tmp/auggy-m6-verified-p537gsed/verification.json`. These results cover
+local installed execution and generated deployment files; they do not claim a
+new hosted Railway rehearsal. Contract-2 projects require a contract-2-capable
+global CLI when launched globally; historical contract-1 application coverage
+uses its matching pinned source.
 
 ## Original baseline and scope
 
