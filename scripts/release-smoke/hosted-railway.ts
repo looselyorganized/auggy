@@ -10,6 +10,12 @@ import { hostedCheck as check, type HostedContext } from "./hosted-context";
 type Response<K extends HostedRailwayOperation> = z.output<
   ReturnType<typeof hostedRailwayProtocol<K>>["schema"]
 >;
+export function hostedResourceName(runId: string) {
+  z.string().uuid().parse(runId);
+  const name = `auggy-m5-${runId.replaceAll("-", "").slice(0, 20)}`;
+  check(name.length <= 32, "Railway project names must fit the 32-character provider limit");
+  return name;
+}
 export interface ScenarioService {
   id: string;
   volumeId: string;
@@ -49,7 +55,7 @@ export function createScenarioRailway(ctx: HostedContext) {
   const volumeOwners = new Map<string, string>();
   const serviceIds = new Set<string>();
   const unknown = new Set<string>();
-  const name = `auggy-m5-${ctx.runId}`;
+  const name = hostedResourceName(ctx.runId);
   const api = async <K extends HostedRailwayOperation>(
     operation: K,
     variables: object,

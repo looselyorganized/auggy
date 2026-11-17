@@ -6,7 +6,10 @@ import {
   hostedInputSchema,
   type HostedContext,
 } from "../../scripts/release-smoke/hosted-context";
-import { createScenarioRailway } from "../../scripts/release-smoke/hosted-railway";
+import {
+  createScenarioRailway,
+  hostedResourceName,
+} from "../../scripts/release-smoke/hosted-railway";
 import { hostedSshPublicIdentity } from "../../scripts/release-smoke/integration-hosted-transport";
 const roots: string[] = [];
 afterEach(() => {
@@ -17,6 +20,13 @@ const publicKey = `ssh-ed25519 ${Buffer.concat([Buffer.from([0, 0, 0, 11]), Buff
 const page = <T>(values: T[]) => ({
   edges: values.map((node) => ({ node })),
   pageInfo: { hasNextPage: false, hasPreviousPage: false, endCursor: null },
+});
+test("generated resource names fit Railway's project-name limit before allocation", () => {
+  expect(hostedResourceName("9f46c7df-c529-4dcb-91ad-91d512697fa8")).toBe(
+    "auggy-m5-9f46c7dfc5294dcb91ad",
+  );
+  expect(hostedResourceName(id(1)).length).toBeLessThanOrEqual(32);
+  expect(() => hostedResourceName("unvalidated-project-name")).toThrow();
 });
 function fixture(fail?: "unknown-service" | "foreign-volume") {
   const base = mkdtempSync("/private/tmp/m5-provider-test-");
