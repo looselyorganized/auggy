@@ -133,3 +133,58 @@ Generated project names are capped at 32 characters before allocation. Usage is
 collected before deleting the project; telemetry warnings never prevent cleanup
 of resources whose ownership is established. Failed/ambiguous resource deletion
 continues to fail cleanup. No more live runs were used to test those corrections.
+
+## Principal adversarial review
+
+The smaller scenario runner is the right boundary. Keep production storage,
+authentication, shutdown and deployment architecture unchanged. Three concrete
+test defects warranted correction before the outstanding hosted rows:
+
+| Finding | Failure mode | Narrow correction |
+|---|---|---|
+| High: phase evidence writes could throw outside protected work | Cleanup could be skipped, or a scenario with missing evidence could report success | Protect phase recording; always attempt driver cleanup; retain the original failure and fail acceptance when evidence recording fails |
+| High: a rebuild was inside the 210-second restored-auth hold | Build speed could consume the security observation window and produce an inconclusive failure | Use one bounded restart of the existing deployment/image during the hold; require the exact deployment and a new singleton running instance |
+| Medium: timing assumptions and auth failures were underspecified | A mismatched fixture or unrelated 503 could be mistaken for the expected recovery behavior | Validate the 180-second fixture TTL and durable stores before allocation; require the auth error JSON and bounded Retry-After, followed by expired-token rejection and successful fresh work |
+
+The restart is a test-only provider operation. Railway's
+[CLI source](https://github.com/railwayapp/cli/blob/master/src/commands/restart.rs)
+and [restart documentation](https://docs.railway.com/cli/restart) establish reuse
+of the existing image. The source also shows that `--json` returns after the
+restart request, so its exit status is not readiness evidence. The runner binds
+the acknowledged deployment ID, verifies the same image digest and waits for a
+different running instance with no other active instance. Terminal historical
+instances are permitted; live or duplicate identities still fail. It checks the
+old instance's quiescence marker, then uses a fresh signed assertion to observe
+the persisted hold. After sealing and stopping, the hold expires with workloads
+stopped. Only the later, post-hold deployment may rebuild.
+
+`external_auth_unavailable` is also used for unavailable auth storage. Its body
+alone does not prove a restore hold. Evidence must combine the restored guard
+epoch, bounded hold observations before/after restart, zero model/domain work,
+unchanged epoch, expired assertion rejection, and successful post-hold operation.
+Existing local tests cover exhaustive security negatives; do not repeat them all
+on Railway. A timeout or wrong image/instance is an inconclusive failed row,
+never permission to retry a mutation or change production behavior.
+
+### Remaining hosted execution
+
+Run these independently in this order, preserving accepted polling and earlier
+HTTP observations. All use the already verified runtime candidate and existing
+fixtures; a harness-only change does not require repacking the runtime.
+
+| Row | Required proof | Maximum allocated resources |
+|---|---|---|
+| `http` | Installed CLI readiness, authenticated stream/tool effect, edited-source replacement on the same volume, state/completed replay continuity, quiescent stop | One service and volume |
+| `recovery-http` | Baseline stopped backup, newer downstream effect, restore/reconcile on a fresh volume, persisted auth hold across same-image restart, real expiry, replay and new work, quiescent stop | Two services and volumes, workloads sequential |
+| `recovery-polling` | Back up confirmed deliveries 1/2/3, restore/reconcile the exact namespace, duplicate 1 does no work, delivery 4 succeeds, no ingress, quiescent stop | Two services and volumes, workloads sequential |
+
+Each row ends with exact owned-resource deletion and complete absence readbacks.
+One failure stops that row, retains diagnostics and triggers a narrow diagnosis;
+there is no automatic repeat or new resource batch. Preserve the existing shared
+time/spend allowance. After all rows, complete integrated review, final revision
+CI and CodeQL findings disposition. M5-07/09/10 remain open until those gates pass.
+
+Review verification: focused fault-injection/provider/auth-contract tests,
+repository typecheck and lint, and a real `recovery-http` local preparation/export
+with no Railway calls. The new restart path is locally verified, not yet hosted
+certified. This review created no hosted resources and changed no product source.

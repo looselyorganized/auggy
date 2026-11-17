@@ -78,3 +78,41 @@ test("cleanup failure cannot convert failed or successful execution into accepta
     );
   }
 });
+
+test("failed evidence recording cannot skip cleanup or produce a false pass", async () => {
+  for (const failAt of [
+    "prepare:starting",
+    "baseline:passed",
+    "cleanup:starting",
+    "cleanup:passed",
+    "all",
+  ]) {
+    const { calls, driver } = fake();
+    const result = await runHostedScenario("http", driver, (phase, status) => {
+      if (failAt === "all" || `${phase}:${status}` === failAt)
+        throw Error("Evidence disk unavailable");
+    });
+    expect(result.status).toBe("failed");
+    expect(result.failure?.message).toBe("Evidence disk unavailable");
+    expect(result.cleanup.status).toBe("passed");
+    expect(calls.filter((c) => c === "cleanup")).toHaveLength(1);
+  }
+});
+
+test("cleanup still runs when failure recording itself throws", async () => {
+  const { calls, driver } = fake("baseline");
+  const result = await runHostedScenario("http", driver, (_phase, status) => {
+    if (status === "failed") throw Error("Cannot write failure receipt");
+  });
+  expect(result.failure?.message).toBe("baseline refused");
+  expect(result.cleanup.status).toBe("passed");
+  expect(calls.filter((c) => c === "cleanup")).toHaveLength(1);
+});
+
+test("polling recovery backs up the confirmed replacement deliveries", async () => {
+  const { calls, driver } = fake();
+  const result = await runHostedScenario("recovery-polling", driver, () => {});
+  expect(result.status).toBe("passed");
+  expect(calls.indexOf("backup")).toBeGreaterThan(calls.indexOf("edited"));
+  expect(calls.indexOf("backup")).toBeLessThan(calls.indexOf("restore"));
+});

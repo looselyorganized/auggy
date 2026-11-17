@@ -32,6 +32,39 @@ export interface ScenarioDeployment {
   instanceId: string;
   startedAt: number;
 }
+export function bindScenarioRestart(
+  previous: ScenarioDeployment,
+  next: Response<"deployment-read">["deployment"],
+): ScenarioDeployment | null {
+  check(
+    next.id === previous.id &&
+      next.projectId === previous.projectId &&
+      next.environmentId === previous.environmentId &&
+      next.serviceId === previous.serviceId,
+    "Restart target changed",
+  );
+  check(!["FAILED", "CRASHED"].includes(next.status), `Restart failed: ${next.status}`);
+  if (next.meta?.imageDigest)
+    check(
+      next.meta.imageDigest === previous.imageDigest,
+      "Restart changed the image; expected no rebuild",
+    );
+  check(
+    new Set(next.instances.map((i) => i.id)).size === next.instances.length,
+    "Duplicate restart instance identity",
+  );
+  const active = next.instances.filter((i) => !["STOPPED", "EXITED", "REMOVED"].includes(i.status));
+  if (
+    next.deploymentStopped ||
+    next.status !== "SUCCESS" ||
+    active.length !== 1 ||
+    active[0]!.status !== "RUNNING" ||
+    active[0]!.id === previous.instanceId
+  )
+    return null;
+  check(next.meta?.imageDigest === previous.imageDigest, "Restart image identity is unavailable");
+  return { ...previous, id: next.id, instanceId: active[0]!.id, startedAt: Date.now() };
+}
 const RATES = {
   MEMORY_USAGE_GB: 10 / 43200,
   CPU_USAGE: 20 / 43200,
@@ -138,6 +171,7 @@ export function createScenarioRailway(
     const end = performance.now() + Math.min(maximum, ctx.remaining(cleanup) - 5000);
     while (performance.now() < end) {
       const value = await read();
+      check(performance.now() < end, `${label}: readiness deadline exceeded`);
       if (ready(value)) return value;
       const pause = Math.min(5000, end - performance.now());
       if (pause > 0) await Bun.sleep(pause);
@@ -450,6 +484,64 @@ export function createScenarioRailway(
         instanceId: d.instances[0]!.id,
         startedAt: Date.now(),
       };
+    },
+    async restart(
+      s: ScenarioService,
+      previous: ScenarioDeployment,
+      maximumMs = 60000,
+    ): Promise<ScenarioDeployment> {
+      assertService(s);
+      check(
+        previous.projectId === s.projectId &&
+          previous.environmentId === s.environmentId &&
+          previous.serviceId === s.id,
+        "Restart requested another service",
+      );
+      check(
+        Number.isFinite(maximumMs) && maximumMs >= 15000 && maximumMs <= 60000,
+        "Insufficient bounded time for a no-rebuild restart",
+      );
+      const before = await deployment(s);
+      check(
+        before?.id === previous.id &&
+          !before.deploymentStopped &&
+          before.instances.some((i) => i.id === previous.instanceId && i.status === "RUNNING"),
+        "Restart source is no longer the observed running instance",
+      );
+      const until = performance.now() + maximumMs;
+      const requested = await ctx.command(
+        "deployment-restart",
+        [
+          native,
+          "restart",
+          "--project",
+          s.projectId,
+          "--environment",
+          s.environmentId,
+          "--service",
+          s.id,
+          "--yes",
+          "--json",
+        ],
+        { timeoutMs: maximumMs },
+      );
+      check(
+        z.object({ id: z.string().uuid() }).parse(JSON.parse(requested.stdout)).id === previous.id,
+        "Restart acknowledged another deployment",
+      );
+      const observed = await poll(
+        "same-image restart",
+        async () => {
+          const next = await deployment(s);
+          check(next, "Restart deployment missing");
+          return bindScenarioRestart(previous, next);
+        },
+        (value) => value !== null,
+        Math.max(1, until - performance.now()),
+      );
+      check(observed, "Restart did not produce a new running instance");
+      ctx.save(`restart-${++sequence}.json`, { previous, observed, rebuild: false });
+      return observed;
     },
     async stop(s: ScenarioService) {
       const d = await deployment(s);

@@ -10,6 +10,8 @@ import {
 import {
   createScenarioRailway,
   hostedResourceName,
+  bindScenarioRestart,
+  type ScenarioDeployment,
 } from "../../scripts/release-smoke/hosted-railway";
 import { hostedSshPublicIdentity } from "../../scripts/release-smoke/integration-hosted-transport";
 const roots: string[] = [];
@@ -58,10 +60,26 @@ function fixture(fail?: "unknown-service" | "foreign-volume") {
     keyName = "",
     keyExists = false,
     projectExists = false;
+  let currentDeployment: Parameters<typeof bindScenarioRestart>[1] | null = null;
+  const restartCommands: string[][] = [];
   const command: HostedContext["command"] = async (label, args, options) => {
     if (label === "ssh-keygen") {
       writeFileSync(join(real.root, "auth/identity.pub"), `${publicKey}\n`, { mode: 0o600 });
       return { exitCode: 0 } as Awaited<ReturnType<HostedContext["command"]>>;
+    }
+    if (label === "deployment-restart") {
+      restartCommands.push([...args]);
+      if (!currentDeployment) throw Error("No restart source");
+      currentDeployment = {
+        ...currentDeployment,
+        instances: [
+          { id: id(41), status: "STOPPED" },
+          { id: id(42), status: "RUNNING" },
+        ],
+      };
+      return { exitCode: 0, stdout: JSON.stringify({ id: currentDeployment.id }) } as Awaited<
+        ReturnType<HostedContext["command"]>
+      >;
     }
     const vars = JSON.parse(Buffer.from(options!.input!).toString());
     const query = args[2]!,
@@ -185,11 +203,16 @@ function fixture(fail?: "unknown-service" | "foreign-volume") {
             restartPolicyType: "NEVER",
             restartPolicyMaxRetries: 10,
             sleepApplication: false,
-            latestDeployment: null,
+            latestDeployment: currentDeployment
+              ? { id: currentDeployment.id, status: currentDeployment.status }
+              : null,
           },
           serviceInstanceLimits: { containers: { cpu: 4, memoryBytes: 4000000000 } },
           serviceInstanceLimitOverride: null,
         };
+        break;
+      case "HostedDeployment":
+        data = { deployment: currentDeployment };
         break;
       case "HostedVolumeCreate":
         {
@@ -248,7 +271,33 @@ function fixture(fail?: "unknown-service" | "foreign-volume") {
     >;
   };
   const ctx = { ...real, command, nativeIdentity() {} };
-  return { provider: createScenarioRailway(ctx, "/mock/railway"), calls, root: real.root };
+  return {
+    provider: createScenarioRailway(ctx, "/mock/railway"),
+    calls,
+    root: real.root,
+    restartCommands,
+    running(): ScenarioDeployment {
+      currentDeployment = {
+        id: id(40),
+        projectId: id(2),
+        environmentId: id(3),
+        serviceId: id(10),
+        status: "SUCCESS",
+        deploymentStopped: false,
+        meta: { imageDigest: `sha256:${"a".repeat(64)}` },
+        instances: [{ id: id(41), status: "RUNNING" }],
+      };
+      return {
+        id: id(40),
+        projectId: id(2),
+        environmentId: id(3),
+        serviceId: id(10),
+        imageDigest: currentDeployment.meta!.imageDigest!,
+        instanceId: id(41),
+        startedAt: Date.now(),
+      };
+    },
+  };
 }
 
 test.each([false, true])(
@@ -280,4 +329,71 @@ test("foreign attachment blocks destructive cleanup and does not bypass through 
   await expect(provider.cleanup()).rejects.toThrow("foreign attachment");
   expect(calls).not.toContain("HostedVolumeDelete");
   expect(calls).not.toContain("HostedProjectDelete");
+});
+
+test("restart uses exact service/environment and verifies a new instance of the same image", async () => {
+  const f = fixture();
+  await f.provider.allocate(false);
+  const previous = f.running();
+  const result = await f.provider.restart(f.provider.service(), previous);
+  expect(result.instanceId).toBe(id(42));
+  expect(result.imageDigest).toBe(previous.imageDigest);
+  expect(f.restartCommands).toEqual([
+    [
+      "/mock/railway",
+      "restart",
+      "--project",
+      id(2),
+      "--environment",
+      id(3),
+      "--service",
+      id(10),
+      "--yes",
+      "--json",
+    ],
+  ]);
+});
+
+test("restart readback cannot accept a rebuild, foreign target or the unchanged instance", () => {
+  const previous: ScenarioDeployment = {
+    id: id(40),
+    projectId: id(2),
+    environmentId: id(3),
+    serviceId: id(10),
+    instanceId: id(41),
+    imageDigest: `sha256:${"a".repeat(64)}`,
+    startedAt: 1,
+  };
+  const next: Parameters<typeof bindScenarioRestart>[1] = {
+    id: id(40),
+    projectId: id(2),
+    environmentId: id(3),
+    serviceId: id(10),
+    status: "SUCCESS",
+    deploymentStopped: false,
+    meta: { imageDigest: previous.imageDigest },
+    instances: [
+      { id: id(41), status: "STOPPED" },
+      { id: id(42), status: "RUNNING" },
+    ],
+  };
+  expect(bindScenarioRestart(previous, next)?.instanceId).toBe(id(42));
+  expect(
+    bindScenarioRestart(previous, { ...next, instances: [{ id: id(41), status: "RUNNING" }] }),
+  ).toBeNull();
+  expect(() =>
+    bindScenarioRestart(previous, { ...next, meta: { imageDigest: `sha256:${"b".repeat(64)}` } }),
+  ).toThrow("image");
+  expect(() => bindScenarioRestart(previous, { ...next, serviceId: id(99) })).toThrow("target");
+  expect(() => bindScenarioRestart(previous, { ...next, id: id(99) })).toThrow("target");
+  expect(() => bindScenarioRestart(previous, { ...next, meta: null })).toThrow("image");
+  expect(
+    bindScenarioRestart(previous, {
+      ...next,
+      instances: [
+        { id: id(41), status: "RUNNING" },
+        { id: id(42), status: "RUNNING" },
+      ],
+    }),
+  ).toBeNull();
 });

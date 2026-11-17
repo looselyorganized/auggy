@@ -29,15 +29,29 @@ export async function runHostedScenario(
     failure: null,
     cleanup: { status: "passed" },
   };
-  const step = async (phase: string, work: () => Promise<void>) => {
-    record(phase, "starting");
+  const cleanupRecord = (status: "starting" | "passed" | "failed", error?: unknown) => {
     try {
+      record("cleanup", status, error);
+    } catch (recordingError) {
+      result.failure ??= {
+        phase: "evidence",
+        message: recordingError instanceof Error ? recordingError.message : String(recordingError),
+      };
+    }
+  };
+  const step = async (phase: string, work: () => Promise<void>) => {
+    try {
+      record(phase, "starting");
       await work();
       result.completed.push(phase);
       record(phase, "passed");
     } catch (error) {
       result.failure = { phase, message: error instanceof Error ? error.message : String(error) };
-      record(phase, "failed", error);
+      try {
+        record(phase, "failed", error);
+      } catch {
+        /* Preserve the first failure; cleanup is mandatory. */
+      }
       throw error;
     }
   };
@@ -59,16 +73,16 @@ export async function runHostedScenario(
   } catch {
     // The failing phase retained its error. Cleanup runs even after partial allocation.
   } finally {
-    record("cleanup", "starting");
+    cleanupRecord("starting");
     try {
       await driver.cleanup();
-      record("cleanup", "passed");
+      cleanupRecord("passed");
     } catch (error) {
       result.cleanup = {
         status: "failed",
         message: error instanceof Error ? error.message : String(error),
       };
-      record("cleanup", "failed", error);
+      cleanupRecord("failed", error);
     }
   }
   if (!result.failure && result.cleanup.status === "passed") result.status = "passed";

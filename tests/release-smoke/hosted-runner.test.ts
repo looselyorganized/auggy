@@ -55,6 +55,24 @@ test("stopped proof preserves the observed status and refuses substituted or liv
     ]),
   ).toThrow();
   expect(() => stoppedScenarioInstance(id, [])).toThrow();
+  expect(
+    stoppedScenarioInstance(id, [
+      { id, status: "EXITED" },
+      { id: "00000000-0000-4000-8000-000000000002", status: "STOPPED" },
+    ]).status,
+  ).toBe("EXITED");
+  expect(() =>
+    stoppedScenarioInstance(id, [
+      { id, status: "STOPPED" },
+      { id: "00000000-0000-4000-8000-000000000002", status: "RUNNING" },
+    ]),
+  ).toThrow();
+  expect(() =>
+    stoppedScenarioInstance(id, [
+      { id, status: "STOPPED" },
+      { id, status: "STOPPED" },
+    ]),
+  ).toThrow();
 });
 
 test("readable error evidence redacts decoded strings and nested keys", () => {

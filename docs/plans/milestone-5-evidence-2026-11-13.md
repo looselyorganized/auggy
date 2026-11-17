@@ -11,6 +11,22 @@ HTTP replacement and recovery are not fully accepted. The
 scope, defects and the proposed smaller harness. Earlier entries record
 historical gate states; their incomplete full-run outcomes remain unchanged.
 
+## Principal review of outstanding hosted work
+
+The [adversarial runner review](./milestone-5-hosted-runner.md#principal-adversarial-review)
+identified and corrected three test defects: phase-recording failures could skip
+cleanup or produce a false pass; rebuilding during the restored-auth hold made
+the check depend on build speed; fixture timing and authentication response
+assertions were too weak. Changes are confined to the tracked test runner and
+its tests. There is no product architecture, volume or runtime change.
+
+The remaining rows are HTTP replacement, HTTP recovery and polling recovery,
+followed by integrated review, final CI and CodeQL findings disposition. This
+review performed local verification and an actual HTTP recovery fixture export;
+it created no hosted resources. The same-image restart path still needs its
+first hosted observation. Earlier accepted evidence and original failed run
+records remain unchanged.
+
 ## Replacement runner: hosted polling lifecycle
 
 The tracked runner on `9461532f`, using the verified unpublished runtime package

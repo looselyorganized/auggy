@@ -39,6 +39,13 @@ import {
 } from "./hosted-railway";
 import { hostedCheck as check, hostedHash as hash, type HostedContext } from "./hosted-context";
 import type { HostedScenario, HostedScenarioDriver } from "./hosted-scenarios";
+import {
+  assertHostedAuthHold,
+  assertHostedExpiredAssertion,
+  assertHostedHttpFixture,
+  HOSTED_HTTP_RESTORE_HOLD_MS,
+  HOSTED_HTTP_EXPIRY_PROBE_TTL_SECONDS,
+} from "./hosted-http-recovery";
 
 type Generation = "baseline" | "edited" | "restored";
 type HttpResult = Awaited<ReturnType<typeof observeScenarioHttp>>;
@@ -56,12 +63,21 @@ const guardSchema = z
   })
   .passthrough();
 export function stoppedScenarioInstance(expectedId: string, instances: unknown[]) {
-  check(instances.length === 1, "Expected one stopped instance");
-  const instance = z
-    .object({ id: z.string().uuid(), status: z.enum(["STOPPED", "EXITED", "REMOVED"]) })
-    .strict()
-    .parse(instances[0]);
-  check(instance.id === expectedId, "Stopped instance identity changed");
+  const observed = z
+    .array(
+      z
+        .object({ id: z.string().uuid(), status: z.enum(["STOPPED", "EXITED", "REMOVED"]) })
+        .strict(),
+    )
+    .min(1)
+    .max(100)
+    .parse(instances);
+  check(
+    new Set(observed.map((i) => i.id)).size === observed.length,
+    "Ambiguous stopped-instance history",
+  );
+  const instance = observed.find((i) => i.id === expectedId);
+  check(instance, "Stopped instance identity changed");
   return instance;
 }
 
@@ -256,8 +272,8 @@ export function createHostedDriver(
     const state = await p.deployment(c.service);
     check(
       state?.deploymentStopped &&
-        state.instances.length === 1 &&
-        ["STOPPED", "EXITED", "REMOVED"].includes(state.instances[0]!.status),
+        state.instances.length > 0 &&
+        state.instances.every((i) => ["STOPPED", "EXITED", "REMOVED"].includes(i.status)),
       "Exact instance did not stop",
     );
     const logs = await p.logs(c.deployment);
@@ -349,6 +365,7 @@ export function createHostedDriver(
           "Scenario variants must preserve agent identity",
         );
         agentId = config.id;
+        if (http) assertHostedHttpFixture(config);
         check(
           config.engine?.model === "integration-fixture-model" &&
             /^http:\/\/127\.0\.0\.1:43\d{3}$/.test(config.engine?.baseURL ?? ""),
@@ -404,7 +421,7 @@ export function createHostedDriver(
           restored && latestHttp && baselineHttp && active.origin,
           "HTTP restoration prerequisites missing",
         );
-        const until = restored.guard.latestRestore.restoredAtMs + 210000;
+        const until = restored.guard.latestRestore.restoredAtMs + HOSTED_HTTP_RESTORE_HOLD_MS;
         check(Date.now() + 5000 < until, "Restore hold already elapsed before observation");
         const policyStore = createSyntheticOrdersStore(":memory:");
         const policy = policyStore.authorizationFor({
@@ -414,24 +431,26 @@ export function createHostedDriver(
           roles: [],
         });
         policyStore.close();
-        const assertion = createExternalAuthAssertion({
-          secret: ctx.variables.AUGGY_AUTH_SECRET!,
-          keyId: ctx.variables.AUGGY_AUTH_KEY_ID!,
-          audience: ctx.variables.AUGGY_AUTH_AUDIENCE!,
-          provider: "fixture-app",
-          subject: "support-agent",
-          orgId: "synthetic-company",
-          ...policy,
-          ttlSeconds: 20,
-        });
-        const post = async (origin: string) => {
+        const mintAssertion = () =>
+          createExternalAuthAssertion({
+            secret: ctx.variables.AUGGY_AUTH_SECRET!,
+            keyId: ctx.variables.AUGGY_AUTH_KEY_ID!,
+            audience: ctx.variables.AUGGY_AUTH_AUDIENCE!,
+            provider: "fixture-app",
+            subject: "support-agent",
+            orgId: "synthetic-company",
+            ...policy,
+            ttlSeconds: HOSTED_HTTP_EXPIRY_PROBE_TTL_SECONDS,
+          });
+        const assertion = mintAssertion();
+        const post = async (origin: string, token = assertion) => {
           const r = await fetch(`${origin}/agent/run`, {
             method: "POST",
             redirect: "manual",
             signal: AbortSignal.timeout(5000),
             headers: {
               "content-type": "application/json",
-              "x-auggy-auth-assertion": assertion,
+              "x-auggy-auth-assertion": token,
               "idempotency-key": ctx.runId,
             },
             body: JSON.stringify({
@@ -447,14 +466,12 @@ export function createHostedDriver(
           });
           const status = r.status,
             retryAfter = r.headers.get("retry-after");
-          await r.body?.cancel();
-          return { status, retryAfter };
+          const body = await r.text();
+          check(Buffer.byteLength(body) <= 1024, "Unexpected authentication error payload");
+          return { status, retryAfter, body: JSON.parse(body) as unknown };
         };
         const held = await post(active.origin);
-        check(
-          held.status === 503 && Number(held.retryAfter) > 0 && Number(held.retryAfter) <= 210,
-          "Restore did not enforce bounded auth hold",
-        );
+        assertHostedAuthHold(held);
         const control = createScenarioControl(ctx, active.deployment, active.consumer);
         const value = z
           .object({ snapshot: z.string() })
@@ -465,13 +482,38 @@ export function createHostedDriver(
           "Held ingress performed work",
         );
         active.sealedSHA256 = hash(value.snapshot);
-        await stopCurrent();
-        active = await start("restored", true);
+        const before = active.deployment;
+        const after = await provider().restart(
+          active.service,
+          before,
+          Math.min(60000, until - Date.now() - 5000),
+        );
+        const logs = await provider().logs(before);
+        check(
+          !logs.some((l) => /activity-deadline-exceeded|lifetime-expired/.test(l.message)) &&
+            logs.filter(
+              (l) =>
+                l.tags.deploymentInstanceId === before.instanceId &&
+                l.message === "auggy-hosted-http-fixtures:quiescent",
+            ).length === 1,
+          "Pre-restart instance did not quiesce cleanly",
+        );
+        active.deployment = after;
+        active.sealedSHA256 = undefined;
         check(
           active.origin && Date.now() + 5000 < until,
           "Restore hold expired before restart observation",
         );
-        check((await post(active.origin)).status === 503, "Restore hold did not survive restart");
+        const restartedHeld = await post(active.origin, mintAssertion());
+        assertHostedAuthHold(restartedHeld);
+        ctx.save("http-hold-restart.json", {
+          before,
+          after,
+          held,
+          restartedHeld,
+          holdUntilMs: until,
+          rebuild: false,
+        });
         const restartedControl = createScenarioControl(ctx, active.deployment, active.consumer);
         const restartedSeal = z
           .object({ snapshot: z.string() })
@@ -492,7 +534,9 @@ export function createHostedDriver(
         }
         active = await start("restored", true);
         check(active.origin, "Restored origin missing");
-        check((await post(active.origin)).status === 401, "Expired held assertion accepted");
+        const expired = await post(active.origin);
+        assertHostedExpiredAssertion(expired);
+        ctx.save("http-held-expiry.json", { expired, assertionRetainedInMemoryOnly: true });
       }
       const control = createScenarioControl(ctx, active.deployment, active.consumer);
       if (http) {

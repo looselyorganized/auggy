@@ -16,6 +16,7 @@ import { telegramFixtureUpdate } from "./integration-fixtures/telegram/protocol-
 import { parseHostedCommandRegistry } from "./integration-fixtures/hosted/remote-command";
 import type { HostedHttpCheckpoint } from "./integration-fixtures/http-container/startup";
 import { hostedCheck as check, hostedHash as hash, type HostedContext } from "./hosted-context";
+import { HOSTED_HTTP_ASSERTION_TTL_SECONDS } from "./hosted-http-recovery";
 import type { ScenarioDeployment } from "./hosted-railway";
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -167,7 +168,8 @@ export async function observeScenarioHttp(
   );
   const result = await observeHostedHttpGeneration({
     agentOrigin: origin,
-    signer: (opts) => createExternalAuthAssertion({ ...opts, ttlSeconds: 180 }),
+    signer: (opts) =>
+      createExternalAuthAssertion({ ...opts, ttlSeconds: HOSTED_HTTP_ASSERTION_TTL_SECONDS }),
     secret: v.AUGGY_AUTH_SECRET,
     keyId: v.AUGGY_AUTH_KEY_ID,
     audience: v.AUGGY_AUTH_AUDIENCE,

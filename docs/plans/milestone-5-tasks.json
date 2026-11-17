@@ -775,13 +775,25 @@
       "lifecycleServices": 1,
       "recoveryServices": 2,
       "verification": {
-        "tests": 58,
-        "assertions": 484,
+        "tests": 65,
+        "assertions": 539,
         "typecheck": "passed",
         "lint": "passed",
         "pollingLocalPreflight": "passed",
         "httpRecoveryLocalPreflight": "passed",
         "linuxBackupRestore": "passed"
+      },
+      "adversarialReview": {
+        "planSection": "milestone-5-hosted-runner.md#principal-adversarial-review",
+        "scope": "tracked runner and remaining hosted acceptance; not final M5 integrated approval",
+        "corrections": [
+          "phase recording failure cannot skip driver cleanup or produce a false pass",
+          "same-deployment/image bounded restart during auth hold instead of rebuild",
+          "local fixture timing validation and exact authentication error assertions"
+        ],
+        "httpRecoveryLocalExport": "passed; no hosted resources created",
+        "newRestartHostedCertification": "pending",
+        "productArchitectureChanged": false
       },
       "productRuntimeChanges": false,
       "hostedExecution": {
