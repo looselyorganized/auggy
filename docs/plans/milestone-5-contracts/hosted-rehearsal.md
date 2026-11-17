@@ -1,10 +1,35 @@
 # M5 G4 — isolated Railway rehearsal
 
-Status on 2026-11-14: authentication and account discovery are verified read-only.
-Local fixture engineering and independent review are in progress. No hosted
-resource, key registration, SSH authentication, or execution approval exists.
+Status: hosted acceptance remains open. Historical attempts and their cleanup
+outcomes are recorded in `../milestone-5-evidence-2026-11-13.md`; authorization
+for a consumed attempt does not authorize replaying its mutation journal.
 This record amends the internal C4 preparation contract; it is not a product API
 or a claim that M5 is complete.
+
+## Focused validation and preflight
+
+Use the existing TypeScript executor, Railway adapter and bounded child helper.
+The one-off Python startup runner is retired; retain its original evidence only.
+Do not add a second HTTP stack to repeat the managed CLI's health request.
+Require the CLI's reported HTTP readiness, not merely exit zero or platform
+SUCCESS. The worker profile must report HTTP as not applicable. Channel and
+business effects still require their own observations.
+
+Before allocation, run the installed CLI's passive `export docker` for each
+managed artifact, with the selected ingress, port and health path. This validates
+archive format, local dependency containment and profile compatibility without
+Railway credentials. The shared `preflightHostedExport` helper removes its scratch
+directory on success and failure. The existing executor invokes this in `--check`
+and before execution; cleanup is independent of this preflight.
+
+Choose required checks before starting. A startup regression needs its focused
+local tests and packaged/hosted startup proof; it does not require replaying the
+full four-service experiment. The full HTTP, polling, replacement and recovery
+requirements below remain mandatory for M5 acceptance. Preparation, product
+execution and resource cleanup have separate outcomes. Capture startup logs
+before teardown, stop after the selected assertions pass, and expand only for a
+changed boundary or observed failure. Preserve resource ownership, deadlines,
+secret redaction and verified cleanup in every scope.
 
 ## Allocation and approval
 
@@ -31,11 +56,38 @@ Read-only discovery establishes the API surface, not acceptance or enforcement
 of these settings. A refused setter, wider readback or unknown binding stops the
 experiment and enters cleanup; it never widens the approved limits.
 
-The proposed execution budget is two hours plus ten minutes reserved for cleanup.
+The current execution budget is one hour plus ten minutes reserved for cleanup.
 The $5 cost target uses project-scoped usage monitoring. It is **not a provider
 hard spending cap**; usage reporting can lag. Do not change workspace billing
 controls, which affect unrelated applications. Creation rate limits and all
-polling/retry counts belong in the finite action manifest.
+polling policies belong in the frozen executor and recorded action claims.
+
+## Volume readiness and cleanup ownership
+
+After a confirmed volume creation, allow 180 seconds for attachment, clipped to
+the existing execution and approval deadlines. Observe immediately, then wait
+five seconds after each completed observation. Request execution and process
+reaping must fit the remaining budget. Progress never resets the deadline, and
+provisioning must not consume the cleanup reserve or extend workload watchdogs.
+
+Only the recognized absent-instance and owned unattached-instance states are
+pending. Workload admission still requires the strict attachment binder and
+pending-instance identity continuity. Invalid ownership or ambiguous inventory
+fails immediately. Retain bounded sanitized readbacks and distinguish attachment
+timeout from budget exhaustion and invalid readback; never recreate a volume
+because readiness timed out.
+
+Cleanup derives ownership from hash-verified successful creation receipts,
+including resources whose readiness binding never succeeded. Before deletion,
+retain a complete fresh inventory and verify exact project, volume, environment
+and expected-service-or-unattached identity. Readiness, mount and usage failures
+alone must not prevent removal of a proven-owned resource. Foreign or ambiguous
+attachments cannot be bypassed through parent service/project deletion.
+
+An exact absent resource may be skipped only after complete inventory validation.
+Unknown creation outcomes are not adopted or replayed. Individual cleanup
+failures remain failures even when later parent deletion establishes absence.
+These are internal release-harness contracts, not public agent runtime APIs.
 
 ## Source, transport and fixture boundaries
 

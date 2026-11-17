@@ -9,6 +9,7 @@ import { readBoundedRegularFile } from "./bounded-file";
 import {
   assertHostedIntegrationApproval,
   assertHostedProjectAvailable,
+  assertHostedVolumeOwnership,
   prepareHostedIntegration,
   projectHostedServicePlacement,
   type HostedDeploymentBinding,
@@ -18,7 +19,7 @@ import {
   type HostedServiceRole,
   type HostedSshKeyBinding,
   type HostedVolumeAlias,
-  type HostedVolumeBinding,
+  type HostedVolumeOwnership,
 } from "./integration-hosted";
 import { hostedSshPublicIdentity } from "./integration-hosted-transport";
 
@@ -312,7 +313,7 @@ export type HostedRailwayAction = { actionId: string } & (
   | { operation: "deployment-read"; service: HostedServiceBinding; returnedDeploymentId: string }
   | { operation: "usage"; project: HostedProjectBinding }
   | { operation: "deployment-stop" | "deployment-delete"; deployment: HostedDeploymentBinding }
-  | { operation: "volume-delete"; volume: HostedVolumeBinding }
+  | { operation: "volume-delete"; volume: HostedVolumeOwnership }
   | { operation: "service-delete"; service: HostedServiceBinding }
   | { operation: "project-delete"; project: HostedProjectBinding }
   | { operation: "key-delete"; key: HostedSshKeyBinding }
@@ -646,16 +647,7 @@ export function prepareHostedRailwayAction(
       break;
     }
     case "volume-delete": {
-      serviceTarget(prepared, action.volume);
-      uuid.parse(action.volume.volumeId);
-      uuid.parse(action.volume.volumeInstanceId);
-      const approved = plan.railway.volumes.find((entry) => entry.alias === action.volume.alias);
-      check(
-        approved &&
-          approved.serviceRole === action.volume.role &&
-          approved.sizeMB === action.volume.sizeMB,
-        "Hosted API volume is not an approved owned target",
-      );
+      assertHostedVolumeOwnership(prepared, action.volume);
       variables = { id: action.volume.volumeId };
       break;
     }
@@ -750,12 +742,34 @@ function assertRemaining(gate: Gate, prepared: Prepared, operation: HostedRailwa
   const end =
     gate.startedAt +
     (limits.maxRunSeconds + (gate.phase === "cleanup" ? limits.cleanupReserveSeconds : 0)) * 1000;
+  return Math.min(end, Date.parse(gate.approval.expiresAt));
+}
+
+/** A per-request deadline can only shorten the enclosing approved phase. */
+export interface HostedRailwayRequestOptions {
+  deadlineMs: number;
+}
+function requestBudget(
+  gate: Gate | undefined,
+  prepared: Prepared,
+  operation: HostedRailwayOperation,
+  deadlineMs?: number,
+) {
+  if (deadlineMs !== undefined)
+    check(
+      Number.isSafeInteger(deadlineMs) && deadlineMs > 0,
+      "Invalid hosted API request deadline",
+    );
+  const phaseEnd = gate ? assertRemaining(gate, prepared, operation) : Infinity;
+  const end = Math.min(phaseEnd, deadlineMs ?? Infinity);
+  const available = Math.floor(end - Date.now() - APPLICATION_BOUNDS.reapMs);
   check(
-    Date.now() + API_MS + APPLICATION_BOUNDS.reapMs <=
-      Math.min(end, Date.parse(gate.approval.expiresAt)),
+    available > 0 && (deadlineMs !== undefined || available >= API_MS),
     "Insufficient approved API and reap time",
   );
+  return { timeoutMs: Math.min(API_MS, available), end };
 }
+
 function adapter(
   options: HostedRailwayAdapterOptions,
   runner: Runner,
@@ -781,7 +795,17 @@ function adapter(
     closeSync(directory.fd);
   }
   return {
-    async run(action: HostedRailwayAction, gate?: Gate): Promise<HostedRailwayResult> {
+    async run(
+      action: HostedRailwayAction,
+      gate?: Gate,
+      request?: HostedRailwayRequestOptions,
+    ): Promise<HostedRailwayResult> {
+      const deadlineMs = request?.deadlineMs;
+      if (request !== undefined)
+        check(
+          Number.isSafeInteger(deadlineMs) && deadlineMs! > 0,
+          "Invalid hosted API request deadline",
+        );
       const built = prepareHostedRailwayAction(
         prepared,
         action,
@@ -793,7 +817,7 @@ function adapter(
           ? serviceTarget(prepared, action.service).serviceId
           : undefined;
       if (mutation) check(gate, "Explicit hosted approval is required for every mutation");
-      if (gate) assertRemaining(gate, prepared, built.operation);
+      requestBudget(gate, prepared, built.operation, deadlineMs);
       verifyExecutable();
       const attempt = {
         actionId: built.actionId,
@@ -817,8 +841,8 @@ function adapter(
       };
       let started = false;
       try {
-        if (gate) assertRemaining(gate, prepared, built.operation);
         verifyExecutable();
+        const budget = requestBudget(gate, prepared, built.operation, deadlineMs);
         started = true;
         const raw = await runner({
           command: [CLI, "api", built.query, "--variables", "@-", "--compact"],
@@ -826,7 +850,7 @@ function adapter(
           env: { HOME: home, PATH: "/usr/bin:/bin", LANG: "C.UTF-8", NO_COLOR: "1", CI: "true" },
           secrets: [],
           input: Buffer.from(built.input),
-          timeoutMs: API_MS,
+          timeoutMs: budget.timeoutMs,
           maxOutputBytes: BYTES,
         });
         result = {
@@ -837,10 +861,12 @@ function adapter(
           child: childFacts(raw),
           response: null,
         };
-        const childSucceeded = successful(result.child!);
+        const withinDeadline = Date.now() <= budget.end;
+        const childSucceeded = withinDeadline && successful(result.child!);
         // Native GraphQL errors can exit 1. Diagnose only complete, bounded service reads;
         // a failed child never supplies a response or successful admission.
         const rejectedService =
+          withinDeadline &&
           built.operation === "service-read" &&
           raw.exitCode === 1 &&
           successful({ ...result.child!, exitCode: 0 });

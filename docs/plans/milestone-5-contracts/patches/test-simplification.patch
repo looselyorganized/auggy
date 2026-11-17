@@ -1,0 +1,79 @@
+--- a/deploy.ts
++++ b/deploy.ts
+@@ -30,6 +30,7 @@
+ import { validateNativeConfig, verifyNativeDescriptorBytes } from "./native-identity";
+ import { preserveCopiedRuntimeLinks, verifyConsumerRuntime } from "./consumer-runtime";
+ import type { RehearsalStep } from "./sequence";
++import { preflightHostedExport } from "/Users/bigviking/Documents/github/projects/lo/augment-1/.worktrees/portable-agent-integration/scripts/release-smoke/integration-consumer";
+ export type DeployStep = Extract<RehearsalStep, { kind: "deploy" }>;
+ export function makePrivateDirectory(path: string) {
+   mkdirSync(path, { mode: 0o700 });
+@@ -153,6 +154,26 @@
+   else check(checkpointSHA256 === null, "Worker has no HTTP downstream checkpoint");
+   return variables;
+ }
++/** No provider calls, credential copies or resource allocation during local preflight. */
++export async function preflightManagedConsumers(inputs: FrozenInputs) {
++  for (const artifact of inputs.artifacts) {
++    if (artifact.artifact.purpose === "maintenance") continue;
++    const manifest = loadJson<{ profile: import("/Users/bigviking/Documents/github/projects/lo/augment-1/.worktrees/portable-agent-integration/src/cli/deploy/contracts").DeploymentProfile }>(
++      join(within(artifact.context), "auggy-deployment.json"),
++    );
++    try {
++      const result = await preflightHostedExport({
++        consumer: within(artifact.consumer),
++        profile: manifest.profile,
++      });
++      console.log(JSON.stringify({ phase: "local-export-preflight", artifact: artifact.artifact.id, ...result }));
++    } catch (error) {
++      console.log(JSON.stringify({ phase: "local-export-preflight", artifact: artifact.artifact.id, status: "failed", allocatedResources: false }));
++      throw error;
++    }
++  }
++}
++
+ export async function prepareDeployPhase(options: {
+   step: DeployStep;
+   artifact: FrozenArtifact;
+--- a/main.ts
++++ b/main.ts
+@@ -34,6 +34,7 @@
+ import { check, persist, type RemoteSessionOptions } from "./remote";
+ import {
+   prepareDeployPhase,
++  preflightManagedConsumers,
+   makePrivateDirectory,
+   writePrivate,
+   jsonBytes,
+@@ -125,6 +126,7 @@
+   };
+   verify();
+   for (const artifact of inputs.artifacts) verifyInstalledArtifact(artifact);
++  if (mode !== "cleanup") await preflightManagedConsumers(inputs);
+   if (mode === "check") {
+     console.log(
+       JSON.stringify({
+@@ -425,6 +427,14 @@
+           const observedPlatform = platform(step.id),
+             service = controller.service(step.role),
+             volume = controller.volume(step.volume);
++          if (step.mode !== "maintenance") {
++            const readiness = runner.cliReportedReadiness;
++            check(
++              readiness?.reason === "reported" && readiness.platform === "ready" &&
++                readiness.http === (artifact.artifact.profile === "http" ? "ready" : "not-applicable"),
++              "Managed CLI did not verify the selected profile's readiness",
++            );
++          }
+           let expectedDomain = latest.get(step.role)?.expectedDomain ?? null;
+           if (artifact.artifact.profile === "http") {
+             check(runner.cloudRecord?.url, "Managed HTTP deployment omitted its URL");
+@@ -688,6 +698,8 @@
+       const cleanup = await controller.cleanup();
+       const report = {
+         status: !failed && cleanup.complete ? "passed" : "incomplete",
++        preparation: "passed",
++        execution: failed ? "failed" : "passed",
+         planSHA256: prepared.sha256,
+         completedRootActions: phaseResults.size,
+         cleanup,

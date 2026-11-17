@@ -272,95 +272,6 @@ jobs:
       - name: Build creator console
         run: bun run build:admin
 
-  deterministic_tests:
-    name: v1 deterministic runtime gate
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.3.14
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Run deterministic v1 tests
-        run: |
-          bun scripts/test-surface-inventory.ts run-runtime-files \
-            tests/cli/create-installs-deps.test.ts \
-            tests/cli/add-installs-deps.test.ts \
-            tests/cli/commands/augment.test.ts \
-            tests/cli/commands/mcp.test.ts \
-            tests/cli/commands/run.test.ts \
-            tests/cli/commands/doctor.test.ts \
-            tests/cli/commands/logs.test.ts \
-            tests/cli/mcp-config.test.ts \
-            tests/cli/deploy.test.ts \
-            tests/cli/deploy/bundle.test.ts \
-            tests/cli/deploy/dockerfile.test.ts \
-            tests/cli/deploy/health.test.ts \
-            tests/cli/deploy/railway-cli.test.ts \
-            tests/cli/deploy/secrets.test.ts \
-            tests/cli/console-chat-config.test.ts \
-            tests/cli/scaffold-package-json.test.ts \
-            tests/cli/model-picker.test.ts \
-            tests/kernel/thread-history-persistence.test.ts \
-            tests/transports/admin/admin-static.test.ts \
-            tests/transports/admin/console-chat-store.test.ts \
-            tests/transports/admin/console-chat-routes.test.ts \
-            tests/transports/web-console-persistence.test.ts \
-            tests/augments/mcp.test.ts \
-            tests/augments/knowledge.test.ts \
-            tests/augments/notify.test.ts \
-            tests/augments/telegram-transport.test.ts \
-            tests/engines/anthropic.test.ts \
-            tests/engines/openai.test.ts \
-            tests/engines/openrouter.test.ts \
-            tests/engines/ollama.test.ts
-        env:
-          # Tests that need a model use a mock — no real API key in CI.
-          ANTHROPIC_API_KEY: sk-ant-mock-do-not-use
-          OPENAI_API_KEY: sk-mock-do-not-use
-
-  linux_boundaries:
-    name: v1 Linux boundary gate (${{ matrix.name }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: filesystem
-            test: tests/augments/filesystem.test.ts
-          - name: managed-files
-            test: tests/transports/admin/admin-managed-files.test.ts
-          - name: overrides
-            test: tests/lib/admin-overrides.test.ts
-          - name: resolver
-            test: tests/cli/augment-resolver.test.ts
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.3.14
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Exercise Linux security boundary
-        env:
-          TEST_PATH: ${{ matrix.test }}
-        run: bun scripts/test-surface-inventory.ts run-runtime-files "$TEST_PATH"
-
   runtime_shards:
     name: v1 runtime shard (${{ matrix.shard }})
     needs: inventory
@@ -435,8 +346,6 @@ jobs:
       - pricing
       - inventory
       - console
-      - deterministic_tests
-      - linux_boundaries
       - runtime_shards
       - postgres_coordination
       - temporal_example
@@ -455,8 +364,6 @@ jobs:
           PRICING_RESULT: ${{ needs.pricing.result }}
           INVENTORY_RESULT: ${{ needs.inventory.result }}
           CONSOLE_RESULT: ${{ needs.console.result }}
-          TEST_RESULT: ${{ needs.deterministic_tests.result }}
-          LINUX_RESULT: ${{ needs.linux_boundaries.result }}
           SHARD_RESULT: ${{ needs.runtime_shards.result }}
           POSTGRES_COORDINATION_RESULT: ${{ needs.postgres_coordination.result }}
           TEMPORAL_EXAMPLE_RESULT: ${{ needs.temporal_example.result }}
@@ -464,7 +371,7 @@ jobs:
           COMPANY_APP_RESULT: ${{ needs.company_app.result }}
           PORTABLE_INTEGRATION_RESULT: ${{ needs.portable_integration.result }}
         run: |
-          if [[ "$LINT_RESULT" != "success" || "$TYPECHECK_RESULT" != "success" || "$DEPENDENCY_AUDIT_RESULT" != "success" || "$PRICING_RESULT" != "success" || "$INVENTORY_RESULT" != "success" || "$CONSOLE_RESULT" != "success" || "$TEST_RESULT" != "success" || "$LINUX_RESULT" != "success" || "$SHARD_RESULT" != "success" || "$POSTGRES_COORDINATION_RESULT" != "success" || "$TEMPORAL_EXAMPLE_RESULT" != "success" || "$INSPECTABLE_EXAMPLE_RESULT" != "success" || "$COMPANY_APP_RESULT" != "success" || "$PORTABLE_INTEGRATION_RESULT" != "success" ]]; then
-            echo "lint=$LINT_RESULT typecheck=$TYPECHECK_RESULT dependency-audit=$DEPENDENCY_AUDIT_RESULT pricing=$PRICING_RESULT inventory=$INVENTORY_RESULT console=$CONSOLE_RESULT deterministic-tests=$TEST_RESULT linux-boundaries=$LINUX_RESULT runtime-shards=$SHARD_RESULT postgres-coordination=$POSTGRES_COORDINATION_RESULT temporal-example=$TEMPORAL_EXAMPLE_RESULT inspectable-example=$INSPECTABLE_EXAMPLE_RESULT company-app=$COMPANY_APP_RESULT portable-integration=$PORTABLE_INTEGRATION_RESULT"
+          if [[ "$LINT_RESULT" != "success" || "$TYPECHECK_RESULT" != "success" || "$DEPENDENCY_AUDIT_RESULT" != "success" || "$PRICING_RESULT" != "success" || "$INVENTORY_RESULT" != "success" || "$CONSOLE_RESULT" != "success" || "$SHARD_RESULT" != "success" || "$POSTGRES_COORDINATION_RESULT" != "success" || "$TEMPORAL_EXAMPLE_RESULT" != "success" || "$INSPECTABLE_EXAMPLE_RESULT" != "success" || "$COMPANY_APP_RESULT" != "success" || "$PORTABLE_INTEGRATION_RESULT" != "success" ]]; then
+            echo "lint=$LINT_RESULT typecheck=$TYPECHECK_RESULT dependency-audit=$DEPENDENCY_AUDIT_RESULT pricing=$PRICING_RESULT inventory=$INVENTORY_RESULT console=$CONSOLE_RESULT runtime-shards=$SHARD_RESULT postgres-coordination=$POSTGRES_COORDINATION_RESULT temporal-example=$TEMPORAL_EXAMPLE_RESULT inspectable-example=$INSPECTABLE_EXAMPLE_RESULT company-app=$COMPANY_APP_RESULT portable-integration=$PORTABLE_INTEGRATION_RESULT"
             exit 1
           fi

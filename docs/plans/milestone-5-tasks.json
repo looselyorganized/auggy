@@ -75,8 +75,8 @@
         "concrete hosted execution approval"
       ],
       "pending": [
-        "Resolve observed volume-provisioning-window exhaustion and likely cleanup inventory mismatch; no automatic repair/retry",
-        "Exercise accepted post-deployment diagnostics and complete actual hosted behavior/recovery coverage",
+        "Build a fresh reviewed candidate after the accepted volume rollback and harness simplification; consumed frozen runs cannot be replayed",
+        "Complete hosted HTTP and polling operations, replacement and recovery; narrow startup and CLI health are verified separately",
         "Verify final candidate CI and final M5 review before merge"
       ],
       "discovery": {
@@ -143,33 +143,52 @@
         }
       },
       "lastExecution": {
+        "runId": "2ae0a736-r9",
         "status": "incomplete",
-        "runId": "2ae0a736-r8",
-        "planSHA256": "1c8d47a915056966d92d7f4cfe4141991487c0c91872b4fab21319cc4502cfc8",
-        "authorization": "/private/tmp/m5-g4-explicit-approval-r8.json",
-        "diagnosticsAcceptance": "/private/tmp/m5-g4-post-deployment-diagnostics-acceptance.json",
-        "failureStage": "worker-original-bind",
-        "failure": "six observations exhausted with zero volume instances",
-        "eventualAttachment": "exact owned worker volume correctly attached at/app/data in cleanup-http-service-precondition before any service deletion",
-        "postDeploymentDiagnosticsLiveExercised": false,
+        "planSHA256": "fb1fbb1089163873d029248280a862c7c95251bf5b5dda90812b200c4c11a682",
+        "authorization": "/private/tmp/m5-g4-explicit-approval-r9.json",
+        "durationMs": 325248,
+        "volumeObservations": {
+          "http-original": 2,
+          "worker-original": 2
+        },
+        "failureStage": "http-base-deploy/deployment-binding",
+        "managedCliCompleted": true,
+        "cliProcessExitCode": 0,
+        "cliProcessDurationMs": 197456,
+        "cliReportedReadiness": {
+          "source": "cli-summary",
+          "platform": "ready",
+          "http": "timed-out",
+          "reason": "reported"
+        },
+        "deploymentReadback": {
+          "status": "SUCCESS",
+          "deploymentStopped": true,
+          "instanceStatuses": [
+            "CRASHED"
+          ]
+        },
         "completedRootActions": 0,
         "cleanup": {
-          "complete": false,
-          "failures": [
-            "cleanup-http-original"
-          ],
+          "complete": true,
+          "failures": [],
           "projectAbsent": true,
           "keyAbsent": true,
           "unknownAllocations": []
         },
-        "cleanupReview": {
-          "reviewer": "volume_plan_review",
-          "likelyCause": "Cleanup inventory permits successfully bound volumes only; known created-but-unbound worker volume is omitted and rejected as unexpected during HTTP volume cleanup.",
-          "confidence": "strongly supported by code and adjacent retained snapshots; exact failed cleanup readback not retained",
-          "confirmed": "projectDelete:true plus complete active-project/key inventories establish project/key absence",
-          "notClaimed": "individual volume-delete calls succeeded or cleanup.complete is true"
-        },
-        "automaticRetriesRemaining": 0
+        "bothVolumeDeletesConfirmed": true,
+        "hostedAcceptance": false,
+        "runtimeStopCause": "not established by retained target readback; startup/watchdog cause not proven",
+        "retryPerformed": false,
+        "rca": {
+          "status": "reproducible-defect-found-historical-cause-unconfirmed",
+          "evidence": "/private/tmp/m5-r9-http-rca/rca.json",
+          "candidate": "nonempty mount root at mode0755, e.g. filesystem lost+found, rejected before HTTP startup",
+          "control": "same Linux AMD64 image/environment with empty0755 mount reaches HTTP200",
+          "gap": "r9 startup logs and mount contents unavailable after project deletion",
+          "hostedResourcesCreated": false
+        }
       },
       "previousExecutions": [
         {
@@ -568,7 +587,8 @@
       {
         "id": "R2",
         "status": "resolved_for_preparation",
-        "decision": "Railway-only empty-owned-mount mode initialization before ordinary admission; generic roots operator-provisioned"
+        "decision": "Railway-only empty-owned-mount mode initialization before ordinary admission; generic roots operator-provisioned",
+        "supersededBy": "railwayVolumeCompatibilityRollback: user-authorized root-only permission initialization includes populated owned mounts; generic roots remain operator-provisioned"
       }
     ],
     "remainingFreezeChecks": []
@@ -667,6 +687,68 @@
         "ownedCleanup": "complete"
       },
       "originalUbuntu515Cause": "unexplained"
+    },
+    "volumeReadinessCleanup": {
+      "status": "locally-accepted",
+      "receipt": "/private/tmp/m5-g4-volume-readiness-cleanup-acceptance.json",
+      "reviewer": "volume_plan_review",
+      "tests": 117,
+      "assertions": 1412,
+      "typechecks": "repository/executor/controller passed",
+      "lint": "passed",
+      "privatePatch": "docs/plans/milestone-5-contracts/patches/volume-readiness-cleanup.patch",
+      "candidate": {
+        "runId": "2ae0a736-r9",
+        "planSHA256": "fb1fbb1089163873d029248280a862c7c95251bf5b5dda90812b200c4c11a682",
+        "preflight": "passed",
+        "executed": true,
+        "approvalPresent": true,
+        "result": "/private/tmp/m5-g4-r9-result.json"
+      },
+      "hostedAcceptance": false,
+      "hostedValidation": "allocation and cleanup passed; HTTP health timed out and stopped/crashed target refused; no behavior scenarios completed"
+    },
+    "railwayVolumeCompatibilityRollback": {
+      "status": "locally-accepted",
+      "receipt": "/private/tmp/m5-volume-rollback-proof/acceptance.json",
+      "reviewer": "volume_plan_review",
+      "tests": 53,
+      "assertions": 137,
+      "containerHealthStatus": 200,
+      "dataLayoutChanged": false,
+      "hostedValidation": false,
+      "freshCandidateRequired": true
+    },
+    "testExecutionSimplification": {
+      "status": "locally_verified",
+      "scope": "Remove duplicate executions and ad hoc runner; preserve core, packaged, browser, container and hosted recovery coverage",
+      "removedDuplicatePrimaryTestFileInvocations": 34,
+      "releaseRehearsal": "Keeps packed-consumer and release checks; source lint/tests/examples owned by primary CI",
+      "requiredGitHubChecksVerified": [
+        "Analyze (javascript-typescript)",
+        "v1 release gate",
+        "Release rehearsal"
+      ],
+      "integrationStages": [
+        "local",
+        "container",
+        "all"
+      ],
+      "ciDefaultStage": "all",
+      "hosted": "Existing TypeScript executor, installed-CLI export before allocation, CLI readiness without a second HTTP client; Python runner retired",
+      "verification": {
+        "focusedTests": 37,
+        "assertions": 319,
+        "repositoryTypecheck": "passed",
+        "executorTypecheck": "passed",
+        "lint": "passed",
+        "shellSyntax": "passed",
+        "patchDryRun": "passed"
+      },
+      "executorPatch": "milestone-5-contracts/patches/test-simplification.patch",
+      "hostedExecutionPerformed": false,
+      "productionArchitectureChanged": false,
+      "fullHostedAcceptance": "outstanding"
     }
   }
 }

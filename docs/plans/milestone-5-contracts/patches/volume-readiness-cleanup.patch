@@ -1,0 +1,1179 @@
+--- a/auggy-m5-hosted-controller/controller.ts
++++ b/auggy-m5-hosted-controller/controller.ts
+@@ -1,18 +1,20 @@
+ /** Private finite allocation/teardown contribution. No CLI main and no implicit approval. */
+ import { createHash } from "node:crypto";
+ import { closeSync, fstatSync } from "node:fs";
++import { APPLICATION_BOUNDS } from "/Users/bigviking/Documents/github/projects/lo/augment-1/.worktrees/portable-agent-integration/scripts/release-smoke/application-child";
+ import { readBoundedRegularFile } from "/Users/bigviking/Documents/github/projects/lo/augment-1/.worktrees/portable-agent-integration/scripts/release-smoke/bounded-file";
+ import {
+   assertHostedInstanceBinding,
+   assertHostedIntegrationApproval,
+   assertHostedProjectAvailable,
+   assertHostedServicePlacement,
+-  hostedAutomaticRestartsDisabled,
++  assertHostedVolumeCleanupInventory,
+   bindHostedDeployment,
+   bindHostedProjectAllocation,
+   bindHostedServiceAdmission,
+   bindHostedSshKey,
+   bindHostedVolumeAllocation,
++  bindHostedVolumeOwnership,
+   type HostedDeploymentBinding,
+   type HostedIntegrationApproval,
+   type HostedObservedInputs,
+@@ -23,6 +25,8 @@
+   type HostedSshKeyBinding,
+   type HostedVolumeAlias,
+   type HostedVolumeBinding,
++  type HostedVolumeOwnership,
++  hostedAutomaticRestartsDisabled,
+   prepareHostedIntegration,
+ } from "/Users/bigviking/Documents/github/projects/lo/augment-1/.worktrees/portable-agent-integration/scripts/release-smoke/integration-hosted";
+ import {
+@@ -50,9 +54,11 @@
+ const roles = ["http", "worker", "http-recovery", "worker-recovery"] as const;
+ const aliases = ["http-original", "worker-original", "http-restore", "worker-restore"] as const;
+ const MAX_BYTES = 2 * 1024 * 1024;
+-const VOLUME_BIND_READS = 6;
+-const VOLUME_BIND_WAIT_MS = 1000;
+-const PREPARATION = "/private/tmp/auggy-m5-run-2ae0a736-r8/preparation.json";
++const VOLUME_BIND_TIMEOUT_MS = 180_000;
++const VOLUME_BIND_WAIT_MS = 5_000;
++// Immediate observation followed by completion-relative waits; no read starts at the deadline.
++const VOLUME_BIND_READS = Math.ceil(VOLUME_BIND_TIMEOUT_MS / VOLUME_BIND_WAIT_MS);
++const PREPARATION = "/private/tmp/auggy-m5-run-2ae0a736-r9/preparation.json";
+ const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
+ const encode = (value: unknown) => Buffer.from(`${JSON.stringify(value)}\n`);
+ function check(value: unknown, message: string): asserts value {
+@@ -221,6 +227,7 @@
+   options: ControllerOptions,
+   createApi: typeof createHostedRailwayAdapter,
+   pause: (milliseconds: number) => Promise<void>,
++  clock: () => number,
+ ) {
+   const prepared = prepareHostedIntegration(options.prepared.plan);
+   check(prepared.sha256 === options.prepared.sha256, "Controller plan changed");
+@@ -311,7 +318,7 @@
+     lease.assertIdentity();
+     check((fstatSync(evidence.fd).mode & 0o777) === 0o700, "Controller evidence is not private");
+     options.verifyFrozenInputs();
+-    assertHostedIntegrationApproval(gate());
++    assertHostedIntegrationApproval({ ...gate(), now: clock() });
+   };
+   const writeEvidence = (id: string, value: unknown) => {
+     check(/^[a-z][a-z0-9-]{0,63}$/.test(id), "Invalid evidence identity");
+@@ -398,12 +405,22 @@
+   const readFailures = new WeakMap<Error, ReadDiagnostic>();
+   const readbackEvidence = new Map<string, { file: string; sha256: string }>();
+   const volumeObservations = new Map<string, { file: string; sha256: string }[]>();
++  const volumeReadiness = new Map<
++    string,
++    {
++      confirmedAt: number;
++      deadlineMs: number;
++      timeoutMs: number;
++      delayMs: number;
++      maxReads: number;
++    }
++  >();
+   const refuseRead = (diagnostic: ReadDiagnostic): never => {
+     const error = new Error("Readback or binding refused");
+     readFailures.set(error, diagnostic);
+     throw error;
+   };
+-  const query = async (action: HostedRailwayAction) => {
++  const query = async (action: HostedRailwayAction, deadlineMs?: number, evidenceId?: string) => {
+     admission();
+     executionPrefix(action.actionId);
+     const volumeBind =
+@@ -412,7 +429,12 @@
+     const observations = volumeBind ? (volumeObservations.get(action.actionId) ?? []) : null;
+     if (observations)
+       check(observations.length < VOLUME_BIND_READS, "Volume readback limit exhausted");
+-    const result = await api.run(action, gate());
++    const result = await api.run(
++      action,
++      gate(),
++      deadlineMs === undefined ? undefined : { deadlineMs },
++    );
++    if (evidenceId) writeEvidence(evidenceId, { kind: "api-read", result });
+     if (action.operation === "service-read" || volumeBind) {
+       const id = `${action.actionId}-${action.operation}${observations ? `-${observations.length + 1}` : ""}`;
+       const reference = {
+@@ -476,7 +498,7 @@
+           ...(volumeObservations.has(id)
+             ? {
+                 readbackObservations: volumeObservations.get(id),
+-                provisioning: { maxReads: VOLUME_BIND_READS, delayMs: VOLUME_BIND_WAIT_MS },
++                provisioning: volumeReadiness.get(id),
+               }
+             : {}),
+         });
+@@ -538,9 +560,13 @@
+       workspaceId: item.workspaceId,
+     })),
+   });
+-  async function freshProject(actionId: string) {
++  async function freshProject(actionId: string, deadlineMs?: number, preconditionId?: string) {
+     const bound = project();
+-    const result = await query({ actionId, operation: "project-read", project: bound });
++    const result = await query(
++      { actionId, operation: "project-read", project: bound },
++      deadlineMs,
++      preconditionId,
++    );
+     const value = object(result.data.project);
+     check(
+       value.id === bound.projectId &&
+@@ -630,7 +656,7 @@
+       const observation = journal.observe(`${other}-create`);
+       if (observation.outcome) last = Math.max(last, observation.outcome.finishedAt);
+     }
+-    const delay = Math.max(0, last + 31_000 - Date.now());
++    const delay = Math.max(0, last + 31_000 - clock());
+     if (delay) {
+       admission();
+       await pause(delay);
+@@ -687,112 +713,140 @@
+       service: target,
+       alias,
+     });
+-    return recorded(
+-      `${alias}-bind`,
+-      { alias, maxReads: VOLUME_BIND_READS, delayMs: VOLUME_BIND_WAIT_MS },
+-      async () => {
+-        let pendingInstanceId: string | undefined;
+-        for (let observation = 0; observation < VOLUME_BIND_READS; observation++) {
+-          const readback = await freshProject(`${alias}-bind`);
+-          const input = {
+-            prepared,
+-            service: target,
+-            alias,
+-            creation: apiResponse(`${alias}-create`),
+-            readback,
+-            previousVolumeIds: prior,
++    const confirmedAt = journal.observe(`${alias}-create`).outcome!.finishedAt;
++    const deadlineMs = Math.min(
++      confirmedAt + VOLUME_BIND_TIMEOUT_MS,
++      journal.run().startedAt + plan.limits.maxRunSeconds * 1000,
++      Date.parse(options.approval.expiresAt),
++    );
++    const provisioning = {
++      confirmedAt,
++      deadlineMs,
++      timeoutMs: VOLUME_BIND_TIMEOUT_MS,
++      delayMs: VOLUME_BIND_WAIT_MS,
++      maxReads: VOLUME_BIND_READS,
++    };
++    volumeReadiness.set(`${alias}-bind`, provisioning);
++    return recorded(`${alias}-bind`, { alias, ...provisioning }, async () => {
++      let pendingInstanceId: string | undefined;
++      const assertReadinessTime = () => {
++        if (clock() >= deadlineMs)
++          refuseRead({
++            stage: "binding",
++            provisioningExhausted: true,
++            failedPredicates: ["readinessDeadline"],
++          });
++        admission();
++      };
++      for (let observation = 0; observation < VOLUME_BIND_READS; observation++) {
++        assertReadinessTime();
++        const readback = await freshProject(`${alias}-bind`, deadlineMs);
++        assertReadinessTime();
++        const input = {
++          prepared,
++          service: target,
++          alias,
++          creation: apiResponse(`${alias}-create`),
++          readback,
++          previousVolumeIds: prior,
++        };
++        const created = object(input.creation.data.volumeCreate);
++        const project = object(readback.data.project);
++        const volumes = nodes(project.volumes);
++        const matches = volumes.filter((volume) => volume.id === created.id);
++        const instances = matches.length === 1 ? nodes(matches[0]!.volumeInstances) : [];
++        const instance = instances.length === 1 ? instances[0]! : {};
++        // A later valid-looking replacement must not bypass continuity via the strict binder.
++        if (pendingInstanceId !== undefined && instance.id !== pendingInstanceId) {
++          return refuseRead({ stage: "binding", failedPredicates: ["pendingInstanceIdentity"] });
++        }
++        let binding: HostedVolumeBinding;
++        try {
++          binding = bindHostedVolumeAllocation(input);
++        } catch {
++          // Diagnose the existing binder's refusal without changing its admission rules.
++          const permitted = new Set([...prior, created.id]);
++          const targetServices = nodes(project.services).filter(
++            (service) => service.id === target.serviceId,
++          );
++          const ownership = {
++            distinctVolumeId: !prior.includes(created.id),
++            volumeAllowance: prior.length < plan.limits.maxVolumes,
++            distinctPreviousIds: new Set(prior).size === prior.length,
++            createdParent: created.projectId === target.projectId,
++            projectId: project.id === target.projectId,
++            workspaceId: project.workspaceId === target.workspaceId,
++            ownedVolumeInventory: volumes.every(
++              (volume) => permitted.has(volume.id) && volume.projectId === project.id,
++            ),
++            distinctVolumeInventory:
++              new Set(volumes.map((volume) => volume.id)).size === volumes.length,
++            soleOwnedVolume: matches.length === 1 && matches[0]!.projectId === project.id,
++            targetServiceIdentity:
++              targetServices.length === 1 &&
++              targetServices[0]!.projectId === target.projectId &&
++              targetServices[0]!.name === target.serviceName,
+           };
+-          const created = object(input.creation.data.volumeCreate);
+-          const project = object(readback.data.project);
+-          const volumes = nodes(project.volumes);
+-          const matches = volumes.filter((volume) => volume.id === created.id);
+-          const instances = matches.length === 1 ? nodes(matches[0]!.volumeInstances) : [];
+-          const instance = instances.length === 1 ? instances[0]! : {};
+-          // A later valid-looking replacement must not bypass continuity via the strict binder.
+-          if (pendingInstanceId !== undefined && instance.id !== pendingInstanceId) {
+-            return refuseRead({ stage: "binding", failedPredicates: ["pendingInstanceIdentity"] });
+-          }
+-          let binding: HostedVolumeBinding;
+-          try {
+-            binding = bindHostedVolumeAllocation(input);
+-          } catch {
+-            // Diagnose the existing binder's refusal without changing its admission rules.
+-            const permitted = new Set([...prior, created.id]);
+-            const targetServices = nodes(project.services).filter(
+-              (service) => service.id === target.serviceId,
+-            );
+-            const ownership = {
+-              distinctVolumeId: !prior.includes(created.id),
+-              volumeAllowance: prior.length < plan.limits.maxVolumes,
+-              distinctPreviousIds: new Set(prior).size === prior.length,
+-              createdParent: created.projectId === target.projectId,
+-              projectId: project.id === target.projectId,
+-              workspaceId: project.workspaceId === target.workspaceId,
+-              ownedVolumeInventory: volumes.every(
+-                (volume) => permitted.has(volume.id) && volume.projectId === project.id,
+-              ),
+-              distinctVolumeInventory:
+-                new Set(volumes.map((volume) => volume.id)).size === volumes.length,
+-              soleOwnedVolume: matches.length === 1 && matches[0]!.projectId === project.id,
+-              targetServiceIdentity:
+-                targetServices.length === 1 &&
+-                targetServices[0]!.projectId === target.projectId &&
+-                targetServices[0]!.name === target.serviceName,
+-            };
+-            const predicates = {
+-              ...ownership,
+-              soleVolumeInstance: instances.length === 1,
+-              volumeId: instance.volumeId === created.id,
+-              environmentId: instance.environmentId === target.environmentId,
+-              serviceId: instance.serviceId === target.serviceId,
+-              mountPath: instance.mountPath === approved.mountPath,
+-              region: instance.region === plan.railway.region,
+-              sizeMB: instance.sizeMB === approved.sizeMB,
+-              usedSizeBounds:
+-                typeof instance.currentSizeMB === "number" &&
+-                Number.isFinite(instance.currentSizeMB) &&
+-                instance.currentSizeMB >= 0 &&
+-                instance.currentSizeMB <= approved.sizeMB,
+-              notDeleted: instance.deletedAt === null,
+-              notPendingDeletion: instance.isPendingDeletion === false,
+-              ready: instance.state === "READY",
+-            };
+-            // READY describes the volume; its service attachment may still be provisioning.
+-            const attachmentPending =
+-              Object.entries(predicates).every(
+-                ([name, valid]) => name === "serviceId" || name === "mountPath" || valid,
+-              ) &&
+-              instance.serviceId === null &&
+-              (instance.mountPath === "/tmp" || instance.mountPath === approved.mountPath);
+-            const pending =
+-              (instances.length === 0 && Object.values(ownership).every(Boolean)) ||
+-              attachmentPending;
+-            if (attachmentPending) pendingInstanceId ??= instance.id;
+-            if (pending && observation + 1 < VOLUME_BIND_READS) {
+-              admission();
+-              await pause(VOLUME_BIND_WAIT_MS);
++          const predicates = {
++            ...ownership,
++            soleVolumeInstance: instances.length === 1,
++            volumeId: instance.volumeId === created.id,
++            environmentId: instance.environmentId === target.environmentId,
++            serviceId: instance.serviceId === target.serviceId,
++            mountPath: instance.mountPath === approved.mountPath,
++            region: instance.region === plan.railway.region,
++            sizeMB: instance.sizeMB === approved.sizeMB,
++            usedSizeBounds:
++              typeof instance.currentSizeMB === "number" &&
++              Number.isFinite(instance.currentSizeMB) &&
++              instance.currentSizeMB >= 0 &&
++              instance.currentSizeMB <= approved.sizeMB,
++            notDeleted: instance.deletedAt === null,
++            notPendingDeletion: instance.isPendingDeletion === false,
++            ready: instance.state === "READY",
++          };
++          // READY describes the volume; its service attachment may still be provisioning.
++          const attachmentPending =
++            Object.entries(predicates).every(
++              ([name, valid]) => name === "serviceId" || name === "mountPath" || valid,
++            ) &&
++            instance.serviceId === null &&
++            (instance.mountPath === "/tmp" || instance.mountPath === approved.mountPath);
++          const pending =
++            (instances.length === 0 && Object.values(ownership).every(Boolean)) ||
++            attachmentPending;
++          if (attachmentPending) pendingInstanceId ??= instance.id;
++          if (pending && clock() < deadlineMs) {
++            admission();
++            await pause(Math.min(VOLUME_BIND_WAIT_MS, deadlineMs - clock()));
++            if (deadlineMs - clock() > APPLICATION_BOUNDS.reapMs) {
+               admission();
+               continue;
+             }
+-            return refuseRead({
+-              stage: "binding",
+-              ...(pending ? { provisioningExhausted: true as const } : {}),
+-              failedPredicates: Object.entries(predicates)
+-                .filter(([, matches]) => !matches)
+-                .map(([name]) => name),
+-            });
++            // No bounded child can fit in the remaining reap reserve. Do not start one.
++            if (clock() < deadlineMs) {
++              admission();
++              await pause(deadlineMs - clock());
++            }
+           }
+-          return {
+-            binding,
+-            readback,
+-            readbackEvidence: readbackEvidence.get(`${alias}-bind`),
+-            readbackObservations: volumeObservations.get(`${alias}-bind`),
+-            provisioning: { maxReads: VOLUME_BIND_READS, delayMs: VOLUME_BIND_WAIT_MS },
+-          };
++          return refuseRead({
++            stage: "binding",
++            ...(pending ? { provisioningExhausted: true as const } : {}),
++            failedPredicates: Object.entries(predicates)
++              .filter(([, matches]) => !matches)
++              .map(([name]) => name),
++          });
+         }
+-        throw new Error("Volume binding observation limit exhausted");
+-      },
+-    );
++        return {
++          binding,
++          readback,
++          readbackEvidence: readbackEvidence.get(`${alias}-bind`),
++          readbackObservations: volumeObservations.get(`${alias}-bind`),
++          provisioning,
++        };
++      }
++      throw new Error("Volume binding observation limit exhausted");
++    });
+   }
+   async function allocate() {
+     return exclusive(async () => {
+@@ -989,21 +1043,88 @@
+       }
+     return latest;
+   }
++  function ownedVolumes(): HostedVolumeOwnership[] {
++    const owned: HostedVolumeOwnership[] = [];
++    for (const alias of aliases) {
++      if (!has(`${alias}-create`)) continue;
++      const approved = plan.railway.volumes.find((item) => item.alias === alias)!;
++      const receipt = load<{ kind: "api"; result: HostedRailwayResult }>(`${alias}-create`);
++      check(
++        receipt.kind === "api" &&
++          receipt.result.actionId === `${alias}-create` &&
++          receipt.result.operation === "volume-create" &&
++          receipt.result.outcome === "response" &&
++          receipt.result.response,
++        "Confirmed volume creation receipt is invalid",
++      );
++      owned.push(
++        bindHostedVolumeOwnership({
++          prepared,
++          service: service(approved.serviceRole),
++          alias,
++          creation: receipt.result.response,
++          previousVolumeIds: owned.map((volume) => volume.volumeId),
++        }),
++      );
++    }
++    return owned;
++  }
++  async function cleanupVolumeInventory(actionId: string) {
++    const readback = await freshProject(actionId, undefined, `${actionId}-precondition`);
++    const owned = ownedVolumes();
++    const inventory = assertHostedVolumeCleanupInventory({
++      prepared,
++      project: project(),
++      ownedVolumes: owned,
++      readback,
++    });
++    const confirmedServices = roles
++      .filter((role) => has(`${role}-create`))
++      .map((role) => {
++        const receipt = load<{ kind: "api"; result: HostedRailwayResult }>(`${role}-create`);
++        check(
++          receipt.kind === "api" &&
++            receipt.result.actionId === `${role}-create` &&
++            receipt.result.operation === "service-create" &&
++            receipt.result.outcome === "response" &&
++            receipt.result.response,
++          "Confirmed service creation receipt is invalid",
++        );
++        const created = object(receipt.result.response.data.serviceCreate);
++        const approved = plan.railway.services.find((item) => item.role === role)!;
++        check(
++          created.projectId === project().projectId && created.name === approved.name,
++          "Confirmed service creation ownership changed",
++        );
++        return created;
++      });
++    check(
++      new Set(confirmedServices.map((item) => item.id)).size === confirmedServices.length,
++      "Confirmed service identities are ambiguous",
++    );
++    const observedServices = nodes(object(readback.data.project).services);
++    check(
++      new Set(observedServices.map((item) => item.id)).size === observedServices.length &&
++        observedServices.every((item) =>
++          confirmedServices.some(
++            (created) =>
++              item.id === created.id &&
++              item.name === created.name &&
++              item.projectId === created.projectId,
++          ),
++        ),
++      "Cleanup service inventory contains an unowned or ambiguous resource",
++    );
++    return { owned, inventory, readback };
++  }
+   async function removeVolume(alias: HostedVolumeAlias, actionId: string) {
+-    const bound = volume(alias);
+-    const readback = await freshService(bound.role, actionId);
+-    bindHostedVolumeAllocation({
+-      prepared,
+-      service: service(bound.role),
+-      alias,
+-      creation: apiResponse(`${alias}-create`),
+-      readback,
+-      previousVolumeIds: aliases
+-        .filter((other) => other !== alias && has(`${other}-bind`))
+-        .map((other) => volume(other).volumeId),
+-    });
+-    writeEvidence(`${actionId}-precondition`, readback);
+-    return mutate({ actionId, operation: "volume-delete", volume: bound });
++    const { owned, inventory } = await cleanupVolumeInventory(actionId);
++    const target = owned.find((volume) => volume.alias === alias);
++    check(target, "No confirmed volume creation ownership");
++    if (inventory.absentVolumeIds.includes(target.volumeId))
++      return skipped(actionId, "Exact owned volume already absent");
++    check(inventory.presentVolumeIds.includes(target.volumeId), "Owned volume presence unresolved");
++    return mutate({ actionId, operation: "volume-delete", volume: target });
+   }
+   function skipped(id: string, reason: string) {
+     admission();
+@@ -1105,15 +1226,13 @@
+       for (const alias of aliases)
+         await attempt(`cleanup-${alias}`, async () => {
+           const id = `cleanup-${alias}`;
+-          if (!has(`${alias}-bind`))
+-            return skipped(id, "No confirmed volume binding; project cleanup still required");
+-          const readback = await freshProject(id);
+-          if (
+-            nodes(object(readback.data.project).volumes).every(
+-              (item) => item.id !== volume(alias).volumeId,
+-            )
+-          )
+-            return skipped(id, "Exact owned volume already absent");
++          if (!has(`${alias}-create`)) {
++            check(
++              journal.observe(`${alias}-create`).state !== "unknown",
++              "Unknown volume creation cannot be adopted",
++            );
++            return skipped(id, "No confirmed volume creation; project cleanup still required");
++          }
+           return removeVolume(alias, id);
+         });
+       for (const role of roles)
+@@ -1121,7 +1240,17 @@
+           const id = `cleanup-${role}-service`;
+           if (!has(`${role}-bind`))
+             return skipped(id, "No admitted service binding; project cleanup still required");
+-          writeEvidence(`${id}-precondition`, await freshService(role, id));
++          const { readback } = await cleanupVolumeInventory(id);
++          const target = service(role);
++          const matches = nodes(object(readback.data.project).services).filter(
++            (item) => item.id === target.serviceId,
++          );
++          check(
++            matches.length === 1 &&
++              matches[0]!.projectId === target.projectId &&
++              matches[0]!.name === target.serviceName,
++            "Owned service disappeared or changed",
++          );
+           return mutate({ actionId: id, operation: "service-delete", service: service(role) });
+         });
+       await attempt("cleanup-project", async () => {
+@@ -1130,7 +1259,7 @@
+             "cleanup-project",
+             "No confirmed new-project binding; unknown creation cannot be adopted",
+           );
+-        writeEvidence("cleanup-project-precondition", await freshProject("cleanup-project"));
++        await cleanupVolumeInventory("cleanup-project");
+         return mutate({
+           actionId: "cleanup-project",
+           operation: "project-delete",
+@@ -1208,9 +1337,11 @@
+           return keysResponse(items);
+         }),
+       );
+-      const unknownAllocations = ["project-create", "key-create"].filter(
+-        (id) => journal.observe(id).state === "unknown",
+-      );
++      const unknownAllocations = [
++        "project-create",
++        ...aliases.map((alias) => `${alias}-create`),
++        "key-create",
++      ].filter((id) => journal.observe(id).state === "unknown");
+       return {
+         complete:
+           failures.length === 0 && projectAbsent && keyAbsent && unknownAllocations.length === 0,
+@@ -1249,6 +1380,7 @@
+     options,
+     createHostedRailwayAdapter,
+     (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
++    Date.now,
+   );
+ }
+ /** Local tests only. The final hosted executor must never call this factory. */
+@@ -1256,6 +1388,7 @@
+   options: ControllerOptions,
+   createApi: typeof createHostedRailwayAdapter,
+   pause: (milliseconds: number) => Promise<void>,
++  clock: () => number = Date.now,
+ ) {
+-  return controller(options, createApi, pause);
++  return controller(options, createApi, pause, clock);
+ }
+--- a/auggy-m5-hosted-controller/controller.test.ts
++++ b/auggy-m5-hosted-controller/controller.test.ts
+@@ -10,7 +10,7 @@
+ 
+ const root = "/var/folders/tp/03_97bp16w164jt582_jr7zc0000gn/T/auggy-m5-hosted-i926tbki";
+ const preparation = JSON.parse(
+-  readFileSync("/private/tmp/auggy-m5-run-2ae0a736-r8/preparation.json", "utf8"),
++  readFileSync("/private/tmp/auggy-m5-run-2ae0a736-r9/preparation.json", "utf8"),
+ );
+ const publicKey = readFileSync(join(root, "auth/identity.pub"), "utf8");
+ const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
+@@ -41,6 +41,10 @@
+     volumeMountPath?: string;
+     unattachedVolume?: boolean;
+     volumeProvisioningReads?: number;
++    pendingWorkerVolume?: boolean;
++    volumeReadDurationMs?: number;
++    volumeCreateAdvanceMs?: number;
++    cleanupReadShape?: "absent" | "incomplete-absent" | "wrong-project-absent" | "unknown-volume";
+     volumeObservations?: readonly (Record<string, unknown> | null | "duplicate")[];
+     volumeParentId?: string;
+     expireDuringVolumePause?: boolean;
+@@ -124,8 +128,9 @@
+   const services = new Map<string, { id: string; name: string; projectId: string }>();
+   const volumes = new Map<string, { id: string; name: string; projectId: string; instance: any }>();
+   const volumeReadCounts = new Map<string, number>();
++  let cleanupStarted = false;
+   const pauses: number[] = [];
+-  const calls: { name: string; variables: any; time: number }[] = [];
++  const calls: { name: string; variables: any; time: number; timeoutMs: number }[] = [];
+   const failedReads = new Set<string>();
+   const key = {
+     id: id(4),
+@@ -226,51 +231,69 @@
+         return {
+           project: {
+             ...project,
++            ...(cleanupStarted && options.cleanupReadShape === "wrong-project-absent"
++              ? { id: id(99) }
++              : {}),
+             isPublic: false,
+             prDeploys: false,
+             deletedAt: null,
+             environments: page([{ id: id(3), name: "rehearsal", projectId: id(2) }]),
+             services: page([...services.values()]),
+-            volumes: page(
+-              [...volumes.values()].flatMap(({ instance, ...volume }) => {
+-                const count = (volumeReadCounts.get(volume.id) ?? 0) + 1;
+-                volumeReadCounts.set(volume.id, count);
+-                let instances =
+-                  count <= (options.volumeProvisioningReads ?? 0)
+-                    ? []
+-                    : options.volumeReadShape === "multiple"
+-                      ? [instance, { ...instance, id: id(97) }]
+-                      : [
+-                          {
+-                            ...instance,
+-                            ...(options.volumeReadShape === "wrong-instance-target"
+-                              ? { serviceId: id(99) }
+-                              : {}),
+-                          },
+-                        ];
+-                if (options.volumeObservations) {
+-                  const step =
+-                    options.volumeObservations[
+-                      Math.min(count - 1, options.volumeObservations.length - 1)
+-                    ];
+-                  instances =
+-                    step === null
+-                      ? []
+-                      : step === "duplicate"
+-                        ? [instance, { ...instance, id: id(97) }]
+-                        : [{ ...instance, ...step }];
+-                }
+-                const observed = {
+-                  ...volume,
+-                  ...(options.volumeParentId ? { projectId: options.volumeParentId } : {}),
+-                  ...(options.volumeReadShape === "wrong-volume-id" ? { id: id(99) } : {}),
+-                  volumeInstances: page(instances),
+-                };
+-                return options.volumeReadShape === "duplicate-volume"
+-                  ? [observed, observed]
+-                  : [observed];
+-              }),
+-            ),
++            volumes:
++              cleanupStarted && options.cleanupReadShape?.endsWith("absent")
++                ? {
++                    ...page([]),
++                    ...(options.cleanupReadShape === "incomplete-absent"
++                      ? { pageInfo: { hasNextPage: true } }
++                      : {}),
++                  }
++                : page(
++                    [...volumes.values()].flatMap(({ instance, ...volume }) => {
++                      const count = (volumeReadCounts.get(volume.id) ?? 0) + 1;
++                      volumeReadCounts.set(volume.id, count);
++                      let instances =
++                        (options.pendingWorkerVolume &&
++                          services.get(instance.serviceId)?.name ===
++                            plan.railway.services.find((service) => service.role === "worker")!
++                              .name) ||
++                        count <= (options.volumeProvisioningReads ?? 0)
++                          ? []
++                          : options.volumeReadShape === "multiple"
++                            ? [instance, { ...instance, id: id(97) }]
++                            : [
++                                {
++                                  ...instance,
++                                  ...(options.volumeReadShape === "wrong-instance-target"
++                                    ? { serviceId: id(99) }
++                                    : {}),
++                                },
++                              ];
++                      if (options.volumeObservations) {
++                        const step =
++                          options.volumeObservations[
++                            Math.min(count - 1, options.volumeObservations.length - 1)
++                          ];
++                        instances =
++                          step === null
++                            ? []
++                            : step === "duplicate"
++                              ? [instance, { ...instance, id: id(97) }]
++                              : [{ ...instance, ...step }];
++                      }
++                      const observed = {
++                        ...volume,
++                        ...(cleanupStarted && options.cleanupReadShape === "unknown-volume"
++                          ? { id: id(99) }
++                          : {}),
++                        ...(options.volumeParentId ? { projectId: options.volumeParentId } : {}),
++                        ...(options.volumeReadShape === "wrong-volume-id" ? { id: id(99) } : {}),
++                        volumeInstances: page(instances),
++                      };
++                      return options.volumeReadShape === "duplicate-volume"
++                        ? [observed, observed]
++                        : [observed];
++                    }),
++                  ),
+           },
+         };
+       case "HostedServiceCreate": {
+@@ -343,6 +366,7 @@
+         keyExists = true;
+         return { sshPublicKeyCreate: key };
+       case "HostedUsage":
++        cleanupStarted = true;
+         return { usage: [] };
+       case "HostedVolumeDelete":
+         volumes.delete(vars.id);
+@@ -367,7 +391,12 @@
+     createHostedRailwayAdapterForTest(adapterOptions, async (call) => {
+       const name = call.command[2]!.match(/(?:query|mutation)\s+([A-Za-z]+)/)![1]!;
+       const variables = JSON.parse(Buffer.from(call.input!).toString("utf8"));
+-      calls.push({ name, variables, time: now });
++      if (call.timeoutMs === undefined)
++        throw new Error("Adapter request must have a finite timeout");
++      calls.push({ name, variables, time: now, timeoutMs: call.timeoutMs });
++      if (name === "HostedVolumeCreate") now += options.volumeCreateAdvanceMs ?? 0;
++      if (name === "HostedProject" && volumes.size > 0 && !cleanupStarted)
++        now += options.volumeReadDurationMs ?? 0;
+       const failRead =
+         !failedReads.has(name) &&
+         Boolean(
+@@ -394,11 +423,17 @@
+         stderrSHA256: hash(""),
+       };
+     });
+-  const controller = createControllerForTest(input, factory, async (delay) => {
+-    pauses.push(delay);
+-    now += delay;
+-    if (options.expireDuringVolumePause && delay === 1000) now += plan.limits.maxRunSeconds * 1000;
+-  });
++  const controller = createControllerForTest(
++    input,
++    factory,
++    async (delay) => {
++      pauses.push(delay);
++      now += delay;
++      if (options.expireDuringVolumePause && delay === 5000)
++        now += plan.limits.maxRunSeconds * 1000;
++    },
++    () => now,
++  );
+   return {
+     controller,
+     factory,
+@@ -426,7 +461,7 @@
+       );
+       expect(bound.readbackObservations).toHaveLength(1);
+     }
+-    expect(f.pauses.filter((delay) => delay === 1000)).toHaveLength(0);
++    expect(f.pauses.filter((delay) => delay === 5000)).toHaveLength(0);
+     await f.controller.allocateRestore("http-restore");
+     await f.controller.allocateRestore("worker-restore");
+     const ids = ["http-original", "worker-original", "http-restore", "worker-restore"].map(
+@@ -668,7 +703,8 @@
+       readFileSync(join(directory, "evidence/http-original-bind.json"), "utf8"),
+     );
+     expect(bound.readbackObservations).toHaveLength(2);
+-    expect(bound.provisioning).toEqual({ maxReads: 6, delayMs: 1000 });
++    expect(bound.provisioning).toMatchObject({ maxReads: 36, delayMs: 5000, timeoutMs: 180000 });
++    expect(bound.provisioning.deadlineMs - bound.provisioning.confirmedAt).toBe(180000);
+     const sizes = bound.readbackObservations.map((reference: { file: string; sha256: string }) => {
+       const bytes = readFileSync(join(directory, "evidence", reference.file));
+       expect(hash(bytes)).toBe(reference.sha256);
+@@ -684,27 +720,27 @@
+       readFileSync(join(directory, "journal/http-original-bind.claim.json"), "utf8"),
+     );
+     expect(claim.inputSHA256).toBe(
+-      hash(`${JSON.stringify({ alias: "http-original", maxReads: 6, delayMs: 1000 })}\n`),
++      hash(`${JSON.stringify({ alias: "http-original", ...bound.provisioning })}\n`),
+     );
+     expect(f.calls.filter((call) => call.name === "HostedVolumeCreate")).toHaveLength(2);
+-    expect(f.pauses.filter((delay) => delay === 1000)).toHaveLength(2);
++    expect(f.pauses.filter((delay) => delay === 5000)).toHaveLength(2);
+     expect((await f.controller.cleanup()).complete).toBe(true);
+   } finally {
+     f.controller.close();
+   }
+ });
+ 
+-test("persistent zero instances exhaust six reads without replaying creation and preserve cleanup", async () => {
++test("persistent zero instances exhaust the absolute deadline without replaying creation and preserve cleanup", async () => {
+   const f = fixture({ volumeProvisioningReads: 100 });
+   try {
+     await expect(f.controller.allocate()).rejects.toThrow("refused");
+     const failed = JSON.parse(
+       readFileSync(join(directory, "evidence/http-original-bind.json"), "utf8"),
+     );
+-    expect(failed.readbackObservations).toHaveLength(6);
++    expect(failed.readbackObservations).toHaveLength(35);
+     expect(failed.diagnostic.provisioningExhausted).toBe(true);
+     expect(failed.diagnostic.failedPredicates).toContain("soleVolumeInstance");
+-    expect(failed.readbackEvidence).toEqual(failed.readbackObservations[5]);
++    expect(failed.readbackEvidence).toEqual(failed.readbackObservations[34]);
+     for (const reference of failed.readbackObservations) {
+       const bytes = readFileSync(join(directory, "evidence", reference.file));
+       expect(hash(bytes)).toBe(reference.sha256);
+@@ -713,7 +749,7 @@
+           .volumeInstances.edges,
+       ).toEqual([]);
+     }
+-    expect(f.pauses.filter((delay) => delay === 1000)).toHaveLength(5);
++    expect(f.pauses.filter((delay) => delay === 5000)).toHaveLength(36);
+     expect(f.calls.filter((call) => call.name === "HostedVolumeCreate")).toHaveLength(1);
+     await expect(f.controller.allocate()).rejects.toThrow("already claimed");
+     expect((await f.controller.cleanup()).complete).toBe(true);
+@@ -737,9 +773,14 @@
+       );
+       expect(failed.readbackObservations).toHaveLength(1);
+       expect(failed.diagnostic.provisioningExhausted).toBeUndefined();
+-      expect(f.pauses.filter((delay) => delay === 1000)).toHaveLength(0);
++      expect(f.pauses.filter((delay) => delay === 5000)).toHaveLength(0);
+       expect(f.calls.filter((call) => call.name === "HostedVolumeCreate")).toHaveLength(1);
+-      expect((await f.controller.cleanup()).complete).toBe(true);
++      expect((await f.controller.cleanup()).complete).toBe(false);
++      expect(
++        f.calls.some(
++          (call) => call.name === "HostedVolumeDelete" || call.name === "HostedProjectDelete",
++        ),
++      ).toBe(false);
+     } finally {
+       f.controller.close();
+     }
+@@ -762,7 +803,7 @@
+       failedPredicates: [options.failedPredicate],
+     });
+     expect(failed.readbackObservations).toHaveLength(1);
+-    expect(f.pauses.filter((delay) => delay === 1000)).toHaveLength(0);
++    expect(f.pauses.filter((delay) => delay === 5000)).toHaveLength(0);
+     const path = join(directory, "evidence", failed.readbackEvidence.file);
+     const bytes = readFileSync(path);
+     expect(hash(bytes)).toBe(failed.readbackEvidence.sha256);
+@@ -835,11 +876,9 @@
+       const claim = JSON.parse(
+         readFileSync(join(directory, `journal/${alias}-bind.claim.json`), "utf8"),
+       );
+-      expect(claim.inputSHA256).toBe(
+-        hash(`${JSON.stringify({ alias, maxReads: 6, delayMs: 1000 })}\n`),
+-      );
++      expect(claim.inputSHA256).toBe(hash(`${JSON.stringify({ alias, ...bound.provisioning })}\n`));
+     }
+-    expect(f.pauses.filter((delay) => delay === 1000)).toHaveLength((steps.length - 1) * 2);
++    expect(f.pauses.filter((delay) => delay === 5000)).toHaveLength((steps.length - 1) * 2);
+     expect((await f.controller.cleanup()).complete).toBe(true);
+   } finally {
+     f.controller.close();
+@@ -855,15 +894,15 @@
+       const failed = JSON.parse(
+         readFileSync(join(directory, "evidence/http-original-bind.json"), "utf8"),
+       );
+-      expect(failed.readbackObservations).toHaveLength(6);
++      expect(failed.readbackObservations).toHaveLength(35);
+       expect(failed.diagnostic).toEqual({
+         stage: "binding",
+         provisioningExhausted: true,
+         failedPredicates: mountPath === "/tmp" ? ["serviceId", "mountPath"] : ["serviceId"],
+       });
+-      expect(f.pauses.filter((delay) => delay === 1000)).toHaveLength(5);
++      expect(f.pauses.filter((delay) => delay === 5000)).toHaveLength(36);
+       expect(f.calls.filter((call) => call.name === "HostedVolumeCreate")).toHaveLength(1);
+-      expect(failed.readbackEvidence).toEqual(failed.readbackObservations[5]);
++      expect(failed.readbackEvidence).toEqual(failed.readbackObservations[34]);
+       for (const reference of failed.readbackObservations) {
+         const bytes = readFileSync(join(directory, "evidence", reference.file));
+         expect(hash(bytes)).toBe(reference.sha256);
+@@ -906,9 +945,11 @@
+     );
+     expect(failed.readbackObservations).toHaveLength(1);
+     expect(failed.diagnostic.provisioningExhausted).toBeUndefined();
+-    expect(f.pauses.filter((delay) => delay === 1000)).toHaveLength(0);
++    expect(f.pauses.filter((delay) => delay === 5000)).toHaveLength(0);
+     expect(f.calls.filter((call) => call.name === "HostedVolumeCreate")).toHaveLength(1);
+-    expect((await f.controller.cleanup()).complete).toBe(true);
++    expect((await f.controller.cleanup()).complete).toBe(
++      !("serviceId" in change || "volumeId" in change || "environmentId" in change),
++    );
+   } finally {
+     f.controller.close();
+   }
+@@ -923,8 +964,8 @@
+     );
+     expect(failed.diagnostic.failedPredicates).toContain("ownedVolumeInventory");
+     expect(failed.readbackObservations).toHaveLength(1);
+-    expect(f.pauses.filter((delay) => delay === 1000)).toHaveLength(0);
+-    expect((await f.controller.cleanup()).complete).toBe(true);
++    expect(f.pauses.filter((delay) => delay === 5000)).toHaveLength(0);
++    expect((await f.controller.cleanup()).complete).toBe(false);
+   } finally {
+     f.controller.close();
+   }
+@@ -946,9 +987,9 @@
+       failedPredicates: ["pendingInstanceIdentity"],
+     });
+     expect(failed.readbackObservations).toHaveLength(2);
+-    expect(f.pauses.filter((delay) => delay === 1000)).toHaveLength(1);
++    expect(f.pauses.filter((delay) => delay === 5000)).toHaveLength(1);
+     expect(f.calls.filter((call) => call.name === "HostedVolumeCreate")).toHaveLength(1);
+-    expect((await f.controller.cleanup()).complete).toBe(true);
++    expect((await f.controller.cleanup()).complete).toBe(next !== "duplicate");
+   } finally {
+     f.controller.close();
+   }
+@@ -962,7 +1003,7 @@
+       readFileSync(join(directory, "evidence/http-original-bind.json"), "utf8"),
+     );
+     expect(failed.readbackObservations).toHaveLength(1);
+-    expect(f.pauses.filter((delay) => delay === 1000)).toHaveLength(1);
++    expect(f.pauses.filter((delay) => delay === 5000)).toHaveLength(1);
+     expect(f.calls.filter((call) => call.name === "HostedVolumeCreate")).toHaveLength(1);
+     expect(f.calls.filter((call) => call.name === "HostedKeyCreate")).toHaveLength(0);
+     expect(f.calls.at(-1)?.name).toBe("HostedProject");
+@@ -1123,3 +1164,196 @@
+     }
+   },
+ );
++
++test("attachment can converge after six reads and waits start after each completed read", async () => {
++  const f = fixture({ volumeProvisioningReads: 7, volumeReadDurationMs: 2000 });
++  try {
++    await f.controller.allocate();
++    const bound = JSON.parse(
++      readFileSync(join(directory, "evidence/http-original-bind.json"), "utf8"),
++    );
++    expect(bound.readbackObservations).toHaveLength(8);
++    const firstCreate = f.calls.findIndex((call) => call.name === "HostedVolumeCreate");
++    const reads = f.calls
++      .slice(firstCreate + 1)
++      .filter((call) => call.name === "HostedProject")
++      .slice(0, 8);
++    expect(reads[0]!.time).toBe(bound.provisioning.confirmedAt);
++    for (let n = 1; n < reads.length; n++) expect(reads[n]!.time - reads[n - 1]!.time).toBe(7000);
++    expect(f.calls.filter((call) => call.name === "HostedVolumeCreate")).toHaveLength(2);
++    expect((await f.controller.cleanup()).complete).toBe(true);
++  } finally {
++    f.controller.close();
++  }
++});
++
++test("slow pending reads consume the same absolute deadline and preserve never-bound cleanup", async () => {
++  const f = fixture({ volumeProvisioningReads: 100, volumeReadDurationMs: 10000 });
++  try {
++    await expect(f.controller.allocate()).rejects.toThrow("refused");
++    const failed = JSON.parse(
++      readFileSync(join(directory, "evidence/http-original-bind.json"), "utf8"),
++    );
++    expect(now).toBe(failed.provisioning.deadlineMs);
++    expect(failed.provisioning.deadlineMs - failed.provisioning.confirmedAt).toBe(180000);
++    expect(failed.readbackObservations).toHaveLength(12);
++    expect(failed.diagnostic.provisioningExhausted).toBe(true);
++    const firstCreate = f.calls.findIndex((call) => call.name === "HostedVolumeCreate");
++    const reads = f.calls.slice(firstCreate + 1);
++    expect(reads.every((call) => call.time < failed.provisioning.deadlineMs)).toBe(true);
++    expect(reads.at(-1)!.timeoutMs).toBe(10000);
++    const createdId = JSON.parse(
++      readFileSync(join(directory, "evidence/http-original-create.json"), "utf8"),
++    ).result.response.data.volumeCreate.id;
++    expect((await f.controller.cleanup()).complete).toBe(true);
++    expect(
++      f.calls.filter((call) => call.name === "HostedVolumeDelete").map((call) => call.variables.id),
++    ).toEqual([createdId]);
++  } finally {
++    f.controller.close();
++  }
++});
++
++test("readiness clips to the existing execution deadline and keeps the cleanup reserve", async () => {
++  const f = fixture({
++    volumeProvisioningReads: 100,
++    volumeCreateAdvanceMs: basePlan().limits.maxRunSeconds * 1000 - 12500,
++  });
++  try {
++    await expect(f.controller.allocate()).rejects.toThrow("refused");
++    const failed = JSON.parse(
++      readFileSync(join(directory, "evidence/http-original-bind.json"), "utf8"),
++    );
++    expect(failed.provisioning.deadlineMs).toBe(
++      f.controller.run().startedAt + f.input.prepared.plan.limits.maxRunSeconds * 1000,
++    );
++    expect(failed.provisioning.deadlineMs - failed.provisioning.confirmedAt).toBe(12500);
++    expect(now).toBe(failed.provisioning.deadlineMs);
++    expect(failed.readbackObservations).toHaveLength(2);
++    expect(f.pauses).toEqual([5000, 5000, 2500]);
++    expect(f.calls.filter((call) => call.name === "HostedVolumeCreate")).toHaveLength(1);
++    expect((await f.controller.cleanup()).complete).toBe(true);
++  } finally {
++    f.controller.close();
++  }
++});
++
++test("a valid-looking readiness response after the absolute deadline cannot bind", async () => {
++  const f = fixture({ volumeReadDurationMs: 180001 });
++  try {
++    await expect(f.controller.allocate()).rejects.toThrow("refused");
++    const failed = JSON.parse(
++      readFileSync(join(directory, "evidence/http-original-bind.json"), "utf8"),
++    );
++    expect(failed.readbackObservations).toHaveLength(1);
++    expect(failed.binding).toBeUndefined();
++    expect(f.calls.filter((call) => call.name === "HostedVolumeCreate")).toHaveLength(1);
++    expect(f.calls.at(-1)!.name).toBe("HostedProject");
++    expect((await f.controller.cleanup()).complete).toBe(true);
++  } finally {
++    f.controller.close();
++  }
++});
++
++test("unknown volume creation is never adopted or erased through parent cleanup", async () => {
++  const f = fixture({ unknown: "HostedVolumeCreate" });
++  try {
++    await expect(f.controller.allocate()).rejects.toThrow();
++    const cleaned = await f.controller.cleanup();
++    expect(cleaned.complete).toBe(false);
++    expect(cleaned.unknownAllocations).toEqual(["http-original-create"]);
++    expect(cleaned.failures).toContain("cleanup-http-original");
++    expect(cleaned.failures).toContain("cleanup-project");
++    expect(
++      f.calls.some((call) =>
++        ["HostedVolumeDelete", "HostedServiceDelete", "HostedProjectDelete"].includes(call.name),
++      ),
++    ).toBe(false);
++  } finally {
++    f.controller.close();
++  }
++});
++
++test("changed confirmed creation evidence cannot authorize volume or parent deletion", async () => {
++  const f = fixture({ volumeProvisioningReads: 100 });
++  try {
++    await expect(f.controller.allocate()).rejects.toThrow("refused");
++    const path = join(directory, "evidence/http-original-create.json");
++    const receipt = JSON.parse(readFileSync(path, "utf8"));
++    receipt.result.response.data.volumeCreate.id = id(99);
++    writeFileSync(path, JSON.stringify(receipt));
++    const cleaned = await f.controller.cleanup();
++    expect(cleaned.complete).toBe(false);
++    expect(cleaned.failures).toContain("cleanup-http-original");
++    expect(cleaned.failures).toContain("cleanup-project");
++    expect(
++      f.calls.some((call) =>
++        ["HostedVolumeDelete", "HostedServiceDelete", "HostedProjectDelete"].includes(call.name),
++      ),
++    ).toBe(false);
++    expect(
++      JSON.parse(
++        readFileSync(join(directory, "evidence/cleanup-http-original-precondition.json"), "utf8"),
++      ).kind,
++    ).toBe("api-read");
++  } finally {
++    f.controller.close();
++  }
++});
++
++test.each(["absent", "incomplete-absent", "wrong-project-absent", "unknown-volume"] as const)(
++  "cleanup absence requires complete exact ownership inventory: %s",
++  async (cleanupReadShape) => {
++    const f = fixture({ cleanupReadShape });
++    try {
++      await f.controller.allocate();
++      const cleaned = await f.controller.cleanup();
++      expect(cleaned.complete).toBe(cleanupReadShape === "absent");
++      expect(f.calls.some((call) => call.name === "HostedVolumeDelete")).toBe(false);
++      expect(f.calls.some((call) => call.name === "HostedProjectDelete")).toBe(
++        cleanupReadShape === "absent",
++      );
++      const precondition = JSON.parse(
++        readFileSync(join(directory, "evidence/cleanup-http-original-precondition.json"), "utf8"),
++      );
++      expect(precondition.kind).toBe("api-read");
++      if (cleanupReadShape === "absent") {
++        const receipt = JSON.parse(
++          readFileSync(join(directory, "evidence/cleanup-http-original.json"), "utf8"),
++        );
++        expect(receipt.reason).toBe("Exact owned volume already absent");
++      } else expect(cleaned.failures).toContain("cleanup-http-original");
++    } finally {
++      f.controller.close();
++    }
++  },
++);
++
++test("cleanup deletes the bound HTTP volume and confirmed-created never-bound worker sibling", async () => {
++  const f = fixture({ pendingWorkerVolume: true });
++  try {
++    await expect(f.controller.allocate()).rejects.toThrow("refused");
++    const http = JSON.parse(
++      readFileSync(join(directory, "evidence/http-original-bind.json"), "utf8"),
++    );
++    const worker = JSON.parse(
++      readFileSync(join(directory, "evidence/worker-original-bind.json"), "utf8"),
++    );
++    const workerCreate = JSON.parse(
++      readFileSync(join(directory, "evidence/worker-original-create.json"), "utf8"),
++    );
++    expect(http.binding.volumeId).toBeString();
++    expect(worker.binding).toBeUndefined();
++    expect(worker.diagnostic.provisioningExhausted).toBe(true);
++    expect(f.calls.filter((call) => call.name === "HostedVolumeCreate")).toHaveLength(2);
++    const cleaned = await f.controller.cleanup();
++    expect(cleaned.complete).toBe(true);
++    expect(cleaned.failures).toEqual([]);
++    expect(
++      f.calls.filter((call) => call.name === "HostedVolumeDelete").map((call) => call.variables.id),
++    ).toEqual([http.binding.volumeId, workerCreate.result.response.data.volumeCreate.id]);
++    expect(f.state()).toMatchObject({ projectExists: false, volumes: 0, services: 0 });
++  } finally {
++    f.controller.close();
++  }
++});
+--- a/auggy-m5-hosted-controller/guard-callback.ts
++++ b/auggy-m5-hosted-controller/guard-callback.ts
+@@ -7,7 +7,7 @@
+ import { buildGuardCallbacks } from "./guard-callback-core";
+ import { readonlyRailwayAttached } from "./railway-readonly";
+ const callbacks = buildGuardCallbacks(
+-  "/private/tmp/auggy-m5-run-2ae0a736-r8",
++  "/private/tmp/auggy-m5-run-2ae0a736-r9",
+   readonlyRailwayAttached.target,
+   (expected) => {
+     const bytes = readBoundedRegularFile(realpathSync(process.execPath), 128 * 1024 * 1024).bytes;
+--- a/auggy-m5-hosted-executor/frozen.ts
++++ b/auggy-m5-hosted-executor/frozen.ts
+@@ -15,7 +15,7 @@
+ import { check, type RemoteArtifact } from "./remote";
+ import { validateNativeConfig, verifyNativeDescriptorBytes } from "./native-identity";
+ 
+-export const RUN_ROOT = "/private/tmp/auggy-m5-run-2ae0a736-r8";
++export const RUN_ROOT = "/private/tmp/auggy-m5-run-2ae0a736-r9";
+ export const AUTH_ROOT =
+   "/private/var/folders/tp/03_97bp16w164jt582_jr7zc0000gn/T/auggy-m5-hosted-i926tbki/auth";
+ export const sha256 = (value: Uint8Array | string) =>
+--- a/auggy-m5-hosted-executor/platform.ts
++++ b/auggy-m5-hosted-executor/platform.ts
+@@ -39,7 +39,7 @@
+   readPinnedFile,
+ } from "/Users/bigviking/Documents/github/projects/lo/augment-1/.worktrees/portable-agent-integration/src/lib/anchored-files";
+ 
+-const RUN_ROOT = "/private/tmp/auggy-m5-run-2ae0a736-r8";
++const RUN_ROOT = "/private/tmp/auggy-m5-run-2ae0a736-r9";
+ const CLI_SHA = "995673f72a99407f7b6e7b5098215b4788684f21e0ce287a7d6c97270b1d3bf8";
+ const BYTES = 2 * 1024 * 1024,
+   API_AND_REAP_MS = 20000,
+--- a/auggy-m5-hosted-executor/build-candidate.ts
++++ b/auggy-m5-hosted-executor/build-candidate.ts
+@@ -2,7 +2,7 @@
+ import {existsSync,writeFileSync,chmodSync,readFileSync,realpathSync} from "node:fs";
+ import {join} from "node:path";
+ import {createHash} from "node:crypto";
+-const root="/private/tmp/auggy-m5-run-2ae0a736-r8";
++const root="/private/tmp/auggy-m5-run-2ae0a736-r9";
+ if(existsSync(join(root,"approval.json")))throw new Error("An approved candidate cannot be rebuilt");
+ const hash=(bytes:Uint8Array|string)=>createHash("sha256").update(bytes).digest("hex");
+ const sources=[
+--- a/auggy-m5-hosted-executor/assemble.ts
++++ b/auggy-m5-hosted-executor/assemble.ts
+@@ -16,7 +16,7 @@
+ const receipts={
+  localSHA256:["/private/tmp/m5-final-ci-3a15bb4-summary.json"],
+  containerSHA256:["/private/tmp/m5-g4-maintenance-root-review.json","/private/tmp/m5-g4-worker-maintenance-root-review.json","/private/tmp/m5-g4-maintenance-v3-root-review.json","/private/tmp/m5-g4-ttl180-independent-review/acceptance.json","/private/tmp/m5-g4-ttl180-independent-review/artifact-acceptance.json","/private/tmp/m5-worker-normalization-root-review.json"],
+- hostedFixtureSHA256:["/private/tmp/m5-g4-post-deployment-diagnostics-acceptance.json","/private/tmp/m5-g4-volume-attachment-acceptance.json","/private/tmp/m5-g4-deployment-timing-acceptance.json","/private/tmp/m5-g4-effective-restart-policy-acceptance.json","/private/tmp/m5-g4-pre-native-diagnostics-acceptance.json","/private/tmp/m5-g4-volume-provisioning-acceptance.json","/private/tmp/m5-g4-volume-diagnostics-acceptance.json","/private/tmp/m5-g4-placement-repair-acceptance.json","/private/tmp/m5-g4-diagnostics-repair-acceptance.json","/private/tmp/m5-g4-remote-helper-review/acceptance.json","/private/tmp/m5-g4-channels-review/acceptance-operation-binding.json","/private/tmp/m5-g4-controller-root-review.json","/private/tmp/m5-g4-callback-independent-review/acceptance.json","/private/tmp/m5-g4-platform-independent-review/acceptance.json","/private/tmp/m5-g4-held-http-independent-review/acceptance.json","/private/tmp/m5-g4-executor-wrapper-review/acceptance.json","/private/tmp/m5-g4-guard-lifetime-independent-review/acceptance.json","/private/tmp/m5-g4-main-double-build-review/review.json","/private/tmp/auggy-m5-hosted-deploy-guard/closure-increment-handoff.json","/private/tmp/m5-g4-executor-wrapper-review/acceptance-final-increment.json"],
++ hostedFixtureSHA256:["/private/tmp/m5-g4-volume-readiness-cleanup-acceptance.json","/private/tmp/m5-g4-post-deployment-diagnostics-acceptance.json","/private/tmp/m5-g4-volume-attachment-acceptance.json","/private/tmp/m5-g4-deployment-timing-acceptance.json","/private/tmp/m5-g4-effective-restart-policy-acceptance.json","/private/tmp/m5-g4-pre-native-diagnostics-acceptance.json","/private/tmp/m5-g4-volume-provisioning-acceptance.json","/private/tmp/m5-g4-volume-diagnostics-acceptance.json","/private/tmp/m5-g4-placement-repair-acceptance.json","/private/tmp/m5-g4-diagnostics-repair-acceptance.json","/private/tmp/m5-g4-remote-helper-review/acceptance.json","/private/tmp/m5-g4-channels-review/acceptance-operation-binding.json","/private/tmp/m5-g4-controller-root-review.json","/private/tmp/m5-g4-callback-independent-review/acceptance.json","/private/tmp/m5-g4-platform-independent-review/acceptance.json","/private/tmp/m5-g4-held-http-independent-review/acceptance.json","/private/tmp/m5-g4-executor-wrapper-review/acceptance.json","/private/tmp/m5-g4-guard-lifetime-independent-review/acceptance.json","/private/tmp/m5-g4-main-double-build-review/review.json","/private/tmp/auggy-m5-hosted-deploy-guard/closure-increment-handoff.json","/private/tmp/m5-g4-executor-wrapper-review/acceptance-final-increment.json"],
+ } as const;
+ const acceptedEvidenceFiles=Object.entries(receipts).map(([role,paths])=>{
+  const contents=paths.map(path=>{const bytes=readFileSync(path);return{path,sha256:hash(bytes),receipt:JSON.parse(bytes.toString())};});
+@@ -63,7 +63,7 @@
+  {role:"http",origins:["http://127.0.0.1:43151","http://127.0.0.1:43152","http://127.0.0.1:43153"],controlOrigin:"http://127.0.0.1:43153",controlSourceSHA256:http.contextFiles.find(file=>file.path==="src/fixtures/hosted-http-startup.ts")!.sha256,sealedEvidenceContractSHA256:contractHash("scripts/release-smoke/integration-hosted-http.ts")},
+  {role:"worker",origins:["http://127.0.0.1:43141","http://127.0.0.1:43142"],controlOrigin:"http://127.0.0.1:43142",controlSourceSHA256:worker.contextFiles.find(file=>file.path==="src/fixtures/telegram-container-startup.ts")!.sha256,sealedEvidenceContractSHA256:contractHash("scripts/release-smoke/integration-telegram-container.ts")}],
+  syntheticIdentitySetSHA256:contractHash("examples/company-app/fixtures/synthetic-orders.ts"),allowedEffectContractSHA256:contractHash("scripts/release-smoke/integration-contracts.ts")},
+- retention:{cleanupOwner:"m5-orchestrator",retainedUntil:"2026-11-19T21:01:14.938Z",privateArtifactLocation:"private/auggy-m5-run-2ae0a736-r8",retainResources:false},
++ retention:{cleanupOwner:"m5-orchestrator",retainedUntil:"2026-11-19T21:01:14.938Z",privateArtifactLocation:"private/auggy-m5-run-2ae0a736-r9",retainResources:false},
+  source:{revision:"3a15bb4f978a704f9d85cc233508301c9ec76e7a",tree:source.tree,sourceChangesSHA256:source.sourceChangesSHA256}};
+ const prepared=prepareHostedIntegration(plan);write(join(RUN_ROOT,"plan.json"),prepared.plan);
+ console.log(JSON.stringify({status:"assembled-not-approved",planSHA256:prepared.sha256,actions:manifest.actions.length,closureFiles:closure.files.length,closureBytes:closure.files.reduce((n,file)=>n+file.bytes,0)}));

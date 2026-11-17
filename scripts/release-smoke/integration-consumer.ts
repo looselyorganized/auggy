@@ -1,8 +1,10 @@
 /** M5 mechanics. A completed helper is not an installed integration acceptance result. */
-import { lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 import {
   applicationHash,
+  applicationEnvironment,
   APPLICATION_BOUNDS,
   assertInstalledApplicationArtifact,
   startApplicationChild,
@@ -18,6 +20,8 @@ import { AUTHORING_BOUNDS, type CreateAuthoringConsumerOptions } from "./authori
 import { readBoundedRegularFile } from "./bounded-file";
 import { runDependencyAudit } from "../audit-dependencies";
 import { redactEvidence } from "./export-evidence";
+import type { DeploymentProfile } from "../../src/cli/deploy/contracts";
+import { validateDeploymentProfile } from "../../src/cli/deploy/profile";
 import {
   INTEGRATION_LIMITS,
   type HashedIntegrationFile,
@@ -323,6 +327,71 @@ export type IntegrationChildOptions = Parameters<typeof startApplicationChild>[0
   label: string;
   signal?: AbortSignal;
 };
+
+/** Exercise the installed CLI's passive export before allocating hosted resources. */
+export async function preflightHostedExport(options: {
+  consumer: string;
+  profile: DeploymentProfile;
+  temporaryDirectory?: string;
+}) {
+  validateDeploymentProfile(options.profile);
+  const consumer = realpathSync(options.consumer);
+  const scratch = mkdtempSync(join(options.temporaryDirectory ?? tmpdir(), "auggy-preflight-"));
+  try {
+    const home = join(scratch, "home");
+    const temporary = join(scratch, "tmp");
+    const output = join(scratch, "context");
+    mkdirSync(home, { mode: 0o700 });
+    mkdirSync(temporary, { mode: 0o700 });
+    const profile = options.profile;
+    const command = [
+      process.execPath,
+      "--no-env-file",
+      "--no-install",
+      "--config=/dev/null",
+      join(consumer, "node_modules/auggy/src/cli/index.ts"),
+      "export",
+      "docker",
+      "--config",
+      "agent.yaml",
+      "--out",
+      output,
+      "--ingress",
+      profile.kind,
+      ...(profile.kind === "http" ? ["--port", String(profile.port)] : []),
+      ...(profile.kind === "http" && profile.healthPath
+        ? ["--health-path", profile.healthPath]
+        : []),
+    ];
+    const result = await withIntegrationChild(
+      {
+        label: "hosted-local-export",
+        command,
+        cwd: consumer,
+        env: applicationEnvironment(home, temporary),
+        secrets: [],
+        timeoutMs: INTEGRATION_LIMITS.readinessMs,
+      },
+      async ({ child }) => check((await child.finish()).exitCode === 0, "Local export failed"),
+    );
+    check(result.status === "passed", "Hosted preflight: local export failed before allocation");
+    const manifest = readIntegrationFile(output, "auggy-deployment.json", 1024 * 1024);
+    const actual = JSON.parse(manifest.toString("utf8")).profile;
+    validateDeploymentProfile(actual);
+    check(
+      actual.kind === profile.kind &&
+        (actual.kind === "none" ||
+          (profile.kind === "http" &&
+            actual.port === profile.port &&
+            actual.healthPath === profile.healthPath &&
+            actual.consolePath === profile.consolePath)),
+      "Hosted preflight: exported profile differs from the selected deployment",
+    );
+    return { status: "passed" as const, manifestSHA256: applicationHash(manifest) };
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
 
 export async function withIntegrationChild<T>(
   options: IntegrationChildOptions,

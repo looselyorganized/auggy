@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -1013,4 +1013,172 @@ test("cleanup reserve refuses allocation and policy before admission, including 
   expect(changed.outcome).toBe("not-started");
   expect(calls).toBe(1);
   expect(switching.events).toHaveLength(1);
+});
+
+test("volume deletion uses validated allocation ownership without fabricating an instance", () => {
+  const { volumeInstanceId: _, ...ownership } = volume;
+  const prepared = prepareHostedIntegration(plan());
+  const built = prepareHostedRailwayAction(prepared, {
+    actionId: "delete-unbound-volume",
+    operation: "volume-delete",
+    volume: ownership,
+  });
+  expect(JSON.parse(built.input.toString())).toEqual({ id: volume.volumeId });
+  expect(built.query).toContain("volumeDelete");
+  expect(() =>
+    prepareHostedRailwayAction(prepared, {
+      actionId: "delete-wrong-role",
+      operation: "volume-delete",
+      volume: { ...ownership, alias: "worker-original" },
+    }),
+  ).toThrow("ownership");
+});
+
+test("request deadlines reserve reap time and never extend request or phase limits", async () => {
+  const now = Date.now();
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  try {
+    const observed: number[] = [];
+    const s = setup(async (input) => {
+      observed.push(input.timeoutMs!);
+      return child({ projectDelete: true });
+    });
+    const action: HostedRailwayAction = {
+      actionId: "delete",
+      operation: "project-delete",
+      project,
+    };
+    expect((await s.api.run(action, s.gate, { deadlineMs: now + 10000 })).outcome).toBe("response");
+    expect((await s.api.run(action, s.gate, { deadlineMs: now + 60000 })).outcome).toBe("response");
+    s.gate.startedAt = now - 7200 * 1000 + 12000;
+    s.gate.approval.approvedAt = new Date(s.gate.startedAt - 60000).toISOString();
+    expect((await s.api.run(action, s.gate, { deadlineMs: now + 60000 })).outcome).toBe("response");
+    const cleanup = { ...s.gate, phase: "cleanup" as const, startedAt: now - 7800 * 1000 + 9000 };
+    cleanup.approval = {
+      ...cleanup.approval,
+      approvedAt: new Date(cleanup.startedAt - 60000).toISOString(),
+    };
+    expect((await s.api.run(action, cleanup, { deadlineMs: now + 60000 })).outcome).toBe(
+      "response",
+    );
+    expect(observed).toEqual([5000, 15000, 7000, 4000]);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+test("invalid or exhausted request deadlines refuse before admission or child creation", async () => {
+  const now = Date.now();
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  try {
+    let calls = 0;
+    const s = setup(async () => {
+      calls++;
+      return child(createdProject.data);
+    });
+    for (const deadlineMs of [
+      Number.NaN,
+      Infinity,
+      -1,
+      0,
+      0.5,
+      Number.MAX_SAFE_INTEGER + 1,
+      undefined,
+      null,
+    ])
+      await expect(
+        s.api.run(createAction, s.gate, { deadlineMs: deadlineMs as number }),
+      ).rejects.toThrow("Invalid hosted API request deadline");
+    for (const deadlineMs of [now - 1, now, now + 5000])
+      await expect(s.api.run(createAction, s.gate, { deadlineMs })).rejects.toThrow("Insufficient");
+    expect(calls).toBe(0);
+    expect(s.events).toHaveLength(0);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+test("admission latency reduces the captured request deadline even if its caller mutates options", async () => {
+  let now = Date.now();
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const request = { deadlineMs: now + 15000 };
+    let timeout: number | undefined;
+    const s = setup(
+      async (input) => {
+        timeout = input.timeoutMs;
+        return child(createdProject.data);
+      },
+      {
+        beforeAttempt: async () => {
+          await Promise.resolve();
+          now += 2000;
+          request.deadlineMs = now + 60000;
+        },
+      },
+    );
+    expect((await s.api.run(createAction, s.gate, request)).outcome).toBe("response");
+    expect(timeout).toBe(8000);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+test("deadline exhaustion during admission records not-started without calling the provider", async () => {
+  let now = Date.now();
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    let calls = 0;
+    const request = { deadlineMs: now + 10000 };
+    const s = setup(
+      async () => {
+        calls++;
+        return child(createdProject.data);
+      },
+      {
+        beforeAttempt: async () => {
+          await Promise.resolve();
+          now += 5000;
+        },
+      },
+    );
+    const result = await s.api.run(createAction, s.gate, request);
+    expect(result.outcome).toBe("not-started");
+    expect(result.reason).toBe("admission-changed");
+    expect(result.child).toBeNull();
+    expect(calls).toBe(0);
+    expect(s.events).toEqual([{ after: result }]);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+test("a child returning beyond the deadline retains evidence without establishing success", async () => {
+  let now = Date.now();
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const s = setup(async () => {
+      now += 10001;
+      return child(createdProject.data);
+    });
+    const result = await s.api.run(createAction, s.gate, { deadlineMs: now + 10000 });
+    expect(result.outcome).toBe("unknown");
+    expect(result.reason).toBe("child-failure");
+    expect(result.response).toBeNull();
+    expect(result.child?.exitCode).toBe(0);
+    expect(s.events).toHaveLength(2);
+    const query = setup(async () => {
+      now += 10001;
+      return child({ project: null });
+    });
+    expect(
+      (
+        await query.api.run({ actionId: "read", operation: "project-read", project }, query.gate, {
+          deadlineMs: now + 10000,
+        })
+      ).outcome,
+    ).toBe("query-failed");
+  } finally {
+    clock.mockRestore();
+  }
 });

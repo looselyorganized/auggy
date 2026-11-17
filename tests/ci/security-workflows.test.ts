@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -18,6 +19,9 @@ interface WorkflowStep {
 }
 
 interface WorkflowJob {
+  name?: string;
+  if?: string;
+  "runs-on"?: string;
   needs?: string | string[];
   outputs?: Record<string, string>;
   services?: Record<string, { image?: string }>;
@@ -232,6 +236,7 @@ describe("tracked test-surface workflow enforcement", () => {
     );
 
     const runtime = requireJob(jobs, "runtime_shards");
+    expect(runtime["runs-on"]).toBe("ubuntu-latest");
     expect(normalizedNeeds(runtime)).toEqual(["inventory"]);
     expect(runtime.strategy?.matrix?.shard).toBe(
       "${{ fromJSON(needs.inventory.outputs.runtime) }}",
@@ -341,30 +346,49 @@ describe("tracked test-surface workflow enforcement", () => {
       "test-surface-inventory.ts run-runtime-files",
     );
 
-    expect(
-      requireStep(requireJob(jobs, "deterministic_tests"), "Run deterministic v1 tests").run,
-    ).toContain("test-surface-inventory.ts run-runtime-files");
-    expect(
-      requireStep(requireJob(jobs, "linux_boundaries"), "Exercise Linux security boundary").run,
-    ).toBe('bun scripts/test-surface-inventory.ts run-runtime-files "$TEST_PATH"');
+    expect(jobs.deterministic_tests).toBeUndefined();
+    expect(jobs.linux_boundaries).toBeUndefined();
+    expect(normalizedNeeds(aggregate)).toContain("runtime_shards");
   });
 
-  test("release rehearsal executes the same canonical bounded inventory", () => {
+  test("required aggregate rejects every failed, cancelled or skipped constituent", () => {
+    const { jobs } = readWorkflow("ci.yml");
+    const aggregate = requireJob(jobs, "test");
+    expect(aggregate.name).toBe("v1 release gate");
+    expect(aggregate.if).toBe("always()");
+    const required = Object.keys(jobs)
+      .filter((id) => id !== "test")
+      .sort();
+    expect(normalizedNeeds(aggregate).sort()).toEqual(required);
+    const step = requireStep(aggregate, "Verify constituent gates");
+    const entries = Object.entries(step.env ?? {});
+    expect(entries.map(([, value]) => value).sort()).toEqual(
+      required.map((id) => `\${{ needs.${id}.result }}`).sort(),
+    );
+    const success = Object.fromEntries(entries.map(([key]) => [key, "success"]));
+    const run = (env: Record<string, string>) =>
+      spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", step.run!], {
+        env,
+        timeout: 1000,
+        encoding: "utf8",
+      }).status;
+    expect(run(success)).toBe(0);
+    for (const [key] of entries) {
+      for (const result of ["failure", "cancelled", "skipped", ""]) {
+        expect(run({ ...success, [key]: result })).toBe(1);
+      }
+    }
+  });
+
+  test("release rehearsal retains package certification without repeating source suites", () => {
     const { source, jobs } = readWorkflow("release-rehearsal.yml");
     const rehearse = requireJob(jobs, "rehearse");
 
-    expect(requireStep(rehearse, "Validate tracked test surface").run).toBe(
-      "bun scripts/test-surface-inventory.ts check",
-    );
-    expect(requireStep(rehearse, "Run runtime tests in bounded shards").run).toBe(
-      "bun scripts/test-surface-inventory.ts run-runtime",
-    );
-    expect(requireStep(rehearse, "Run console tests").run).toBe(
-      "bun scripts/test-surface-inventory.ts run console",
-    );
-    expect(requireStep(rehearse, "Validate Temporal orchestration example").run).toBe(
-      "bun run test:temporal-example",
-    );
+    expect(rehearse.name).toBe("Release rehearsal");
+    const commands = rehearse.steps?.map((step) => step.run ?? "").join("\n") ?? "";
+    expect(commands).not.toContain("test-surface-inventory.ts");
+    expect(commands).not.toContain("bun run lint");
+    expect(commands).not.toContain("bun run test:temporal-example");
     expect(requireStep(rehearse, "Smoke packed release").run).toBe("bun run smoke:release");
     const releaseDetection = requireStep(rehearse, "Detect explicit release PR or version change");
     expect(releaseDetection.run).toContain('case "${GITHUB_HEAD_REF:-}" in');

@@ -1,0 +1,18 @@
+{
+  "scope": "Existing private TypeScript executor; fresh candidate build required, consumed runs unchanged",
+  "baseline": "/private/tmp/auggy-test-simplification-baseline",
+  "source": "/private/tmp/auggy-m5-hosted-executor",
+  "patchSHA256": "4741f3ddb48f8530354c34e38884fa6d80b9ecf3f9030ef74be2cb936885c8d9",
+  "files": [
+    {
+      "path": "deploy.ts",
+      "beforeSHA256": "f7bf968e64083a2a1da3f61334e59d4c0be97ada674ff393f673c98843080ea7",
+      "afterSHA256": "e5fe05ab990c038500044b1ff76bf19606ec63268d7fbbf21cd579096ff917c5"
+    },
+    {
+      "path": "main.ts",
+      "beforeSHA256": "deffe667b12ea57875d6c7b002b7a3e3d1b16263a5cc44aa66aa43659bbbf081",
+      "afterSHA256": "d1c37b5b287b9498784e7078caa89f10c204d2049950b1fbe5e4897a85029264"
+    }
+  ]
+}

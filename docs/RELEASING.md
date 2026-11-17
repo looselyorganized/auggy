@@ -66,7 +66,8 @@ Concrete checks the workflows enforce:
 
 | Check | Where | When it fires | What it gates |
 |---|---|---|---|
-| Lint / typecheck / tests | `ci.yml` + `release-rehearsal.yml` | Every PR to main | Code regressions |
+| Lint / typecheck / tests | `ci.yml` | Every PR to main | Code regressions |
+| Packed install / scaffold / boot / assets | `release-rehearsal.yml` | Every PR to main | Package and installed-consumer regressions |
 | All six versions not already on npm | `release-rehearsal.yml` | Version change or explicit `release/*` PR | Catches registry conflicts before merge |
 | Tarball packaging dry-run (`npm pack --dry-run`) | `release-rehearsal.yml` | Version change or explicit `release/*` PR | Catches missing files and broken package entry points |
 | Tag suffix matches `package.json.version` | `publish.yml` (on tag push) | Tag push only | Catches version/tag drift |
@@ -78,7 +79,9 @@ Concrete checks the workflows enforce:
 ### Tracked test-surface inventory
 
 `tests/ci/test-surface-manifest.json` is the canonical bounded test inventory
-for both primary CI and release rehearsal. The validator derives exact test
+for primary CI and local full-suite runs. Release rehearsal owns the separate
+packed-consumer smoke; it does not repeat the source suites. Both required checks
+must pass for the same commit. The validator derives exact test
 paths from Git's tracked tree, rejects unassigned or multiply assigned tests,
 and executes each shard sequentially with exact `./` argv entries. Run:
 
@@ -96,6 +99,19 @@ intentionally not part of release evidence until they are added to Git. The
 inventory requires a complete checkout, so source archives and sparse
 checkouts should use direct `bun test` commands for local exploration rather
 than claiming the release gate passed.
+
+For a focused integration rerun, select the existing stage:
+
+```bash
+bun run smoke:integration --stage local      # installed HTTP, browser, polling
+bun run smoke:integration --stage container  # Linux storage/recovery and polling
+bun run smoke:integration                    # all six rows; unchanged CI default
+```
+
+Container-only runs skip Playwright installation and browser host preparation.
+A selected stage certifies only its own rows. Keep the complete suite and packed
+release smoke for final acceptance; rerun additional scopes when changed code or
+a failure warrants them. Hosted resources are never created by these commands.
 
 ### AgentMail provider canary gate
 

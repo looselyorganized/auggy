@@ -1,16 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   assertIntegrationEnvironment,
   createIntegrationBudget,
   observeIntegrationSse,
+  preflightHostedExport,
   readIntegrationFile,
   redactIntegrationDiagnostic,
   waitForIntegrationHttpReady,
   withIntegrationChild,
 } from "../../scripts/release-smoke/integration-consumer";
+import { fixture } from "../cli/deploy/portable-fixtures";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -28,6 +30,49 @@ const content = frame({ type: "TEXT_MESSAGE_CONTENT", delta: "synthetic-owned-ma
 const terminal = frame({ type: "RUN_FINISHED" });
 
 describe("M5 harness mechanics; not installed product acceptance", () => {
+  test("hosted preflight exports both profiles without starting project code or retaining scratch", async () => {
+    const root = workspace();
+    for (const kind of ["http", "none"] as const) {
+      const consumer = join(root, kind);
+      fixture(
+        consumer,
+        kind === "http"
+          ? [{ name: "web", type: "webTransport", options: { port: 8080, adminRoute: false } }]
+          : [],
+      );
+      mkdirSync(join(consumer, "node_modules"));
+      symlinkSync(resolve(import.meta.dir, "../.."), join(consumer, "node_modules/auggy"));
+      writeFileSync(join(consumer, ".env"), "PREFLIGHT_PRIVATE_VALUE=do-not-load\n");
+      const profile =
+        kind === "http" ? { kind, port: 8080, healthPath: "/health", consolePath: null } : { kind };
+      expect(await preflightHostedExport({ consumer, profile, temporaryDirectory: root })).toEqual({
+        status: "passed",
+        manifestSHA256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+      expect(readdirSync(root).filter((name) => name.startsWith("auggy-preflight-"))).toEqual([]);
+      if (kind === "http") {
+        await expect(
+          preflightHostedExport({
+            consumer,
+            profile: {
+              ...profile,
+              kind,
+              port: 8080,
+              healthPath: "/health",
+              consolePath: "/console",
+            },
+            temporaryDirectory: root,
+          }),
+        ).rejects.toThrow("profile differs");
+      }
+      writeFileSync(join(consumer, "vendor/auggy.tgz"), "invalid archive");
+      await expect(
+        preflightHostedExport({ consumer, profile, temporaryDirectory: root }),
+      ).rejects.toThrow("local export failed before allocation");
+      expect(readdirSync(root).filter((name) => name.startsWith("auggy-preflight-"))).toEqual([]);
+    }
+  });
+
   test("non-cooperating operations settle and receive abort within the outer monotonic budget", async () => {
     const budget = createIntegrationBudget(45);
     let signal: AbortSignal | undefined;

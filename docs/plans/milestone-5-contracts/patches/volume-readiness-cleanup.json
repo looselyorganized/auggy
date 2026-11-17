@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "patch": "volume-readiness-cleanup.patch",
+  "patchSHA256": "14259ea325ff3600350a455b9d1c2c3fde53dc590aafc06e34d40be6beee04be",
+  "applyFrom": "/private/tmp",
+  "baselineDirectory": "/private/tmp/m5-volume-repair-baseline",
+  "files": [
+    {
+      "path": "auggy-m5-hosted-controller/controller.ts",
+      "beforeSHA256": "a5407f10bc06a4dfeba404df9f496bd8f43ad0d29aae44fd2e881642a331b359",
+      "afterSHA256": "c0cd74badd8ca32818f9e0d88742b3a60fc7741b6daa1a2b04e2a06e3c96320a"
+    },
+    {
+      "path": "auggy-m5-hosted-controller/controller.test.ts",
+      "beforeSHA256": "527789e15c4c83c64be4bdebd8f667a764234e20690181cb14926de71ab60e64",
+      "afterSHA256": "36c2da1c8f830ef547d041ed03279cfdb6f08f0eea188c26443b428f87719cd0"
+    },
+    {
+      "path": "auggy-m5-hosted-controller/guard-callback.ts",
+      "beforeSHA256": "8896b4ca569159bf3282c1b0a2873200f3e0e20b978dea14433d247abf42e588",
+      "afterSHA256": "09fd977aa9c36912664f8249f4cc57ee8008498bd6ec9ad586682f7ffda042bd"
+    },
+    {
+      "path": "auggy-m5-hosted-executor/frozen.ts",
+      "beforeSHA256": "44b81f2f1bd5fb3d1355fe6842bd6a3ba5a8cee4285d63fd176055855cb89287",
+      "afterSHA256": "0af5e076f78ced86793c3ca214d1a1deb2ca6558344be1d960ad7bc1c582eb1b"
+    },
+    {
+      "path": "auggy-m5-hosted-executor/platform.ts",
+      "beforeSHA256": "281e36b64c4829a899547f1f3e942d6265904a4a1a66e6b8b48d5cf6d5ad492a",
+      "afterSHA256": "e9d7da24c4868a7042e3ab954ecadccb764943953099b667e9e85098682ce008"
+    },
+    {
+      "path": "auggy-m5-hosted-executor/build-candidate.ts",
+      "beforeSHA256": "1d828de7dcee3cd4fe8a9189f21f38fda0bbe64b48b07a1820e72567467c1735",
+      "afterSHA256": "96cd11a4699fb4751e6fa333908517d7a911e49c08072e06857c2b4140212a12"
+    },
+    {
+      "path": "auggy-m5-hosted-executor/assemble.ts",
+      "beforeSHA256": "3c92b20d0cf66b2745a606ad7b67011d5c169c807c1d51a02cc2c6b5f81718d9",
+      "afterSHA256": "704345a1b4b9653e65664e849c9aaf219e58dbbe0c33e886c8788ebc27e1d006"
+    }
+  ]
+}

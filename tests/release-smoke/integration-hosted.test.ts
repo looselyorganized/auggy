@@ -3,11 +3,13 @@ import {
   assertHostedInstanceBinding,
   assertHostedIntegrationApproval,
   assertHostedProjectAvailable,
+  assertHostedVolumeCleanupInventory,
   bindHostedDeployment,
   bindHostedProjectAllocation,
   bindHostedServiceAdmission,
   bindHostedSshKey,
   bindHostedVolumeAllocation,
+  bindHostedVolumeOwnership,
   prepareHostedIntegration,
   projectHostedServicePlacement,
   type HostedIntegrationPlan,
@@ -949,4 +951,149 @@ test("service admission enforces NEVER while retaining the inactive provider ret
       expect(() => bindHostedServiceAdmission(rejected)).toThrow("caps/policy");
     }
   }
+});
+
+function cleanupVolumeFixture() {
+  const fixture = volumeFixture();
+  const projectFixtureValue = projectFixture();
+  return {
+    prepared: fixture.prepared,
+    project: bindHostedProjectAllocation(projectFixtureValue),
+    ownedVolumes: [bindHostedVolumeOwnership(fixture)],
+    readback: data({
+      project: {
+        ...projectFixtureValue.readback.data.project,
+        services: connection([
+          {
+            id: fixture.service.serviceId,
+            name: fixture.service.serviceName,
+            projectId: fixture.service.projectId,
+          },
+        ]),
+        volumes: fixture.readback.data.project.volumes,
+      },
+    }),
+  };
+}
+
+test("confirmed allocation establishes cleanup ownership without claiming an attached instance", () => {
+  const fixture = volumeFixture();
+  Object.assign(fixture.service, { token: "private-service-canary" });
+  Object.assign(fixture.creation.data.volumeCreate, { token: "private-creation-canary" });
+  const owned = bindHostedVolumeOwnership(fixture);
+  expect(owned.volumeId).toBe(uuid(6));
+  expect(owned.sizeMB).toBe(50000);
+  expect(owned).not.toHaveProperty("volumeInstanceId");
+  expect(JSON.stringify(owned)).not.toContain("canary");
+  for (const creation of [
+    {},
+    data({ volumeCreate: null }),
+    data({ volumeCreate: { id: uuid(6), projectId: uuid(99) } }),
+    { ...fixture.creation, errors: [{ message: "secret-canary" }] },
+  ])
+    expect(() => bindHostedVolumeOwnership({ ...fixture, creation })).toThrow();
+  for (const previousVolumeIds of [
+    [uuid(6)],
+    [uuid(8), uuid(8)],
+    [uuid(8), uuid(9), uuid(10), uuid(11)],
+    ["invalid"],
+  ])
+    expect(() => bindHostedVolumeOwnership({ ...fixture, previousVolumeIds })).toThrow();
+  expect(() => bindHostedVolumeOwnership({ ...fixture, alias: "worker-original" })).toThrow("role");
+});
+
+test("cleanup proves present or absent ownership independently of workload readiness", () => {
+  const expected = { presentVolumeIds: [uuid(6)], absentVolumeIds: [] };
+  for (const change of [
+    {},
+    { serviceId: null, mountPath: "/tmp" },
+    {
+      state: "MIGRATING",
+      mountPath: "/wrong",
+      sizeMB: 1,
+      currentSizeMB: 2,
+      region: "elsewhere",
+      isPendingDeletion: true,
+    },
+  ]) {
+    const fixture = cleanupVolumeFixture();
+    Object.assign(
+      fixture.readback.data.project.volumes.edges[0]!.node.volumeInstances.edges[0]!.node,
+      change,
+    );
+    expect(assertHostedVolumeCleanupInventory(fixture)).toEqual(expected);
+  }
+  const unbound = cleanupVolumeFixture();
+  unbound.readback.data.project.volumes.edges[0]!.node.volumeInstances.edges = [];
+  unbound.readback.data.project.services.edges = [];
+  expect(assertHostedVolumeCleanupInventory(unbound)).toEqual(expected);
+  const absent = cleanupVolumeFixture();
+  absent.readback.data.project.volumes.edges = [];
+  absent.readback.data.project.services.edges = [];
+  expect(assertHostedVolumeCleanupInventory(absent)).toEqual({
+    presentVolumeIds: [],
+    absentVolumeIds: [uuid(6)],
+  });
+  absent.ownedVolumes = [];
+  expect(assertHostedVolumeCleanupInventory(absent)).toEqual({
+    presentVolumeIds: [],
+    absentVolumeIds: [],
+  });
+});
+
+test("cleanup inventory rejects foreign, ambiguous and incomplete ownership", () => {
+  for (const change of [
+    { serviceId: uuid(99) },
+    { environmentId: uuid(99) },
+    { volumeId: uuid(99) },
+    { id: "invalid" },
+    { serviceId: undefined },
+  ]) {
+    const fixture = cleanupVolumeFixture();
+    Object.assign(
+      fixture.readback.data.project.volumes.edges[0]!.node.volumeInstances.edges[0]!.node,
+      change,
+    );
+    expect(() => assertHostedVolumeCleanupInventory(fixture)).toThrow();
+  }
+  const duplicate = cleanupVolumeFixture();
+  duplicate.readback.data.project.volumes.edges.push(
+    structuredClone(duplicate.readback.data.project.volumes.edges[0]!),
+  );
+  expect(() => assertHostedVolumeCleanupInventory(duplicate)).toThrow("duplicate volume");
+  const unknown = cleanupVolumeFixture();
+  unknown.readback.data.project.volumes.edges[0]!.node.id = uuid(99);
+  expect(() => assertHostedVolumeCleanupInventory(unknown)).toThrow("unexpected");
+  const ambiguous = cleanupVolumeFixture();
+  const instances = ambiguous.readback.data.project.volumes.edges[0]!.node.volumeInstances.edges;
+  instances.push(structuredClone(instances[0]!));
+  expect(() => assertHostedVolumeCleanupInventory(ambiguous)).toThrow("ambiguous attachments");
+  for (const selection of ["services", "volumes", "environments"] as const) {
+    const fixture = cleanupVolumeFixture();
+    fixture.readback.data.project[selection].pageInfo.hasNextPage = true;
+    expect(() => assertHostedVolumeCleanupInventory(fixture)).toThrow("paginated");
+  }
+  const partial = cleanupVolumeFixture();
+  partial.readback.data.project.volumes.edges[0]!.node.volumeInstances.pageInfo.hasNextPage = true;
+  expect(() => assertHostedVolumeCleanupInventory(partial)).toThrow("paginated");
+  const missingService = cleanupVolumeFixture();
+  missingService.readback.data.project.services.edges = [];
+  expect(() => assertHostedVolumeCleanupInventory(missingService)).toThrow(
+    "missing or wrong service",
+  );
+  const wrongName = cleanupVolumeFixture();
+  wrongName.readback.data.project.services.edges[0]!.node.name = "foreign";
+  expect(() => assertHostedVolumeCleanupInventory(wrongName)).toThrow("missing or wrong service");
+  const inconsistent = cleanupVolumeFixture();
+  inconsistent.ownedVolumes[0]!.projectId = uuid(99);
+  expect(() => assertHostedVolumeCleanupInventory(inconsistent)).toThrow("inconsistent");
+  const duplicateOwnership = cleanupVolumeFixture();
+  duplicateOwnership.ownedVolumes.push(duplicateOwnership.ownedVolumes[0]!);
+  expect(() => assertHostedVolumeCleanupInventory(duplicateOwnership)).toThrow("ambiguous");
+  const wrongProject = cleanupVolumeFixture();
+  wrongProject.readback.data.project.id = uuid(99);
+  expect(() => assertHostedVolumeCleanupInventory(wrongProject)).toThrow("wrong project");
+  const wrongEnvironment = cleanupVolumeFixture();
+  wrongEnvironment.readback.data.project.environments.edges[0]!.node.id = uuid(99);
+  expect(() => assertHostedVolumeCleanupInventory(wrongEnvironment)).toThrow("wrong environment");
 });

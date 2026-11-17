@@ -11,9 +11,10 @@ name: Release rehearsal (PR)
 # for initial development. Anything MAY change at any time."). Releases are
 # deliberate; feature PRs are not.
 #
-# What still runs on EVERY PR (defense-in-depth — also covered by ci.yml):
-#  - lint / test regressions
+# What runs on EVERY PR:
 #  - a full pack, isolated install, scaffold, boot, and console asset smoke
+# Lint, runtime/console tests and example regressions belong to ci.yml. Both
+# "v1 release gate" and "Release rehearsal" remain required for the same commit.
 #
 # What runs ONLY for a version change or explicit `release/*` PR:
 #  - version-vs-npm conflict check (would `npm publish` succeed?)
@@ -60,24 +61,6 @@ jobs:
 
       - name: Install deps
         run: bun install --frozen-lockfile
-
-      - name: Lint
-        run: bun run lint
-
-      # Keep port-heavy and subprocess-heavy suites in bounded processes.
-      # Bun 1.3.14 can starve MCP stdio startup when the complete repository
-      # suite shares one long-lived test process.
-      - name: Validate tracked test surface
-        run: bun scripts/test-surface-inventory.ts check
-
-      - name: Run runtime tests in bounded shards
-        run: bun scripts/test-surface-inventory.ts run-runtime
-
-      - name: Run console tests
-        run: bun scripts/test-surface-inventory.ts run console
-
-      - name: Validate Temporal orchestration example
-        run: bun run test:temporal-example
 
       - name: Smoke packed release
         env:

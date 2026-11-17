@@ -1,9 +1,220 @@
 # Milestone 5 execution evidence
 
 Current status: G0/G1/G3 and M5-00/01/02/03/04/05/06/08 are accepted for their
-recorded scopes. The latest authorized hosted attempt, r8 on 2026-11-16 UTC,
-remains incomplete; M5-07, M5-09 and M5-10 remain open. Earlier entries record
-historical gate states.
+recorded scopes. The latest full hosted rehearsal, r9 on 2026-11-16 UTC,
+remains incomplete. A subsequent single-service startup check verified hosted
+startup and CLI HTTP readiness with the volume rollback; its supplemental Python
+probe failed locally on certificate verification. M5-07, M5-09 and M5-10 remain
+open. Earlier entries record historical gate states.
+
+## Test execution simplification
+
+The user authorized reducing redundant execution while preserving production
+coverage. Primary CI now runs runtime files through the canonical bounded shards
+once: the 30-file supplemental deterministic job and four duplicate Linux boundary
+jobs were removed. Release rehearsal retains actual packed-consumer certification
+and release-specific checks; lint, source runtime/console tests and the Temporal
+example remain in primary CI. Read-only GitHub inspection confirmed that the
+required checks are `v1 release gate`, `Release rehearsal` and CodeQL; all three
+names and their responsibilities are preserved. No protection setting changed.
+
+The existing integration shell entry accepts local/container/all stages, with all
+still the CI default. Container-only preparation skips the browser. The existing
+TypeScript hosted executor now runs the shared installed-CLI export preflight
+before allocation and requires the managed CLI's readiness result. It uses no
+second health client and reports preparation, execution and cleanup separately.
+The one-off Python runner is retired as historical evidence. Full HTTP/polling
+replacement and recovery acceptance remains required; no product test was removed.
+
+Verification: 37 focused tests / 319 assertions passed, including aggregate gate
+failure/cancellation/skip rejection, container-only shell execution, both export
+profiles, malformed archive refusal and scratch cleanup. Repository and private
+executor typechecks, repository lint and shell syntax passed. The existing Biome
+schema-version notice remains informational. No new hosted resources or full
+rehearsal were run. The private executor changes are preserved as a
+[reproducible patch](milestone-5-contracts/patches/test-simplification.patch) with
+[source hashes](milestone-5-contracts/patches/test-simplification.json); dry
+application passed. A fresh candidate build is required before hosted execution;
+consumed frozen runs and their evidence remain unchanged.
+
+## Narrow hosted startup check after volume rollback
+
+On 2026-11-16 UTC, one actual hosted deployment used the installed Auggy CLI,
+one isolated HTTP service and one fresh volume mounted at `/app/data`. The
+deployment reached SUCCESS with one RUNNING instance. The CLI verified the public
+`/health` endpoint and reported platform and HTTP readiness as ready. That check
+requires a successful same-origin 2xx response; the numeric status was not retained.
+No model/tool calls, channel turns, worker, redeployment or recovery scenario ran.
+
+Nineteen startup log rows were retained before cleanup. Test-only entrypoint
+logging recorded the mount initially owned by uid/gid 0, mode 0755, containing
+`lost+found`. After initialization it was mode 0700 with `lost+found` preserved
+alongside runtime state. The installed runtime-volume source matched the accepted
+rollback hash. This confirms the compatibility fix on a fresh hosted volume;
+it does not retroactively establish r9's exact cause.
+
+The supplemental Python HTTP request failed on its local CA trust configuration
+(`CERTIFICATE_VERIFY_FAILED`). Its raw result remains incomplete; the successful
+CLI health result is recorded separately, not substituted into that result.
+Deployment stop, volume deletion, service deletion and project deletion all
+succeeded; a complete active-project inventory confirmed absence.
+
+Elapsed execution was 324.70 seconds including preflight failures and cleanup.
+Before any hosted deployment, the private test driver needed corrections to its
+capacity query, comparison of provider metadata and explicit HTTP CLI arguments.
+The derivative archive also needed supported ustar headers; all 415 file payloads
+were identical before and after normalization. Local export then passed. All
+temporary allocations from failed preflight runs were deleted. These were test
+preparation defects, not observed hosted application failures. The original
+ten-minute execution deadline was preserved; no hosted deployment was retried.
+No production architecture changed during this check.
+
+Evidence: `/private/tmp/auggy-hosting-startup-d6b94b64/evidence/assessment.json`,
+with hashes of the raw result, startup logs, deployment identity, CLI output,
+plan and driver. This is scoped startup evidence, not full G4/M5 acceptance.
+
+## Railway volume compatibility rollback
+
+The user explicitly selected restoration of prior Railway volume initialization,
+without a data-layout migration or new subdirectory requirement. This supersedes
+the empty-only preparation disposition and the subdirectory proposal in the RCA
+entry below. Explicit Railway startup now sets an existing, pinned, current-owner
+advertised mount root to 0700 whether empty or populated. The operation remains
+root-only and descriptor-based with fsync and physical-identity rechecks. It does
+not create mounts, change ownership, traverse children or repair child state.
+Generic roots stay operator-provisioned. Identity, restore-fence, unsafe-state
+and exclusive-lease admission remain unchanged.
+
+Independent reviewer `volume_plan_review` accepted the source/tests without
+blockers. All 53 runtime-volume tests / 137 assertions passed, including populated
+mounts, an actual `lost+found` directory, untouched child files/symlink targets,
+wrong ownership and replaced roots. Repository typecheck and lint passed; the
+existing informational Biome schema-version notice remains. The source index is
+current. Active deployment/storage documentation and contracts reflect the rollback.
+
+A Linux AMD64 startup proof used the reviewed r9 package archive with exactly one
+member replaced: `package/src/cli/runtime-volume.ts`, matching the current source
+hash. The image used frozen dependency resolution and the existing packaged
+entrypoint. An initially 0755 mount containing `lost+found` and an existing 0640
+file reached `/health` 200 in 3,611 ms. The mount became 0700 while metadata mode,
+file mode and file content remained unchanged. The installed source hash was
+checked inside the running container. The container was removed afterward.
+
+Evidence: `/private/tmp/m5-volume-rollback-proof/acceptance.json`, derivative
+archive inventory and container result in the same directory. This is a scoped
+packaged startup proof, not a new release artifact or full M5 certification.
+No hosted validation was performed in that local proof. The subsequent narrow
+hosted check is recorded above. R9's exact historical cause remains unconfirmed;
+its consumed frozen executor/package must not be reused for this change. Fresh
+reviewed candidate artifacts remain required for full hosted certification.
+
+## R9 hosted validation: allocation and cleanup passed; HTTP verification failed
+
+The user explicitly authorized one fresh run after local acceptance. R9 used the
+reviewed frozen plan, unchanged workload artifacts and resource/time/cost limits.
+The attempt ran for 5 minutes 25 seconds, including cleanup; no retry or
+repair followed.
+
+Both original volumes attached successfully after two observations each. This
+passes the allocation point where r8 stopped, but does not exercise the extended
+wait or never-bound cleanup paths live; those remain covered by local regressions.
+
+Railway reported the HTTP deployment SUCCESS. The managed CLI completed with
+exit zero in 197,456 ms; its retained summary explicitly reports platform ready
+and HTTP timed-out. Domain verification passed. The next target observation
+showed `deploymentStopped:true` and a singleton instance with status `CRASHED`.
+The strict deployment binder refused this stopped instance, correctly preventing
+workload acceptance. The cause of the instance stopping is not established by
+this readback; neither an application crash nor fixture watchdog expiry is proven.
+No root workload action or behavior scenario completed.
+
+Cleanup completed with no failed steps or unknown allocations. Both exact volume
+deletes returned true, as did project and SSH-key deletion. Complete active-project
+and key inventories independently confirmed absence. No resources are retained.
+
+The result, timings and evidence hashes are recorded in
+`/private/tmp/m5-g4-r9-result.json`; the private run is
+`/private/tmp/auggy-m5-run-2ae0a736-r9`. Plan SHA256:
+`fb1fbb1089163873d029248280a862c7c95251bf5b5dda90812b200c4c11a682`.
+The new post-deployment diagnostics were exercised live and exposed the exact
+readiness/target state that was missing from r7. M5 remains incomplete; further
+work must diagnose the HTTP startup/health and runtime-stop cause before retrying.
+
+## R9 RCA investigation: reproducible storage-admission failure; historical cause unconfirmed
+
+Read-only attempts to recover deployment logs by exact project/deployment IDs,
+including the bounded `deploymentLogs` API, returned `Project not found` after
+cleanup. R9 retained target state and health-summary diagnostics, but neither
+startup logs nor mounted-directory permissions/contents. Therefore its precise
+runtime-stop cause cannot be certified from the retained hosted evidence.
+
+The unchanged reviewed fixture reached `/health` 200 locally on macOS in 778 ms.
+The exact Docker context, pinned base index and installed dependencies were then
+built for Linux AMD64. With the same parsed deployment environment, Railway mode
+and a fresh 0755 mounted directory, `/health` returned 200 within 3,069 ms. The base
+index explicitly includes AMD64 and ARM64, ruling out an ARM-only pin. An initial
+local Docker trial used quoted dotenv values directly as Docker env-file input;
+that non-equivalent trial was excluded and the installed Auggy secrets parser
+was used for the accepted differential probes.
+
+Changing only the local mount contents by adding an empty 0700 `lost+found`
+directory made the same image exit 1 in 2,622 ms without opening HTTP. It emitted:
+`[runtime-volume] nonempty Railway mount must already have mode 0700; prepare its ownership and permissions while stopped`.
+`initializeEmptyRailwayRuntimeMount` explicitly refuses any entry when the mount
+root is not already 0700; the existing test also explicitly rejects `lost+found`.
+This is a concrete startup incompatibility with fresh filesystem roots containing
+platform metadata. It is a strong candidate explanation for r9, **not proof that
+r9 actually contained that directory or had those permissions**.
+
+The architectural correction to evaluate is separating the provider-owned mount
+root from an application-owned private data directory. Do not weaken arbitrary
+nonempty-volume checks or recursively repair ownership/permissions. Before another
+full rehearsal, a startup-only hosted diagnostic must preserve container logs and
+exact mount metadata before teardown to confirm or falsify this cause.
+
+Evidence and limits: `/private/tmp/m5-r9-http-rca/rca.json`. No new hosted resources
+were created and no application code was changed. Local probe containers and the
+temporary image were removed; redacted logs and reproduction scripts were retained.
+
+## Volume readiness and cleanup repair acceptance
+
+The follow-up repair is locally accepted and independently reviewed with no
+remaining blockers. Volume attachment now has a 180-second deadline anchored to
+confirmed creation, five-second completion-relative polling, and clipped request
+and reap budgets. Strict workload binding and recognized pending states remain
+unchanged. Cleanup derives ownership from hash-verified confirmed creation
+receipts, including never-bound resources, and validates complete fresh inventory
+before volume or cascading service/project deletion. Readiness state, mount and
+usage differences do not prevent teardown of proven-owned resources; foreign or
+ambiguous identities do.
+
+Verification: 67 private controller tests / 918 assertions and 50 tracked contract
+and adapter tests / 494 assertions passed (117 tests / 1,412 assertions total).
+Repository, executor and controller typechecks passed. Repository and private
+controller lint passed; the repository reports an existing informational Biome
+schema-version notice. The exact r8 regression is covered: bound HTTP plus
+created-but-unbound worker volumes both receive exact-ID deletion. Independent
+principal reviewer `volume_plan_review` accepted the final changes.
+
+The acceptance receipt is
+`/private/tmp/m5-g4-volume-readiness-cleanup-acceptance.json`. Private source changes
+are preserved in [the reproducible patch](milestone-5-contracts/patches/volume-readiness-cleanup.patch)
+and [before/after hash manifest](milestone-5-contracts/patches/volume-readiness-cleanup.json).
+The patch passed a dry application against the saved baseline.
+
+A fresh local candidate at `/private/tmp/auggy-m5-run-2ae0a736-r9` was built and
+passed compiled `--check` preflight. Plan SHA256:
+`fb1fbb1089163873d029248280a862c7c95251bf5b5dda90812b200c4c11a682`.
+It contains the same six workload artifacts and 90 logical actions; resource,
+cost, watchdog, execution and cleanup limits remain unchanged. Initial local
+staging omitted the immutable packed-source inventory and altered cloned symlink
+modes; both were restored from their existing frozen inventories before the
+successful preflight. No runtime contract was relaxed to pass this check.
+
+No new provider calls or hosted execution occurred in this repair. R9 has no
+approval file and empty execution/evidence journals. R8 remains the latest
+executed attempt; its incomplete cleanup record is unchanged. Hosted acceptance
+and M5 completion remain outstanding.
 
 ## Diagnostic implementation and r8 validation
 

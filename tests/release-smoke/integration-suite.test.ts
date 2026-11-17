@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import type { IntegrationScenarioEvidence } from "../../scripts/release-smoke/integration-contracts";
 import {
   assertIntegrationStages,
@@ -21,6 +25,49 @@ const required = [
   "--ollama",
   "/ollama.tgz",
 ];
+
+test("container-only shell entry skips browser setup and rejects invalid stages before preparation", () => {
+  const root = mkdtempSync(join(tmpdir(), "auggy-integration-entry-"));
+  try {
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    // Stub installations and suite execution; an unexpected browser command fails.
+    writeFileSync(
+      join(bin, "bun"),
+      '#!/bin/bash\ncase "$1" in\ninstall) exit 0;;\nscripts/release-smoke/integration-suite.ts) printf "%s\\n" "$@" > "$TEST_ARGUMENTS";;\n*) exit 91;;\nesac\n',
+      { mode: 0o700 },
+    );
+    writeFileSync(join(bin, "npm"), '#!/bin/bash\nprintf "fixture.tgz\\n"\n', { mode: 0o700 });
+    const command = resolve(import.meta.dir, "../../scripts/test-portable-integration.sh");
+    const run = (args: string[]) =>
+      spawnSync("/bin/bash", [command, ...args], {
+        env: {
+          PATH: `${bin}:/usr/bin:/bin`,
+          TMPDIR: root,
+          TEST_ARGUMENTS: join(root, "args"),
+          AUGGY_INTEGRATION_EVIDENCE_DIR: join(root, "evidence"),
+          AUGGY_INTEGRATION_CI_USERNS: "1",
+          CI: "true",
+        },
+        timeout: 5000,
+        encoding: "utf8",
+      });
+    const before = readdirSync(root);
+    for (const args of [["--stage", "hosted"], ["--stage"], ["--unknown", "container"]]) {
+      expect(run(args).status).toBe(2);
+      expect(readdirSync(root)).toEqual(before);
+    }
+    const result = run(["--stage", "container"]);
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    const args = readFileSync(join(root, "args"), "utf8").trim().split("\n");
+    expect(args.slice(-2)).toEqual(["--stage", "container"]);
+    expect(args).not.toContain("--chromium-path");
+    expect(readdirSync(root).some((name) => name.startsWith("auggy-m5-build."))).toBeFalse();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("suite parser cannot silently omit browser prerequisites or enter a hosted stage", () => {
   expect(() => parseIntegrationSuiteArguments(required)).toThrow("Chromium");

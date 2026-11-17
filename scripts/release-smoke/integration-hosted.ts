@@ -153,11 +153,15 @@ export interface HostedServiceBinding extends HostedProjectBinding {
   serviceName: string;
 }
 
-export interface HostedVolumeBinding extends HostedServiceBinding {
+/** Confirmed allocation ownership; this does not establish workload readiness. */
+export interface HostedVolumeOwnership extends HostedServiceBinding {
   alias: HostedVolumeAlias;
   volumeId: string;
-  volumeInstanceId: string;
   sizeMB: number;
+}
+
+export interface HostedVolumeBinding extends HostedVolumeOwnership {
+  volumeInstanceId: string;
 }
 
 export interface HostedDeploymentBinding extends HostedServiceBinding {
@@ -956,6 +960,141 @@ export function bindHostedServiceAdmission(options: {
     role: options.role,
     serviceId: service.id,
     serviceName: approved.name,
+  };
+}
+
+/** Creation must come from a confirmed mutation receipt, never an uncertain create or name lookup. */
+export function bindHostedVolumeOwnership(options: {
+  prepared: ReturnType<typeof prepareHostedIntegration>;
+  service: HostedServiceBinding;
+  alias: HostedVolumeAlias;
+  creation: unknown;
+  previousVolumeIds: readonly string[];
+}): HostedVolumeOwnership {
+  const plan = options.prepared.plan;
+  assertServiceBinding(plan, options.service);
+  const approved = plan.railway.volumes.find((volume) => volume.alias === options.alias);
+  check(
+    approved && approved.serviceRole === options.service.role,
+    "Hosted volume role is not approved",
+  );
+  const created = object(responseData(options.creation).volumeCreate);
+  id(created.id);
+  for (const previous of options.previousVolumeIds) id(previous);
+  check(
+    created.projectId === options.service.projectId &&
+      !options.previousVolumeIds.includes(created.id) &&
+      options.previousVolumeIds.length < plan.limits.maxVolumes &&
+      new Set(options.previousVolumeIds).size === options.previousVolumeIds.length,
+    "Hosted volume creation has wrong ownership or distinct-resource allowance",
+  );
+  return {
+    ...serviceIdentity(options.service),
+    alias: options.alias,
+    volumeId: created.id,
+    sizeMB: approved.sizeMB,
+  };
+}
+
+export function assertHostedVolumeOwnership(
+  prepared: ReturnType<typeof prepareHostedIntegration>,
+  volume: HostedVolumeOwnership,
+): void {
+  assertServiceBinding(prepared.plan, volume);
+  id(volume.volumeId);
+  const approved = prepared.plan.railway.volumes.find((entry) => entry.alias === volume.alias);
+  check(
+    approved && approved.serviceRole === volume.role && approved.sizeMB === volume.sizeMB,
+    "Hosted volume ownership differs from approved allocation",
+  );
+}
+
+/** Validate fresh inventory for teardown without treating workload readiness as ownership. */
+export function assertHostedVolumeCleanupInventory(options: {
+  prepared: ReturnType<typeof prepareHostedIntegration>;
+  project: HostedProjectBinding;
+  ownedVolumes: readonly HostedVolumeOwnership[];
+  readback: unknown;
+}): { presentVolumeIds: string[]; absentVolumeIds: string[] } {
+  const { prepared, project: target, ownedVolumes } = options;
+  assertProjectBinding(prepared.plan, target);
+  const expected = new Map<string, HostedVolumeOwnership>();
+  const aliases = new Set<HostedVolumeAlias>();
+  check(
+    ownedVolumes.length <= prepared.plan.limits.maxVolumes,
+    "Hosted cleanup ownership exceeds approval",
+  );
+  for (const owned of ownedVolumes) {
+    assertHostedVolumeOwnership(prepared, owned);
+    check(
+      owned.projectId === target.projectId &&
+        owned.environmentId === target.environmentId &&
+        !expected.has(owned.volumeId) &&
+        !aliases.has(owned.alias),
+      "Hosted cleanup volume ownership is inconsistent or ambiguous",
+    );
+    expected.set(owned.volumeId, owned);
+    aliases.add(owned.alias);
+  }
+  const project = object(responseData(options.readback).project);
+  check(
+    project.id === target.projectId &&
+      project.workspaceId === target.workspaceId &&
+      project.name === target.projectName,
+    "Hosted cleanup inventory has the wrong project/workspace",
+  );
+  const environments = connection(project.environments);
+  check(
+    environments.length === 1 &&
+      environments[0]!.id === target.environmentId &&
+      environments[0]!.projectId === target.projectId &&
+      environments[0]!.name === target.environmentName,
+    "Hosted cleanup inventory has the wrong environment",
+  );
+  const services = new Map<string, Record<string, unknown>>();
+  for (const service of connection(project.services)) {
+    id(service.id);
+    check(
+      service.projectId === target.projectId && !services.has(service.id),
+      "Hosted cleanup service inventory is ambiguous or belongs to another project",
+    );
+    services.set(service.id, service);
+  }
+  const present = new Set<string>();
+  const instanceIds = new Set<string>();
+  for (const volume of connection(project.volumes)) {
+    id(volume.id);
+    const owned = expected.get(volume.id);
+    check(
+      owned && volume.projectId === target.projectId && !present.has(volume.id),
+      "Hosted cleanup inventory contains an unexpected or duplicate volume",
+    );
+    present.add(volume.id);
+    const instances = connection(volume.volumeInstances);
+    check(instances.length <= 1, "Hosted cleanup volume has ambiguous attachments");
+    for (const instance of instances) {
+      id(instance.id);
+      check(
+        !instanceIds.has(instance.id) &&
+          instance.volumeId === owned.volumeId &&
+          instance.environmentId === owned.environmentId &&
+          (instance.serviceId === null || instance.serviceId === owned.serviceId),
+        "Hosted cleanup volume has foreign or ambiguous ownership",
+      );
+      instanceIds.add(instance.id);
+      if (instance.serviceId !== null) {
+        check(
+          services.get(owned.serviceId)?.name === owned.serviceName,
+          "Hosted cleanup volume refers to a missing or wrong service",
+        );
+      }
+    }
+  }
+  return {
+    presentVolumeIds: [...present],
+    absentVolumeIds: ownedVolumes
+      .filter((owned) => !present.has(owned.volumeId))
+      .map((owned) => owned.volumeId),
   };
 }
 
