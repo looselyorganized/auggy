@@ -17,6 +17,8 @@ selections. The generated `src/index.ts`, `src/agent.ts`,
 source. Review release notes and adapt those files explicitly when a contract
 changes; dependency installation never silently rewrites them. The optional
 company application is a separate service with its own dependency selection.
+A global CLI launching a contract-2 application must understand contract 2 before
+it can delegate execution to the project-local runtime.
 
 ## Contract ledger
 

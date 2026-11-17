@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { assertApplicationLifecycleResult } from "../../scripts/release-smoke/application-lifecycle";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  applicationLifecycleFaultSource,
+  assertApplicationLifecycleResult,
+} from "../../scripts/release-smoke/application-lifecycle";
 
 const clean = {
   cleanupConfirmed: true,
@@ -57,4 +62,24 @@ test("startup fault evidence requires the anchored thrown error, not a source co
     "Error: application-lifecycle-after-start-fault\n",
   ])
     expect(() => assertApplicationLifecycleResult({ ...clean, stderr }, fault)).not.toThrow();
+});
+
+test("startup fault edits target the actual staged reference before boot and after start", () => {
+  const source = readFileSync(
+    join(import.meta.dir, "../../examples/inspectable-agent/src/index.ts"),
+    "utf8",
+  );
+  const prepared = applicationLifecycleFaultSource(source, "prepare");
+  const prepareFault = prepared.indexOf('throw new Error("application-lifecycle-prepare-fault")');
+  expect(prepareFault).toBeGreaterThan(prepared.indexOf("await runtime.createAugments(config)"));
+  expect(prepareFault).toBeLessThan(prepared.indexOf("runtime.createAgent("));
+  expect(prepared).toContain("const ready = await runtime.start({ agent, http })");
+  const started = applicationLifecycleFaultSource(source, "after-start");
+  const startFault = started.indexOf('throw new Error("application-lifecycle-after-start-fault")');
+  expect(startFault).toBeGreaterThan(started.indexOf("await runtime.start({ agent, http })"));
+  expect(startFault).toBeLessThan(started.indexOf("  observeStartup({"));
+  for (const fault of ["prepare", "after-start"] as const) {
+    expect(() => applicationLifecycleFaultSource("missing anchor", fault)).toThrow("anchor");
+    expect(() => applicationLifecycleFaultSource(source + source, fault)).toThrow("ambiguous");
+  }
 });

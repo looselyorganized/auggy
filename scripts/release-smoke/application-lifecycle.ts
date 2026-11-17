@@ -20,8 +20,8 @@ import { createProviderFixture, PROVIDER_FIXTURE_API_KEY } from "./provider-fixt
 const BOOT = "application-lifecycle-actual-augment-boot";
 const SHUTDOWN = "application-lifecycle-actual-augment-shutdown";
 const AUGMENT = "src/augments/example/index.ts";
-const COMPOSE = "src/agent.ts";
-const START = "  const ready = await host.start({ http: prepared.http.map(configureHttp) });";
+const PREPARE = "  const augments = await runtime.createAugments(config);";
+const START = "  const ready = await runtime.start({ agent, http });";
 type ChildResult = Awaited<ReturnType<ReturnType<typeof startApplicationChild>["finish"]>>;
 
 function check(value: unknown, message: string): asserts value {
@@ -30,6 +30,14 @@ function check(value: unknown, message: string): asserts value {
 function replaceOnce(source: string, before: string, after: string) {
   check(source.split(before).length === 2, "Lifecycle source anchor is missing or ambiguous");
   return source.replace(before, after);
+}
+export function applicationLifecycleFaultSource(source: string, fault: "prepare" | "after-start") {
+  const anchor = fault === "prepare" ? PREPARE : START;
+  return replaceOnce(
+    source,
+    anchor,
+    `${anchor}\n  throw new Error("application-lifecycle-${fault}-fault");`,
+  );
 }
 export function assertApplicationLifecycleResult(
   result: Pick<
@@ -101,7 +109,7 @@ export async function runInstalledApplicationLifecycle(options: InstalledApplica
   );
   const original = snapshotApplicationFiles(consumer, options.recipe.sourceFiles);
   const lock = applicationHash(readFileSync(join(consumer, "bun.lock")));
-  const paths = ["agent.yaml", options.recipe.entrypoint, COMPOSE, AUGMENT];
+  const paths = ["agent.yaml", options.recipe.entrypoint, AUGMENT];
   const originalBytes = new Map(paths.map((path) => [path, readFileSync(join(consumer, path))]));
   const config = parse(originalBytes.get("agent.yaml")!.toString("utf8"));
   check(
@@ -275,20 +283,9 @@ export async function runInstalledApplicationLifecycle(options: InstalledApplica
     for (const path of launchPaths) {
       await normal(path, `initial-${path.name}`, "SIGTERM");
       for (const fault of ["prepare", "after-start"] as const) {
-        const edited = fault === "prepare" ? COMPOSE : options.recipe.entrypoint;
+        const edited = options.recipe.entrypoint;
         const base = originalBytes.get(edited)!.toString("utf8");
-        const source =
-          fault === "prepare"
-            ? replaceOnce(
-                base,
-                "  configured.compose({ turnProgram, onTurnFinalized: observeFinalization });",
-                '  (() => { configured.compose({ turnProgram, onTurnFinalized: observeFinalization }); throw new Error("application-lifecycle-prepare-fault"); })();',
-              )
-            : replaceOnce(
-                base,
-                START,
-                `${START}\n  throw new Error("application-lifecycle-after-start-fault");`,
-              );
+        const source = applicationLifecycleFaultSource(base, fault);
         atomicSource(edited, source);
         assertOnlyApplicationEdits(
           configured,

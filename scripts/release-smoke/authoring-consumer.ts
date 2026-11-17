@@ -452,11 +452,12 @@ export async function installAuthoringCli(options: {
   name: string;
   evidenceDirectory: string;
   core: AuthoringArtifactSet["core"];
+  applicationContract?: 1 | 2;
 }): Promise<InstalledAuthoringCli & { consumer: string }> {
   check(/^[a-z][a-z0-9-]{0,50}$/.test(options.name), "Invalid CLI carrier name");
   prepareAuthoringWorkspace(options.workspace);
   const core = inspectApplicationArtifact(options.core);
-  assertApplicationCapability(core.manifest, 2);
+  assertApplicationCapability(core.manifest, options.applicationContract ?? 2);
   const consumer = join(options.workspace, options.name);
   mkdirSync(consumer, { mode: 0o700 });
   const raw = core.manifest.overrides;

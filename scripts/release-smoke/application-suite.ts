@@ -10,6 +10,7 @@ import {
   applicationArtifact,
   buildApplicationBaseline,
   buildDifferentVersionArtifact,
+  buildSameVersionArtifact,
 } from "./application-artifacts";
 import {
   APPLICATION_ROWS,
@@ -55,6 +56,7 @@ export async function runApplicationSuite(options: {
     core: PackedArtifactInput,
     provider: PackedArtifactInput,
     legacy = false,
+    referenceDir?: string,
   ) =>
     installApplicationConsumer({
       repoRoot,
@@ -63,6 +65,7 @@ export async function runApplicationSuite(options: {
       core,
       provider,
       legacy,
+      referenceDir,
       evidenceDirectory: join(evidence, "installs"),
     });
   const context = (name: string) => {
@@ -96,18 +99,29 @@ export async function runApplicationSuite(options: {
       core,
       join(evidence, "different-version"),
     );
-    const global = await install("global", baseline.core, baseline.provider);
+    const sameVersionCore = await buildSameVersionArtifact(
+      core,
+      join(evidence, "same-version-global"),
+    );
+    const global = await install("global", sameVersionCore, provider);
     const fresh = await install("fresh", core, provider);
     const compatibility = await install("compatibility", core, provider);
     const legacy = await install("legacy", legacyCore, legacyProvider, true);
     const differentVersion = await install("different-version", unequalCore, provider);
     const launchd = await install("launchd", core, provider);
-    const retained = await install("retained", baseline.core, baseline.provider);
+    const retained = await install(
+      "retained",
+      baseline.core,
+      baseline.provider,
+      false,
+      baseline.referenceDir,
+    );
     results.artifacts = {
       candidate: { core, provider },
       baseline,
       legacy: legacyBuild.source,
       differentVersion: unequalCore,
+      sameVersionGlobal: sameVersionCore,
     };
     await runInstalledApplication({ ...context("fresh"), ...fresh, global });
     results.fresh = "passed";

@@ -17,6 +17,7 @@ import {
   assertAuthoringCommandSucceeded,
   authoringCreateArguments,
   inspectGeneratedAuthoringTree,
+  installAuthoringCli,
   readAuthoringSource,
   runBoundedAuthoringCli,
   selectAuthoringArtifacts,
@@ -42,7 +43,7 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 // Packaging helper fixtures only; these are never actual Auggy runtime evidence.
-function artifact(packageName: string): PackedArtifactInput {
+function artifact(packageName: string, applicationContracts = [1, 2]): PackedArtifactInput {
   const staging = join(root, `pack-${sequence++}`);
   write(
     join(staging, "package/package.json"),
@@ -51,7 +52,8 @@ function artifact(packageName: string): PackedArtifactInput {
       version: "0.5.0",
       ...(packageName === "auggy"
         ? {
-            auggyRuntime: { schemaVersion: 1, launcherProtocol: 1, applicationContracts: [1, 2] },
+            auggyRuntime: { schemaVersion: 1, launcherProtocol: 1, applicationContracts },
+            exports: { "./cli": "./index.ts" },
           }
         : {}),
     }),
@@ -139,6 +141,24 @@ describe("authoring helper preparation, not installed CLI acceptance", () => {
     for (let index = 0; index < 129; index++)
       write(join(consumer, "skills", `file-${index}.md`), "bounded fixture");
     expect(() => inspectGeneratedAuthoringTree(consumer)).toThrow("bound");
+  });
+
+  test("a contract-1 global CLI can be installed explicitly while candidate creation still requires2", async () => {
+    const baseline = artifact("auggy", [1]);
+    const options = {
+      repoRoot: join(root, "checkout"),
+      workspace: root,
+      name: "baseline-cli",
+      evidenceDirectory: join(root, "cli-evidence"),
+      core: baseline,
+    };
+    await expect(installAuthoringCli(options)).rejects.toThrow("contract-2");
+    const installed = await installAuthoringCli({ ...options, applicationContract: 1 });
+    expect(installed.core.manifest.auggyRuntime?.applicationContracts).toEqual([1]);
+    expect(installed.entry).toBe(join(installed.packageRoot, "index.ts"));
+    expect(() =>
+      selectAuthoringArtifacts({ ...artifactSet(), core: baseline }, "anthropic"),
+    ).toThrow("contract-2");
   });
 
   test("selects exact OpenRouter prerequisite and rejects wrong package/hash evidence", () => {
