@@ -302,6 +302,8 @@ export interface ToolInventoryInfo {
 }
 
 export interface WebDashboardState {
+  /** Selected local conversation mount; older runtimes omit this field. */
+  agentRunPath?: string;
   allowAnonymous: { value: boolean | null; source?: string };
   publicIntegration: { value: boolean | null; source?: string };
   publicFrontendUrl?: string;

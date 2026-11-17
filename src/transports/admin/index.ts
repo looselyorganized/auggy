@@ -34,6 +34,7 @@ import {
   serveStaticFile,
   staticFailureResponse,
 } from "./admin-static";
+import { validateLiteralRoutePath } from "../../kernel/route-pattern";
 import { createRouteManifest, summarizeRouteManifest } from "../../kernel/route-manifest";
 import type { CollectedRoute } from "../../kernel/route-collector";
 import {
@@ -373,6 +374,8 @@ export interface AdminRouteContext {
    * when unset.
    */
   selfPort?: number;
+  /** Validated local conversation mount selected by this web transport. */
+  agentRunPath?: string;
   /** Durable console transcript storage. Omitted when console chat persistence is disabled. */
   consoleChat?: ConsoleChatStore;
   /** Unpredictable process-local marker authorizing console persistence on the self-fetch. */
@@ -1019,6 +1022,7 @@ async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): P
   };
   const web = {
     ...readWebDashboardState(blocks),
+    agentRunPath: ctx.agentRunPath ?? "/agent/run",
     // Token verification and operator-facing identity resolution are separate
     // capabilities. The Console must not probe this endpoint merely because
     // visitor tokens are enabled for public routes.
@@ -1913,9 +1917,14 @@ async function handleChatProxy(
   if (consoleMetadata) {
     headers["x-auggy-console-internal"] = ctx.consoleChatInternalMarker!;
   }
+  const agentRunPath = ctx.agentRunPath ?? "/agent/run";
+  if (validateLiteralRoutePath(agentRunPath)) {
+    return jsonResponse({ error: "invalid_conversation_mount" }, 503);
+  }
   try {
-    upstream = await fetch(`http://127.0.0.1:${ctx.selfPort}/agent/run`, {
+    upstream = await fetch(`http://127.0.0.1:${ctx.selfPort}${agentRunPath}`, {
       method: "POST",
+      redirect: "error",
       headers,
       body: JSON.stringify({
         messages: [{ role: "user", content: body.message }],

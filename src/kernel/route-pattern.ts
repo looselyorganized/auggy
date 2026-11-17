@@ -6,6 +6,29 @@ export interface RoutePattern {
 
 const PARAM_SEGMENT_RE = /^:([A-Za-z_][A-Za-z0-9_]*)$/;
 
+/** A managed endpoint must survive URL parsing as one literal absolute path. */
+export function validateLiteralRoutePath(path: unknown): string | undefined {
+  if (
+    typeof path !== "string" ||
+    !path.startsWith("/") ||
+    path === "/" ||
+    path.endsWith("/") ||
+    path.includes("//") ||
+    /[\\%?#:*\s]/.test(path) ||
+    [...path].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+  ) {
+    return "path must be a canonical literal absolute path without parameters, encoding, or a trailing slash";
+  }
+  try {
+    if (new URL(path, "http://localhost").pathname !== path) {
+      return "path must be a canonical literal absolute path";
+    }
+  } catch {
+    return "path must be a canonical literal absolute path";
+  }
+  return undefined;
+}
+
 export function parseRoutePattern(path: string):
   | { ok: true; pattern: RoutePattern }
   | {

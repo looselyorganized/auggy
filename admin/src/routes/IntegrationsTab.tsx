@@ -66,7 +66,7 @@ export function IntegrationsTab() {
     data.card.provider.name ??
     "agent";
   const browser = selectBrowserConnection(origin, data.web);
-  const server = selectServerConnection(origin);
+  const server = selectServerConnection(origin, data.web.agentRunPath);
   const legacyDiscoveryPublic = data.web.publicIntegration.value === true;
   const agentCliName = data.agentMeta?.name ?? data.card.provider.name ?? "agent";
 

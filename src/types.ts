@@ -680,6 +680,8 @@ export interface PreparedApplication {
 
 export interface ConfiguredWebHttp {
   readonly name: string; // configured augment instance name, not a secret
+  /** Selected mount after listener selection; older contract-1 adapters may omit it. */
+  readonly agentRunPath?: string;
   readonly agentRun: ManagedHttpHandler;
   readonly fallback: ManagedHttpHandler;
   createListener(options: {
@@ -690,7 +692,7 @@ export interface ConfiguredWebHttp {
 
 export interface AgentRunMount {
   readonly method: "POST";
-  readonly path: "/agent/run";
+  readonly path: string;
   readonly handle: ManagedHttpHandler;
 }
 
@@ -717,6 +719,7 @@ export interface ApplicationReady {
     readonly port: number;
     readonly localBaseUrl: string;
     readonly consoleUrl: string | null;
+    readonly agentRunPath?: string;
   }[];
 }
 

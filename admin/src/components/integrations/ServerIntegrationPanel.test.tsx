@@ -31,11 +31,11 @@ function route(path: string, auth: RouteManifestEntry["auth"]): RouteManifestEnt
   };
 }
 
-function panel() {
+function panel(path = "/agent/run") {
   return (
     <ServerIntegrationPanel
       agentName="demo"
-      guidance={selectServerConnection("https://agent.example")}
+      guidance={selectServerConnection("https://agent.example", path)}
       routes={[
         route("/orders/status", "none"),
         route("/orders/update", "creator"),
@@ -114,4 +114,12 @@ describe("ServerIntegrationPanel", () => {
     expect(html).toContain("--openapi");
     expect(html).toContain("--json");
   });
+});
+
+
+it("renders the selected conversation mount and the correct base URL", () => {
+  const html = renderToStaticMarkup(panel("/support/chat"));
+  expect(html).toContain("POST /support/chat");
+  expect(html).not.toContain("/agent/run");
+  expect(html).toContain("https://agent.example");
 });

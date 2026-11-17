@@ -1198,6 +1198,61 @@ test("a rejecting augment factory without rollback evidence retains runtime owne
   expect(f.manifest()?.agentId).toBe(f.id);
 });
 
+for (const path of ["/support/chat", "/support/:action"]) {
+  test(`selected endpoint rejects a boot-populated ${path} augment route before registration`, async () => {
+    const f = fixture();
+    const port = await freePort();
+    let registered = false;
+    const business: Augment = {
+      name: "business",
+      onBoot: async () => {
+        business.httpRoutes = [
+          { method: "POST", path, auth: "none", handler: async () => new Response("collision") },
+        ];
+      },
+    };
+    const host = f.host({
+      factories: {
+        resolveEngine: async () => createMockModel(),
+        resolveAugments: async (_config, _dir, options) => {
+          const web = options!.webTransportFactory!(
+            { port, adminRoute: false, auth: { type: "bearer", token: "collision-test" } },
+            "web",
+          );
+          return [
+            web,
+            business,
+            {
+              name: "probe",
+              transport: {
+                identify: () => null,
+                register: async () => {
+                  registered = true;
+                },
+              },
+            },
+          ];
+        },
+      },
+    });
+    const config = await host.prepareConfiguration();
+    const model = await host.createModel(config);
+    const augments = await host.createAugments(config);
+    const agent = host.createAgent({ config, model, augments, turnProgram: contractTurnProgram });
+    for (const transport of host.transportsFrom(augments)) host.bindTransport(transport, agent);
+    const http = host.httpBindings(agent).map((web) =>
+      web.createListener({
+        routes: [{ method: "POST", path: "/support/chat", handle: web.agentRun }],
+        fallback: web.fallback,
+      }),
+    );
+    await expect(host.start({ agent, http })).rejects.toThrow(/route validation/);
+    expect(registered).toBe(false);
+    expect(await host.stop()).toMatchObject({ status: "stopped" });
+    expect(f.manifest()).toBeNull();
+  });
+}
+
 test("shutdown before an asynchronous stage enters prevents its factory acquisition", async () => {
   let calls = 0;
   const f = fixture();

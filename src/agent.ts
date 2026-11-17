@@ -207,6 +207,7 @@ function createAgentInstance(
   options?: { explicitTransportBindings?: boolean },
 ): HostedAgentInstance {
   const selectedTransports = new Set<Augment>();
+  let reservedHttpPaths: readonly string[] = [];
   let registrationStarted = false;
   let hostAdmission: "pending" | "open" | "closed" = hostedMode ? "pending" : "open";
   const hostWaiters = new Set<(admitted: boolean) => void>();
@@ -978,7 +979,9 @@ function createAgentInstance(
 
           // Collect routes after boot but before transport registration. No
           // transport may accept traffic until the later ready phase.
-          const collected = collectAugmentRoutes(effectiveAugments);
+          const collected = collectAugmentRoutes(effectiveAugments, {
+            additionalReservedPaths: reservedHttpPaths,
+          });
           if (collected.errors.length > 0) {
             throw new Error(
               `Cannot start agent — augment HTTP route validation failed:\n  ` +
@@ -1211,6 +1214,12 @@ function createAgentInstance(
       if (selectedTransports.has(effective))
         throw new Error("[application] transport already bound");
       selectedTransports.add(effective);
+    },
+    setReservedHttpPaths(paths: readonly string[]) {
+      assertStartupAllowed();
+      if (!hostedMode || started || registrationStarted || hostAdmission !== "pending")
+        throw new Error("[application] HTTP mount selection is closed");
+      reservedHttpPaths = Object.freeze([...paths]);
     },
     openAdmission() {
       if (!hostedMode || !started || hostAdmission !== "pending")

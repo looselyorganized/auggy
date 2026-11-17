@@ -42,6 +42,25 @@ describe("collectAugmentRoutes", () => {
     expect(result.errors[0]).toContain("reserved");
   });
 
+  test("rejects exact and parameterized routes matching an additional managed mount", () => {
+    for (const method of ["GET", "POST"] as const) {
+      for (const path of ["/support/chat", "/support/:operation", "/:service/chat"]) {
+        const result = collectAugmentRoutes([aug("collision", [route(method, path)])], {
+          additionalReservedPaths: ["/support/chat"],
+        });
+        expect(result.routes).toEqual([]);
+        expect(result.errors).toHaveLength(1);
+        expect(result.errors[0]).toContain("/support/chat");
+        expect(result.errors[0]).toContain("reserved");
+      }
+    }
+    const independent = collectAugmentRoutes([aug("ok", [route("POST", "/support/:id/run")])], {
+      additionalReservedPaths: ["/support/chat"],
+    });
+    expect(independent.errors).toEqual([]);
+    expect(independent.routes).toHaveLength(1);
+  });
+
   test("rejects all reserved paths", () => {
     for (const path of RESERVED_PATHS) {
       const result = collectAugmentRoutes([aug("a", [route("GET", path)])]);
@@ -56,6 +75,32 @@ describe("collectAugmentRoutes", () => {
       expect(result.errors[0]).toContain(prefix);
       expect(result.errors[0]).toContain("reserved");
     }
+  });
+
+  test("rejects patterns that reach built-in paths or reserved namespaces after a mount rename", () => {
+    for (const method of ["GET", "POST"] as const) {
+      for (const path of [
+        "/:scope/run",
+        "/:name",
+        "/.well-known/:document",
+        "/:scope/custom",
+        "/:scope/custom/deep",
+        "/:scope/",
+        "/:scope/:operation",
+      ]) {
+        const result = collectAugmentRoutes([aug("reserved-pattern", [route(method, path)])], {
+          additionalReservedPaths: ["/support/chat"],
+        });
+        expect(result.routes).toEqual([]);
+        expect(result.errors).toHaveLength(1);
+        expect(result.errors[0]).toContain("reserved");
+      }
+    }
+    const result = collectAugmentRoutes([
+      aug("unrelated", [route("POST", "/support/:action"), route("GET", "/app/:scope/run")]),
+    ]);
+    expect(result.errors).toEqual([]);
+    expect(result.routes).toHaveLength(2);
   });
 
   test("rejects two augments registering the same (method, path)", () => {
@@ -82,14 +127,14 @@ describe("collectAugmentRoutes", () => {
 
   test("rejects overlapping parameterized routes with different shapes", () => {
     const result = collectAugmentRoutes([
-      aug("a", [route("GET", "/:section/new")]),
-      aug("b", [route("GET", "/items/:id")]),
+      aug("a", [route("GET", "/app/:section/new")]),
+      aug("b", [route("GET", "/app/items/:id")]),
     ]);
 
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toContain("overlapping");
-    expect(result.errors[0]).toContain("/:section/new");
-    expect(result.errors[0]).toContain("/items/:id");
+    expect(result.errors[0]).toContain("/app/:section/new");
+    expect(result.errors[0]).toContain("/app/items/:id");
   });
 
   test("allows parameterized routes that cannot match the same path", () => {

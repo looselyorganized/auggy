@@ -151,7 +151,7 @@ function ConversationSurface({ data }: { data: DashboardData }) {
 }
 
 export function buildConversationSurfaceRows(
-  data: { web: Pick<DashboardData["web"], "allowAnonymous"> },
+  data: { web: Pick<DashboardData["web"], "allowAnonymous" | "agentRunPath"> },
 ): Array<{
   title: string;
   prefix: string;
@@ -168,7 +168,7 @@ export function buildConversationSurfaceRows(
         : "Not reported";
   return [
     {
-      title: "/agent/run",
+      title: data.web.agentRunPath ?? "/agent/run",
       prefix: "POST",
       detail: "Primary AG-UI conversation endpoint.",
       health: allowAnonymous === null ? "neutral" : "ready",

@@ -35,7 +35,7 @@ test("external mount executes app handler with original guarded auth, limits and
       routes: [
         {
           method: "POST",
-          path: "/agent/run",
+          path: "/support/chat",
           handle: async (request) => {
             const response = await web.http.agentRun(request);
             const headers = new Headers(response.headers);
@@ -60,7 +60,7 @@ test("external mount executes app handler with original guarded auth, limits and
     };
   };
   const request = (bearer = "managed-web-test-only", content = "hi") =>
-    fetch(`${url}/agent/run`, {
+    fetch(`${url}/support/chat`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${bearer}`,
@@ -75,6 +75,13 @@ test("external mount executes app handler with original guarded auth, limits and
     await first.agent.start();
     expect((await fetch(`${url}/health`)).status).toBe(503);
     first.ready();
+    expect(first.web.agentRunPath).toBe("/support/chat");
+    const oldEndpoint = await fetch(`${url}/agent/run`, {
+      method: "POST",
+      headers: { authorization: "Bearer managed-web-test-only" },
+    });
+    expect(oldEndpoint.status).toBe(404);
+    expect(model.calls).toHaveLength(0);
     const denied = await request("wrong");
     expect(denied.status).toBe(401);
     expect(denied.headers.get("x-application-code")).toBe("first");
@@ -84,11 +91,12 @@ test("external mount executes app handler with original guarded auth, limits and
     expect(oversized.status).toBe(413);
     await oversized.text();
     expect(model.calls).toHaveLength(0);
-    const preflight = await fetch(`${url}/agent/run`, { method: "OPTIONS" });
+    const preflight = await fetch(`${url}/support/chat`, { method: "OPTIONS" });
     expect(preflight.headers.get("access-control-allow-origin")).toBe("https://client.example");
     const original = await request();
     const body = await original.text();
     expect(original.status).toBe(200);
+    expect(original.headers.get("content-type")).toContain("text/event-stream");
     expect(body).toContain("managed result");
     expect(body).toContain("RUN_FINISHED");
     expect(model.calls).toHaveLength(1);

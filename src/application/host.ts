@@ -523,6 +523,7 @@ export function createApplicationHost(options: ApplicationHostOptions): OwnedApp
           binding.web.selectListener(matches[0]!);
         }
         assertNotStopping();
+        hosted!.setReservedHttpPaths(bindings.map(({ web }) => web.agentRunPath));
         await hosted!.agent.start();
         assertNotStopping();
         jobs?.start();
@@ -536,6 +537,7 @@ export function createApplicationHost(options: ApplicationHostOptions): OwnedApp
               Object.freeze({
                 name: web.http.name,
                 port,
+                agentRunPath: web.agentRunPath,
                 localBaseUrl: `http://localhost:${port}`,
                 consoleUrl: enabled ? `http://localhost:${port}/console` : null,
               }),
