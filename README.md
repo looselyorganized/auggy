@@ -221,6 +221,7 @@ my-agent/
   bun.lock                    # after dependency installation
   tsconfig.json
   README.md
+  AGENTS.md                   # development instructions for coding assistants
   .env                        # private, ignored secrets
   .env.example
   .gitignore

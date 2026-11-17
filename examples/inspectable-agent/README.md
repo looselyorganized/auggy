@@ -6,6 +6,9 @@ augment turns one read-only order lookup into a tool and an authenticated route.
 The data is fictional; a real application keeps its database and workflows behind
 the service boundary in `src/augments/example/service.ts`.
 
+See [AGENTS.md](AGENTS.md) for development instructions, editing boundaries and
+verification commands for coding assistants working on this reference.
+
 ## Run it
 
 For a fresh repository checkout, first install the workspace and build the

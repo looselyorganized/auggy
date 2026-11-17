@@ -4,6 +4,10 @@ Turn business operations into agent-ready capabilities. Auggy replaces one-off
 integration glue with controlled, predictable TypeScript augments that bundle
 identity, authorization, schemas, tools, routes and domain logic.
 
+[AGENTS.md](AGENTS.md) guides coding assistants editing this application. It maps
+execution, ownership and verification; the default runtime does not load it into
+agent prompts.
+
 Install dependencies with `bun install` using Bun 1.3.14 or newer. Fill in the
 provider placeholders in the private `.env`, then run `bun run typecheck`,
 `bun test`, and `bun start`. Keep `.env` private; `.env.example` contains only

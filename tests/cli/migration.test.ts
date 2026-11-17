@@ -254,7 +254,7 @@ describe("explicit application adoption", () => {
     expect(treeSnapshot(project)).toEqual(before);
     expect(plan.report.manualActions.join("\n")).toContain("900000");
     expect(plan.report.manualActions.join("\n")).toContain("bun install explicitly");
-    expect(plan.report.changes).toHaveLength(10);
+    expect(plan.report.changes).toHaveLength(11);
     const result = await applyMigration(plan);
     expect(result.status).toBe("complete");
     const manifest = JSON.parse(readFileSync(join(project, "package.json"), "utf8"));
@@ -365,6 +365,7 @@ describe("explicit application adoption", () => {
   test.each([
     "source",
     "readme",
+    "instructions",
     "typescript",
     "test",
     "script",
@@ -379,6 +380,7 @@ describe("explicit application adoption", () => {
     const paths = {
       source: "src/main.ts",
       readme: "README.md",
+      instructions: "AGENTS.md",
       typescript: "tsconfig.json",
       test: "tests/application.test.ts",
     };

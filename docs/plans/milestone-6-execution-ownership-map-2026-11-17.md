@@ -96,6 +96,12 @@ engineer changes them; package `src/index.ts` and `src/agent.ts` remain runtime
 files and are unaffected by this scaffold naming change. The installed acceptance
 record above predates this follow-up.
 
+Fresh scaffolds also include a project-owned `AGENTS.md` for coding assistants.
+It maps execution, supported edits, runtime boundaries and verification. It uses
+the declared configuration filename, participates in existing collision checks,
+and is not automatically loaded into runtime prompts. Identity and learned-guidance
+filenames and loading remain unchanged.
+
 Follow-up verification on 2026-11-17:
 
 - Focused scaffold, creation, inspection, adoption/recovery and self-authoring

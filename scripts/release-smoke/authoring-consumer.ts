@@ -311,6 +311,7 @@ export const GENERATED_AUTHORING_SOURCE_FILES = [
   "identity.md",
   "learned-behaviors.md",
   "README.md",
+  "AGENTS.md",
   "tsconfig.json",
   "tests/application.test.ts",
   ...AUTHORING_EXECUTION_FILES,

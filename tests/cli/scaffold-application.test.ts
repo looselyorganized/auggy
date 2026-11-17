@@ -43,6 +43,7 @@ describe("owned application templates", () => {
       "tests/application.test.ts",
       "tsconfig.json",
       "README.md",
+      "AGENTS.md",
     ]);
     for (const file of plan.files) expect(file.mode).toBe(0o644);
     const source = plan.files
@@ -80,6 +81,11 @@ describe("owned application templates", () => {
     ).toString();
     expect(index).toContain('new URL("../custom%20agent.yaml", import.meta.url)');
     expect(plan.packageFields.scripts.cli).toBe("auggy dev --config 'custom agent.yaml'");
+    const guidance = Buffer.from(
+      plan.files.find((file) => file.relativePath === "AGENTS.md")!.bytes,
+    ).toString();
+    expect(guidance).toContain("`custom agent.yaml` owns provider selection");
+    expect(guidance).not.toContain("{{CONFIG_FILE}}");
   });
 
   for (const name of [

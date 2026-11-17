@@ -9,6 +9,7 @@ export const INSPECTABLE_APPLICATION_RECIPE: ApplicationRecipe = {
     "agent.yaml",
     "identity.md",
     "README.md",
+    "AGENTS.md",
     ".env.example",
     ".gitignore",
     "src/main.ts",

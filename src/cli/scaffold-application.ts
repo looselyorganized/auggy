@@ -11,6 +11,7 @@ const TEMPLATE_FILES = [
   "tests/application.test.ts",
   "tsconfig.json",
   "README.md",
+  "AGENTS.md",
 ] as const;
 
 function validateConfigFileName(name: string): void {

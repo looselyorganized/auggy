@@ -27,7 +27,7 @@ import {
 let root: string;
 let sequence = 0;
 const entry = fileURLToPath(new URL("./authoring-command-fixture.ts", import.meta.url));
-const sourceFiles = ["agent.yaml", "package.json", ...AUTHORING_EXECUTION_FILES];
+const sourceFiles = ["agent.yaml", "package.json", "AGENTS.md", ...AUTHORING_EXECUTION_FILES];
 
 function write(path: string, content: string | Uint8Array): void {
   mkdirSync(dirname(path), { recursive: true });
