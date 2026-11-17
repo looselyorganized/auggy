@@ -1,4 +1,4 @@
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import type {
   AgentComposer,
   AgentComposition,
@@ -14,7 +14,10 @@ import type {
 import { parseConfig } from "../cli/config-parser";
 import type { ParsedConfig } from "../cli/types";
 import { resolveEngine } from "../cli/engine-resolver";
-import { resolveAugments } from "../cli/augment-resolver";
+import {
+  resolveAugments,
+  resolveManagedExternalAuthReplayConfiguration,
+} from "../cli/augment-resolver";
 import {
   createDurableJobsRuntimeIfEnabled,
   type ConfiguredDurableJobsRuntime,
@@ -25,6 +28,9 @@ import { enumerateDistributedCoordinationBlockers } from "../coordination/topolo
 import type { HostedAgentInstance } from "./hosted-agent";
 import { acquireRuntimeOwnership, type RuntimeOwnershipOptions } from "./runtime-ownership";
 import { hasConfirmedCleanup } from "./cleanup-proof";
+import { DEPLOYMENT_MANIFEST_ENV } from "../cli/deploy/contracts";
+import { readDeploymentManifest } from "../cli/deploy/manifest";
+import { reconcileDeploymentProfile } from "../cli/deploy/profile";
 
 export interface ApplicationHostOptions extends RuntimeOwnershipOptions {
   configPath: string;
@@ -208,11 +214,25 @@ export function createApplicationHost(options: ApplicationHostOptions): OwnedApp
             "[application] distributed coordination is not available for ordinary startup",
           );
         }
+        const deploymentManifestPath = process.env[DEPLOYMENT_MANIFEST_ENV];
+        if (deploymentManifestPath !== undefined) {
+          const deployment = readDeploymentManifest(deploymentManifestPath, agentDir, {
+            agentId: config.id,
+            agentName: config.name,
+            configPath: relative(agentDir, configPath).split(sep).join("/"),
+          });
+          reconcileDeploymentProfile(deployment.profile, config.augments);
+        }
         options.onConfigured?.(config);
         ownership = acquireRuntimeOwnership(configPath, config, options, (acquired) => {
           ownership = acquired;
         });
         assertNotStopping();
+        const replayConfiguration = resolveManagedExternalAuthReplayConfiguration(
+          config.augments,
+          agentDir,
+          ownership.runtimeDataAdmission,
+        );
         const model = await (options.factories?.resolveEngine ?? resolveEngine)(
           config.engine,
           agentDir,
@@ -221,11 +241,12 @@ export function createApplicationHost(options: ApplicationHostOptions): OwnedApp
         let rollbackReported = false;
         try {
           augments = await (options.factories?.resolveAugments ?? resolveAugments)(
-            config.augments,
+            replayConfiguration.augments,
             agentDir,
             {
               creator: config.creator,
               agentId: config.id,
+              runtimeDataPlatform: ownership.platform,
               ...(ownership.runtimeDataRoot ? { runtimeDataRoot: ownership.runtimeDataRoot } : {}),
               selfInspection: {
                 name: config.name,
@@ -238,6 +259,8 @@ export function createApplicationHost(options: ApplicationHostOptions): OwnedApp
                 const web = createManagedWebTransport(webOptions, {
                   name,
                   canServe: () => serving,
+                  runtimeDataAdmission: ownership?.runtimeDataAdmission,
+                  managedExternalAuthDbPaths: replayConfiguration.dbPaths,
                 });
                 bindings.push({
                   web,

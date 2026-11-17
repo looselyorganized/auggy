@@ -3,6 +3,11 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ParsedConfig } from "./types";
 import { scopedAgentNamespace } from "./agent-isolation";
 import { resolveTelegramReplayNamespace } from "../augments/telegramTransport/replay-identity";
+import {
+  EXTERNAL_AUTH_REPLAY_GUARD_PREREQUISITE,
+  EXTERNAL_AUTH_REPLAY_INVENTORY_SCHEMA,
+} from "../auth/external-auth-replay-contracts";
+import type { WebTransportExternalAuthOptions } from "../transports/web-transport";
 
 export const RUNTIME_STATE_INVENTORY_VERSION = 1;
 
@@ -197,6 +202,14 @@ function stateConfigShape(config: ParsedConfig): unknown {
         const idempotency = options.idempotency as Record<string, unknown> | undefined;
         shape.consoleChat = consoleChat ? { dbPath: consoleChat.dbPath } : undefined;
         shape.idempotency = idempotency ? { dbPath: idempotency.dbPath } : undefined;
+        const externalAuth = options.externalAuth as WebTransportExternalAuthOptions | undefined;
+        if (externalAuth?.replayProtection?.dbPath !== undefined) {
+          shape.externalAuthReplay = {
+            enabled: externalAuth.replayProtection.enabled,
+            dbPath: externalAuth.replayProtection.dbPath,
+            audience: externalAuth.audience ?? config.id,
+          };
+        }
       }
       if (augment.type === "notify") {
         shape.destinations = (options.destinations as Array<Record<string, unknown>> | undefined)
@@ -604,6 +617,42 @@ export function buildRuntimeStateInventory(
         break;
       }
       case "webTransport": {
+        const externalAuth = opts.externalAuth as WebTransportExternalAuthOptions | undefined;
+        const replay = externalAuth?.replayProtection;
+        if (replay?.enabled === true && replay.dbPath !== undefined) {
+          const path = resolveRuntimeStatePath(
+            replay.dbPath,
+            agentDir,
+            ownedStateRoot,
+            "externalAuth replayProtection.dbPath",
+          );
+          addStore(
+            stores,
+            sqliteEntry({
+              id: `external-auth-replay:${augment.name}`,
+              owner,
+              namespace: externalAuth?.audience ?? config.id,
+              path,
+              runtimeDataRoot,
+              schema: EXTERNAL_AUTH_REPLAY_INVENTORY_SCHEMA,
+              retention: "unexpired assertion IDs only; capacity exhaustion fails closed",
+              restoreOrder: 40,
+              replayCritical: true,
+            }),
+          );
+          if (
+            !externalPrerequisites.some(
+              (entry) => entry.id === EXTERNAL_AUTH_REPLAY_GUARD_PREREQUISITE,
+            )
+          ) {
+            externalPrerequisites.push({
+              id: EXTERNAL_AUTH_REPLAY_GUARD_PREREQUISITE,
+              owner: "runtime",
+              reason:
+                "Local replay restore epoch and clock watermark are excluded from backup payload; Auggy restore creates destination control state before ingress, using trusted synchronized destination time",
+            });
+          }
+        }
         const idempotency = opts.idempotency as { dbPath?: string | null } | undefined;
         const idempotencyRaw = idempotency?.dbPath ?? "./data/web-idempotency.db";
         const idempotencyPath =

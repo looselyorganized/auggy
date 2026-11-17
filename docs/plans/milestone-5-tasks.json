@@ -1,0 +1,902 @@
+{
+  "schemaVersion": 1,
+  "milestone": 5,
+  "plan": "milestone-5-execution-2026-11-13.md",
+  "mode": "handoff",
+  "orchestrator": "CTO / AI Engineering Lead (root)",
+  "maxConcurrentSpecialists": 3,
+  "authorization": {
+    "request": "Implement the plan.",
+    "scope": "Approved M5 implementation; separate M4 merge authorization and concrete hosted approval required; no M5 merge/version bump/publication",
+    "mergeAuthorization": {
+      "request": "merge if no standing issues with the codebase.",
+      "status": "granted_and_executed",
+      "pr": 229,
+      "mergedAt": "2026-11-13T22:13:15Z",
+      "mergeCommit": "c39b746b4b743e5c29dab61a677026c10626d8b8"
+    }
+  },
+  "baseline": {
+    "planningCandidate": "32d7265d0659d5911755e802d18a9f9077b80196",
+    "planningPR": "https://github.com/looselyorganized/auggy/pull/229",
+    "observedMain": "911fe1682c76208c1d99d4dc6841bfcaa608dd8d",
+    "observedMainTree": "d901475a9afb7a9d24dc70c21ac2480bfab78439",
+    "acceptedMain": "c39b746b4b743e5c29dab61a677026c10626d8b8",
+    "rootLockSHA256": "cd4b421883d2874dba117e9410acae08207f352d99b74fcd6a9872d35afde3f7",
+    "mergedMain": "c39b746b4b743e5c29dab61a677026c10626d8b8",
+    "mergedMainTree": "d56d32c6c4bf4b975419a37ff839587bdde35292",
+    "certifiedM4Repair": "56de4e380ffe1e39b7392eb7066c367766368321",
+    "acceptedMainTree": "d56d32c6c4bf4b975419a37ff839587bdde35292"
+  },
+  "gates": {
+    "G0": {
+      "status": "accepted",
+      "requires": [
+        "separately authorized PR229 merge",
+        "verify exact resulting main/tree",
+        "required main CI/PG17 and full CodeQL findings",
+        "reconcile source against reviewed M4 head"
+      ],
+      "pending": [],
+      "evidence": {
+        "mergePR": "https://github.com/looselyorganized/auggy/pull/229",
+        "certifiedPRHead": "56de4e380ffe1e39b7392eb7066c367766368321",
+        "prChecksPassed": 31,
+        "prCI": 43515921164,
+        "prRelease": 43515921228,
+        "prReleaseArtifact": 14080569183,
+        "prFullCodeQL": 43515956526,
+        "prFullCodeQLAnalysis": 2164832777,
+        "mainCI": 43517469604,
+        "mainCodeQL": 43517469468,
+        "mainTreeMatchesCertifiedHead": true,
+        "independentReview": "m4_merge_gate_audit: repair and macOS/Linux evidence accepted; no remaining merge blocker",
+        "mainCIConclusion": "success",
+        "mainCodeQLConclusion": "success",
+        "mainFullCodeQLAnalysis": 2164894539,
+        "mainOpenCodeQLAlerts": 0,
+        "mainPostgreSQL": {
+          "registered": 13,
+          "completed": 13,
+          "serverVersion": 170010
+        },
+        "independentEntryAudit": "m4_merge_gate_audit: accepted ancestry/tree, PG17, hashes and ledger state; no entry blockers"
+      },
+      "acceptedCommit": "c39b746b4b743e5c29dab61a677026c10626d8b8"
+    },
+    "G4": {
+      "status": "accepted",
+      "requires": [
+        "accepted local/container evidence",
+        "exact isolated Railway target",
+        "resource/spending limits",
+        "retention and cleanup policy",
+        "private fixture connectivity",
+        "concrete hosted execution approval"
+      ],
+      "pending": [],
+      "discovery": {
+        "status": "authenticated_read_only",
+        "date": "2026-11-14",
+        "workspaces": 1,
+        "existingProjects": 8,
+        "dedicatedRehearsalProjectFound": false,
+        "proposedTarget": "new isolated project; no existing application reused",
+        "hostedMutations": false
+      },
+      "preparation": {
+        "contract": "milestone-5-contracts/hosted-rehearsal.md",
+        "scope": "Reviewed local harness and source artifacts only; no hosted acceptance",
+        "acceptedCommits": {
+          "childSupervisor": "ecb21a7",
+          "telegramSeal": "13a302b",
+          "approvalGate": "4a69e88",
+          "sshTransport": "7e7385f",
+          "httpCheckpoint": "a8616fe",
+          "remoteEnvelope": "19db679",
+          "actionJournal": "81c0bed",
+          "railwayAdapter": "1849c92",
+          "referenceStoreCorrection": "78f64a9",
+          "exactRemotePaths": "3a36a3b",
+          "dedicatedRecoveryServices": "f8a15e7",
+          "offlineMaintenance": "29c782e"
+        },
+        "privateEvidence": {
+          "httpArtifactSHA256": "4abc652591ecb922e98c7e50fd7b71e5539f331325d356de0fee68e8987e4a51",
+          "workerArtifactSHA256": "7ca222ba3761e657804685dad3ebf1aa4a916b04edfdae4f728271bc98e6b771",
+          "workerProofSHA256": "c24bf782190de8d9ce289977fedbe74455b28eb016e44757ea923a5e92b17c54",
+          "workerReviewSHA256": "db54b90e87ed701340db2903c38d14f65767705dd10cf29d2f423cb981aeabd0",
+          "apiReviewSHA256": "4f1bc23b4a04ac682ca25719993e2d1fe732c6ada9db1a3e794632c277462dc8",
+          "journalReviewSHA256": "bfabb1aee91a8f0c35c17802dfd2896a5cd51dc4650f8cccc27539c33ef7f170",
+          "httpMaintenanceReviewSHA256": "4751df90ea2d2a7ea080df04dba4a96a6291fc6c229017bb4c5172a5cf1586cf",
+          "workerMaintenanceReviewSHA256": "c14457735ec7f29a36c90e0f11e76f54a3b789c63057a4e409659ae8bd1a5ac9",
+          "freshVolumeReviewSHA256": "10e9da422ebdb01705b5297929c7f320585334aa827d5affb244a51aa3dbc4ba",
+          "fourRoleReviewSHA256": "6936d24831bb938722a71a9fe75997c2094bbcd86270810e7b0ab71dc5d2499e",
+          "controllerReviewSHA256": "d7fdba4e0001a56899dfc325494b30eb2bf02feb16cdd4ec49648992fc6acdbb",
+          "remoteObserverReviewSHA256": "40160a09ecf566980258f1b6a1f1bffdb35904e8a90429e47319990f5df021c8",
+          "channelObserverReviewSHA256": "5e221afc2734dcb7b803b2a2ca8ea9e03f1ee20ee39246f506f7d206f903a61d",
+          "managedRunnerReviewSHA256": "c8e339557e5d755397a26ef1d62d6793e7983df7962c6dca3048f5a20ea1e5d2"
+        },
+        "actualHostedActions": 0,
+        "independentWatchdog": {
+          "activityMs": 110000,
+          "hardFallbackMs": 5000,
+          "observedExitMs": 115036,
+          "ignoredSigterm": true,
+          "localSupervisorTimedOut": false,
+          "cleanupConfirmed": true
+        },
+        "newCandidateCIRequired": true,
+        "candidateExecutor": {
+          "logicalActions": 90,
+          "frozen": true,
+          "approved": true,
+          "services": 4,
+          "volumes": 4,
+          "hostedHttpTtlSeconds": 180,
+          "stoppedControllerWaitMs": 240000,
+          "scope": "Reviewed frozen executor was explicitly authorized and executed; final attempt stopped before deployment. No hosted acceptance."
+        }
+      },
+      "lastExecution": {
+        "runId": "2ae0a736-r9",
+        "status": "incomplete",
+        "planSHA256": "fb1fbb1089163873d029248280a862c7c95251bf5b5dda90812b200c4c11a682",
+        "authorization": "/private/tmp/m5-g4-explicit-approval-r9.json",
+        "durationMs": 325248,
+        "volumeObservations": {
+          "http-original": 2,
+          "worker-original": 2
+        },
+        "failureStage": "http-base-deploy/deployment-binding",
+        "managedCliCompleted": true,
+        "cliProcessExitCode": 0,
+        "cliProcessDurationMs": 197456,
+        "cliReportedReadiness": {
+          "source": "cli-summary",
+          "platform": "ready",
+          "http": "timed-out",
+          "reason": "reported"
+        },
+        "deploymentReadback": {
+          "status": "SUCCESS",
+          "deploymentStopped": true,
+          "instanceStatuses": [
+            "CRASHED"
+          ]
+        },
+        "completedRootActions": 0,
+        "cleanup": {
+          "complete": true,
+          "failures": [],
+          "projectAbsent": true,
+          "keyAbsent": true,
+          "unknownAllocations": []
+        },
+        "bothVolumeDeletesConfirmed": true,
+        "hostedAcceptance": false,
+        "runtimeStopCause": "not established by retained target readback; startup/watchdog cause not proven",
+        "retryPerformed": false,
+        "rca": {
+          "status": "reproducible-defect-found-historical-cause-unconfirmed",
+          "evidence": "/private/tmp/m5-r9-http-rca/rca.json",
+          "candidate": "nonempty mount root at mode0755, e.g. filesystem lost+found, rejected before HTTP startup",
+          "control": "same Linux AMD64 image/environment with empty0755 mount reaches HTTP200",
+          "gap": "r9 startup logs and mount contents unavailable after project deletion",
+          "hostedResourcesCreated": false
+        }
+      },
+      "previousExecutions": [
+        {
+          "date": "2026-11-15",
+          "runId": "2ae0a736-r6",
+          "status": "incomplete",
+          "planSHA256": "f3b5b3df6f1c3b676bd97df43c8ea595b9448e3f6d17cb24f04869f1eeaca94d",
+          "completedRootActions": 0,
+          "failureStage": "http-original-bind",
+          "failedPredicates": [
+            "serviceId",
+            "mountPath"
+          ],
+          "observed": {
+            "state": "READY",
+            "serviceId": null,
+            "mountPath": "/tmp"
+          },
+          "cleanup": {
+            "complete": true,
+            "failures": [],
+            "projectAbsent": true,
+            "keyAbsent": true,
+            "unknownAllocations": []
+          },
+          "automaticRetriesRemaining": 0,
+          "timingCorrectionLiveExercised": false,
+          "privateResultSHA256": "86b73ef16893a9d82dbc4c1b1b1d6ba504f2dd35fe21c736eaee221df5896c3c",
+          "rca": {
+            "cause": "harness-provisioning-state-error",
+            "confirmedBy": "cleanup-http-service-precondition before any service deletion",
+            "privateReceipt": "/private/tmp/m5-g4-r6-rca.json",
+            "fixImplemented": true,
+            "verification": "locally_verified",
+            "acceptanceReceipt": "/private/tmp/m5-g4-volume-attachment-acceptance.json"
+          }
+        },
+        {
+          "status": "incomplete",
+          "runId": "2ae0a736-r7",
+          "planSHA256": "229d61b23a4b419148cd77fc8945cfedbf6ce4b160e27f4e3d18b6a2ea5ed648",
+          "authorization": "/private/tmp/m5-g4-explicit-approval-r7.json",
+          "volumeSetup": "both original volumes bound successfully after two observations each",
+          "unattachedIntermediateStateObserved": false,
+          "managedCli": {
+            "completed": true,
+            "exitCode": 0,
+            "durationMs": 180717,
+            "issues": []
+          },
+          "railwayDeploymentStatus": "SUCCESS",
+          "httpHealth": "not-established-by-retained-evidence; CLI can complete while health is pending",
+          "lastRetainedPlatformStage": "domain binding passed",
+          "failureStage": "subsequent platform verification before completed deployment binding",
+          "failurePredicate": "not retained; root outcome generic unknown",
+          "completedRootActions": 0,
+          "cleanup": {
+            "complete": true,
+            "failures": [],
+            "projectAbsent": true,
+            "keyAbsent": true,
+            "unknownAllocations": []
+          },
+          "automaticRetriesRemaining": 0
+        }
+      ],
+      "audit20261116": {
+        "document": "milestone-5-audit-2026-11-16.md",
+        "evidence": "milestone-5-audit-evidence-2026-11-16.json",
+        "candidate": "13bf80df4ead1bbf0b53ee0cc1b221df10868999",
+        "committedCandidateCI": "28 checks successful",
+        "httpHosting": "passed scoped deployment/health/channel/replay/quiescence/stopped-instance",
+        "fullHostedAcceptance": false,
+        "cleanup": "both latest attempts complete; projects and temporary keys absent",
+        "recoveryBlocker": "test transfer path allowlist rejects lost+found; reproduced locally; one-character correction passes Linux backup",
+        "freshVolumePreparationDraft": "provisional; full Linux restore not executed",
+        "newHostedExecutionsDuringAudit": 0
+      },
+      "acceptedCommit": "dfd3bb64bf117ac19d0fdf608323fc5019e45a13",
+      "runtimeCandidate": "13bf80df4ead1bbf0b53ee0cc1b221df10868999",
+      "acceptedEvidence": [
+        "milestone-5-hosted-evidence-2026-11-16.json",
+        "milestone-5-http-recovery-evidence-2026-11-16.json",
+        "milestone-5-polling-recovery-evidence-2026-11-16.json"
+      ]
+    },
+    "G1": {
+      "status": "accepted",
+      "acceptedCommit": "e0ecbf767a8c4c26a022f8a59d59c257d7a217a2",
+      "evidence": [
+        "Actual C1-C4 interfaces and compile fixture pass strict typecheck",
+        "Repository lint passes (713 files); diff whitespace check passes",
+        "m5_freeze_review independently accepted without blockers",
+        "Pinned base image configs and layers verified; default UID/GID 0:0"
+      ]
+    },
+    "G3": {
+      "status": "accepted",
+      "acceptedCommit": "515cf793526f18f5355fc31015b3b9cfe075e881",
+      "scope": "Actual six-row local/browser/container certification; final required CI and hosted G4 are separate",
+      "evidence": {
+        "runId": "eafe3cff-7f9e-49f0-b751-6c78ef012d0b",
+        "tree": "0c638856689de20a6b593c9cf43182ee2ee13400",
+        "scenarios": 6,
+        "sourceFiles": 1469,
+        "packedFiles": 431,
+        "packedArchives": 5,
+        "installedFileClaims": 792,
+        "artifactHashes": 21,
+        "removedDockerResources": 27,
+        "aggregateSHA256": "c16192039bc645d244b57cf2e88d607e5773da5c5def0d2bddc8554385338665",
+        "independentReviewer": "m5_integration_review: accepted exact provenance, behavior, bounds, cleanup and private-credential exclusion"
+      }
+    }
+  },
+  "contracts": {
+    "C1": "milestone-5-contracts/storage-replay.md",
+    "C2": "milestone-5-contracts/deployment.md",
+    "C3_C4": "milestone-5-contracts/integration-acceptance.md"
+  },
+  "allowedStates": [
+    "blocked",
+    "ready",
+    "in_progress",
+    "review",
+    "accepted"
+  ],
+  "tasks": [
+    {
+      "id": "M5-00",
+      "title": "Freeze accepted main and contracts",
+      "specialist": "CTO / architect",
+      "status": "accepted",
+      "dependsOn": [],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "e0ecbf767a8c4c26a022f8a59d59c257d7a217a2",
+      "evidence": [
+        "G0 accepted on c39b746",
+        "Actual C1-C4 modules and compile fixture pass strict typecheck; lint passes",
+        "Independent m5_freeze_review accepted without blockers; verified image UID/GID 0:0"
+      ]
+    },
+    {
+      "id": "M5-01",
+      "title": "Portable runtime storage",
+      "specialist": "Runtime/storage engineer",
+      "status": "accepted",
+      "dependsOn": [
+        "M5-00"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "d7d80695e00cf4e8bbcde8fbebb5721c47c6eefe",
+      "evidence": [
+        "Implementation and root launch/operator integration complete",
+        "Independent m5_freeze_review accepted without blockers",
+        "280 focused tests /973 assertions passed; strict typecheck and exact 25-file scoped Biome passed"
+      ]
+    },
+    {
+      "id": "M5-02",
+      "title": "Pure Docker export",
+      "specialist": "Packaging engineer",
+      "status": "accepted",
+      "dependsOn": [
+        "M5-00",
+        "M5-01"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "17359c6d137f44d148f322e069c4ba18e2902696",
+      "evidence": [
+        "Independent m5_freeze_review accepted final source candidate without blockers",
+        "Exact staged M5-02 snapshot: 96 tests /685 assertions; strict typecheck; repository lint (736 files) passed",
+        "Actual declared CLI/bin-symlink preload refusal and offline frozen nested archive install verified; image execution remains pending"
+      ]
+    },
+    {
+      "id": "M5-03",
+      "title": "Channel-aware Railway deployment",
+      "specialist": "Deployment engineer",
+      "status": "accepted",
+      "dependsOn": [
+        "M5-01",
+        "M5-02"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "e35cafb6588b0c867c444229287788c9528208f1",
+      "evidence": [
+        "Independent deployment review accepted all repaired admission/override/cleanup boundaries: 349 tests / 1441 assertions",
+        "Exact staged source snapshot: 375 tests / 1613 assertions and strict typecheck passed; repository lint passed (765 files)",
+        "Final help-only version wording clarified and focused regression rechecked; no hosted execution claimed",
+        "Integrated compatibility-archive privacy gap repaired with shared raw source/state inventory and staged validation; independent 166 tests /1085 assertions plus actual runDeploy upload-boundary counterexample accepted. Private source remains unchanged and nonempty mutable memory refuses before Railway access."
+      ],
+      "supplementalRepairCommit": "1cd4eb5"
+    },
+    {
+      "id": "M5-04",
+      "title": "Durable assertion replay and restore guard",
+      "specialist": "Security/storage engineer",
+      "status": "accepted",
+      "dependsOn": [
+        "M5-00",
+        "M5-01"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "9408736bac4a758decc038156c1972eac4599cdc",
+      "evidence": [
+        "Independent m5_freeze_review accepted final source candidate without blockers",
+        "Exact staged M5-04 snapshot: 531 tests /1994 assertions; strict typecheck; repository lint (722 files) passed",
+        "Accepted immutable M5-04 commit; application integration dependency released"
+      ]
+    },
+    {
+      "id": "M5-05",
+      "title": "Optional application integration",
+      "specialist": "Application integration engineer",
+      "status": "accepted",
+      "dependsOn": [
+        "M5-00",
+        "M5-04"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "515cf793526f18f5355fc31015b3b9cfe075e881",
+      "evidence": [
+        "Implementation checkpoint 714db5e: app/source security review, isolated frozen install, real Node production build, 14 tests / 264 assertions and audit passed",
+        "Independent actual installed HTTP/production/browser rerun passed all three rows; one browser effect and one committed unknown effect, zero duplicate/unauthorized effects; all process groups cleaned",
+        "Private evidence and intentional crash oracle repairs independently accepted; final committed artifact rerun pending",
+        "Clean CI company-app typing repair157132a passed on74249c1. Browser runtime selection repairc7e56c2 independently accepted with actual native Node execution; safe original locations retained, shared writable source gets private verified copy. Fresh complete artifact execution still required.",
+        "3363581 macOS browser driver/behavior passed but intentional Chromium shutdown transiently set orphanedGroup; aggregate remained failed. Supervisor repaird99b53c accepted independently; fresh complete artifact proof required. Linux reached Chromium size preflight; browser-only bound repair89cbf00 accepted, actual Linux rerun required.",
+        "Accepted exact515cf79 installed application/browser evidence: three application rows passed, production0/HTTP1/browser1 effects, zero duplicate/unauthorized effects, real Chromium/nativeNode, complete cleanup. Independent journal, input hash, artifact and private credential audit accepted."
+      ]
+    },
+    {
+      "id": "M5-06",
+      "title": "Standalone channel acceptance",
+      "specialist": "Channel harness engineer",
+      "status": "accepted",
+      "dependsOn": [
+        "M5-00",
+        "M5-02"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "3363581bc95d72ce22e33a3c5e6e03650412f502",
+      "evidence": [
+        "Independent actual installed normalworker passed2authorizedeffects0duplicates0unauthorized",
+        "Two harness findings repaired; mutatedanonymous-to-recognized runtime and stale-poll controls correctlyfail with cleanprocesscleanup",
+        "Final committedartifact rerun remains pending",
+        "Reviewed installed Telegram harness checkpoint committed at 214bef2; final settled artifact rerun pending",
+        "Installed Telegram passes in macOS and Linux artifact runs through 74249c1, with cleanup. Actual polling-container row eaa76e5 separately accepted after normal/replay-bypass/trust-escalation Docker controls.",
+        "Root accepts standalone-channel scope on committed3363581 artifacts: macOS and Linux installed Telegram rows passed serialization, creator/recognized/anonymous/group/admitted mapping, replay replacement, owned source edit, conflict/quarantine and cleanup. Independent evidence review confirms source identity and sanitized artifacts. This does not accept the separate aggregate/container/hosted gate."
+      ]
+    },
+    {
+      "id": "M5-07",
+      "title": "Installed/container/hosted acceptance",
+      "specialist": "Acceptance engineer",
+      "status": "accepted",
+      "dependsOn": [
+        "M5-00"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [
+        "M5-01",
+        "M5-02",
+        "M5-03",
+        "M5-04",
+        "M5-05",
+        "M5-06",
+        "M5-08"
+      ],
+      "acceptedCommit": "dfd3bb64bf117ac19d0fdf608323fc5019e45a13",
+      "evidence": [
+        "Reviewed foundation checkpoint a352e38; source review and actual protocol controls do not replace final artifact proof",
+        "Independent repaired application/browser, artifact-source and aggregate oracles accepted; all packed source bytes now compared with committed files or explicitly identified console build output",
+        "Actual provisional Docker run passed 23 checks, observed 4 effects, zero duplicate/unauthorized effects and complete cleanup",
+        "Complete logs, tested image identity and diagnostic redaction independently accepted: 24 tests / 124 assertions",
+        "Recovery mount repair d82af27 independently accepted; final default ./data paths require fresh packed run",
+        "Clean committed all-stage and hosted acceptance remain open",
+        "Reviewed aggregate harness committed at 69ca967; root 69 tests / 433 assertions, strict typecheck and lint passed",
+        "fcfd194 tracked runtime/console run: 5755 passed, 0 failed, 13 local PostgreSQL skips. Actual PostgreSQL17 CI on 74249c1 completed all13 registered cases (server170010).",
+        "Generic container recovery passes actual macOS/Linux runs with default ./data restore mount handling; aggregate canonical scenario identity corrected at74249c1.",
+        "A12 polling-container proof eaa76e5: actual normal run2effects/0duplicates/0unauthorized; replay mutant fails with duplicate1, trust escalation mutant fails with unauthorized1; all owned resources cleaned.",
+        "Fresh all-stage proof remains pending: 74249c1 Linux app failed Node permission preflight, and operator shard had two timing assumptions fixed independently atfe97c60. No failed row waived.",
+        "3363581 Linux actual HTTP storage-recovery and Telegram polling container rows both passed with cleanup. macOS polling default CLI lookup was unavailable under isolated PATH;59a5f3d independently accepted with actual fresh default-binary Docker proof.",
+        "Release rehearsal found stale bundler prefix oracle. Ownership repairfc3d6b3 independently accepted; actual packed336 consumer verifies25sourcefiles, private exclusions and complete cleanup.",
+        "3363581 aggregate remains failed: browser supervisor race on macOS, pinned Linux Chromium executable exceeds inherited256MiB bound. Repairsd99b53c/89cbf00 preserve shutdown/reap and non-browser limits; new final artifact run required.",
+        "G3 accepted on515cf79: all six actual local/container rows passed and all27 owned Docker resources plus temporary runtime/build workspaces removed. Independent full source/packed/installed/hash/behavior/bounds/privacy audit accepted. Linux CI requires targeted AppArmor userns support; G4 hosted remains open.",
+        "Required CI43563713875 and release43563713863 passed on a5aa966. Independently audited all six actual Linux rows, exact source/artifact identities, browser effects and complete cleanup; PostgreSQL17 completed all13 required cases. New scaffold diagnostics and Alpine no-replace repair remain supplemental verification work.",
+        "Final83dca71 required CI43565040948/release43565040946/fullCodeQL43565060850 accepted independently; all six rows, final-archive Alpine create and owned cleanup passed. Railway access renewed and verified read-only2026-11-14; G4 target and executor preparation resumed without hosted mutation.",
+        "2026-11-15 approved G4 execution did not pass. Initial account read refreshed native OAuth config and invalidated its raw-byte pin; private-only identity-descriptor fix passed six focused tests and compiled preflight. One retry created a project and one HTTP service, then failed service admission before workloads, volumes or SSH registration. Project deletion confirmed; independent active/deleted inventory proves no active project/key remains. Cleanup oracle falsely rejected a deleted-project tombstone. Exact service readback/failing predicate was not retained. No further run is active; G4/M5-07 and final acceptance remain open. Private handoff: /private/tmp/m5-g4-current-status.json.",
+        "2026-11-15 focused G4 repairs accepted independently: bounded service-read/schema/GraphQL diagnostics and retained admission predicates; cleanup uses complete active-project inventory while preallocation retains history. Strict caps/ownership unchanged. 44 focused tests/348 assertions, repository lint/typecheck, private-controller typecheck and exact compiled preflight passed. Fresh plan de51e95d827c34deaba7098ab042184a65cd3edbc76ef5f1e6b00801ff1268a9 prepared for new isolated project; prior approval expired. Await renewed concrete approval; no new hosted allocation/execution. Handoff /private/tmp/m5-g4-ready-2ae0a736.json.",
+        "2026-11-15 actual2ae0a736 run identified legacy region:null as sole service admission failure; cleanup complete. Explicit multiRegionConfig/projected owned-service placement repair independently accepted (104focused tests/1087assertions, lint/typechecks). Corrective r1 verified all4service bindings live, then failed initial volume binding before workloads; cleanup fully confirmed. Initial volume readback absent; post-service-deletion snapshot is not causal evidence. Retain initial volume diagnostics before another attempt; original deadline/resource/cost limits preserved.",
+        "2026-11-15 r2 proved asynchronous volume provisioning; bounded read-only observation accepted independently (34 tests/242 assertions), and r3 volumes passed after two reads. Pre-native diagnostics accepted (40 tests/388 assertions). r4 isolated NEVER/retry10 mismatch before domain/upload; shared strict-NEVER semantics repair accepted independently (18 tests/250 assertions, lint and all typechecks), keeping setter0 and all other limits. All attempts through r4 fully cleaned; zero completed workload actions. G4 remains open; original execution deadline23:24:39UTC unchanged. See evidence document and private current-status handoff.",
+        "2026-11-15 r5 passed native domain and upload, then outer120s CLI supervisor timed out; provider status values were not retained, so build vs health wait is unknown. Cleanup fully confirmed. Public CLI allows600s Railway plus90s HTTP waits; private platform also incorrectly counted build time in upload-based60s readiness/105s stop windows. Narrow timing-boundary repair in progress with unchanged110s artifact watchdog, full upload-to-stop logs, original global deadline and cleanup. G4 remains open.",
+        "2026-11-15 timing correction accepted independently: managed-only780s supervision clipped to original normal execution/approval minus reap; ordinary120s unchanged. Earliest hash-bound exact SUCCESS anchors scheduling only; unchanged110s watchdog and expiry rejection remain authoritative, with full upload-to-stop logs. Maintenance uses at most120 read-only polls/5s within original deadlines; native128call limit unchanged.53 focused tests/584 assertions and all lint/typechecks passed. One further hosted attempt only; stop and report any further failure. No hosted acceptance claimed.",
+        "2026-11-15 final r6 stopped at first volume admission: observations1/2 had no instances; observation3 returned owned READY instance with serviceId:null and mountPath:/tmp. Expected exact service and /app/data; strict checks refused. No deployment/workload ran, so timing correction remains locally verified only. Provider intermediate-state explanation unproven. Cleanup complete with project/key absent and no failures/unknown allocations. No further automatic retries; G4/M5 remain incomplete.",
+        "R6 RCA confirmed from retained pre-deletion cleanup evidence: exact same volume/instance attached to expected service at /app/data about4s after refusal. Reconstructed create-input SHA matches recorded mutation. Harness retries only zero instances and prematurely rejects existing unattached provisioning state; tests encode this assumption and miss the multi-stage transition. No RCA live calls or implementation. Required correction: bounded owned-volume attachment convergence with strict final checks.",
+        "Volume-attachment fix locally verified and independently reviewed: narrow owned READY/unattached singleton at /tmp or approved mount may wait, with instance identity pinned before subsequent binding. Six-read/five-pause bounds, strict acceptance, deadline, one creation/claim, evidence/privacy and cleanup preserved.56 controller tests/490 assertions, private typecheck and two-file Biome check passed. Frozen r6 closure and RCA hashes unchanged. No build or hosted call; G4 remains open. Receipt /private/tmp/m5-g4-volume-attachment-acceptance.json.",
+        "2026-11-16UTC renewed user-authorized r7 used fixed attachment code, fresh60minute ceiling and same resource limits. Both volumes bound after2reads; intermediate unattached state did not recur. Domain/upload passed; Railway SUCCESS; managed CLI exit0 after180717ms with no runner issues. CLI success does not certify HTTP health, which retained evidence does not establish. Post-CLI domain binding passed; subsequent platform verification failed with generic unknown and no retained predicate/target observation. Zero completed root workload actions. Cleanup complete; no automatic retry. Receipt /private/tmp/m5-g4-r7-result.json.",
+        "Diagnostic patch locally accepted:34platform tests/452assertions +8runner tests/82assertions, combined typecheck and focused lint passed. r8 single authorized hosted validation stopped before deployment: six worker-volume observations had zero instances; pre-first-service-deletion cleanup snapshot later showed correct attachment. New diagnostic paths not exercised live. Cleanup complete:false, failed cleanup-http-original; projectDelete:true and complete project/key absence confirmed. Likely cleanup permitted-inventory bug excludes created-but-unbound worker volume; exact failed cleanup readback absent. No automatic repair/retry. Receipts /private/tmp/m5-g4-post-deployment-diagnostics-acceptance.json and /private/tmp/m5-g4-r8-result.json.",
+        "f41526ef hosted HTTP lifecycle passed in229s; HTTP recovery backup/restore/reconciliation passed but first seal rejected uninitialized fixture in463s. Both cleanups verified with no unknown mutations. Actual local fixture reproduced rejection and corrected restored/restarted sequence passed. HTTP recovery and polling recovery remain open; no automatic retry. See milestone-5-hosted-evidence-2026-11-16.json.",
+        "32cdb854 targeted HTTP recovery542s: corrected initialization and initial auth hold/seal passed; same-image restart logs show fresh live startup while Railway retained the instance ID. Harness falsely required an ID change and timed out. Post-restart hold and post-hold operation not reached. Complete owned-resource cleanup verified. Actual negative controls23tests/462assertions, typecheck/lint and all28CIchecks passed. No automatic retry. See milestone-5-http-recovery-targeted-evidence-2026-11-16.json.",
+        "c99497b4 HTTP recovery accepted in650s on verified13bf80df packages. Backup/fresh-volume restore/reconciliation, fresh-process readiness with stable provider ID, 503hold before/after restart with zero work, real expiry while stopped, expired401, completed replay, fresh third downstream effect and shutdown passed. Six stop receipts include maintenance. Exact owned resource deletion and complete absence readbacks passed, no warnings/unknown mutations. Focused36tests/542assertions, typecheck/lint and all28CIchecks passed. See milestone-5-http-recovery-evidence-2026-11-16.json. Only hosted polling recovery and final integrated gates remain.",
+        "Final polling recovery passed407s atdfd3bb64/runtime13bf80df: confirmed1/2/3 exact replay namespace, duplicate1 no provider calls, new4 one effect/two model calls/one validated result, no ingress and quiescent stop. Exact resource deletion and complete absence inventories verified. Independent reviewer verified all66 raw files and83 HTTP files. All required hosted scopes accepted."
+      ]
+    },
+    {
+      "id": "M5-08",
+      "title": "Operator and developer teaching",
+      "specialist": "Documentation engineer",
+      "status": "accepted",
+      "dependsOn": [
+        "M5-01",
+        "M5-02",
+        "M5-03",
+        "M5-04",
+        "M5-05",
+        "M5-06"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "9c41541b7d7708f8eabec29ab3548e187bddaf52",
+      "evidence": [
+        "Independent source/doc parity review accepted all 11 files; no unsupported final or hosted certification claim",
+        "134 relative links/anchors and five actual CLI help surfaces verified; Markdown structure and diff checks passed",
+        "Root clarified that bundled built-ins follow auggy, while separate capability/provider packages follow their own manifest and lockfile selection",
+        "Supplemental passive-inspection teaching correction39ee525 accepted independently across generated README, canonical starter skill and both mirrors; actual Bun preload trap and strict documented v2 cloud record validated."
+      ],
+      "supplementalRepairCommit": "39ee525"
+    },
+    {
+      "id": "M5-09",
+      "title": "Independent integrated review",
+      "specialist": "Architecture/security/harness reviewer",
+      "status": "accepted",
+      "dependsOn": [
+        "M5-01",
+        "M5-02",
+        "M5-03",
+        "M5-04",
+        "M5-05",
+        "M5-06",
+        "M5-07",
+        "M5-08"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "dfd3bb64bf117ac19d0fdf608323fc5019e45a13",
+      "evidence": [
+        "Preliminary integrated review found compatibility private-state gap and stale inspect/cloud teaching; both repaired and independently accepted. No additional concrete source seam blocker found; final acceptance still depends on final artifact and hosted gates.",
+        "Independent m5_integrated_review accepted reviewed sourcedfd3bb64 with no blocking findings, supplementing prior specialist reviews. Verified archive hashes, no production delta since13bf80df, HTTP83/polling66 raw records, replay identities and cleanup IDs. Full CodeQL103rules/2results/no diagnostics; alerts134/135 intentional owned-target fixture requests, used-in-tests dismissal independently justified. See milestone-5-final-review-2026-11-17.md."
+      ]
+    },
+    {
+      "id": "M5-10",
+      "title": "Final certification and PR handoff",
+      "specialist": "CTO / orchestrator",
+      "status": "accepted",
+      "dependsOn": [
+        "M5-07",
+        "M5-08",
+        "M5-09"
+      ],
+      "blockedBy": [],
+      "acceptanceDependsOn": [],
+      "acceptedCommit": "dfd3bb64bf117ac19d0fdf608323fc5019e45a13",
+      "evidence": [
+        "All28 source checks passed atdfd3bb64. Runtime package source unchanged since13bf80df; all installed/browser/container and hosted rows accepted, independent review accepted, CodeQL dispositions recorded, PR230 description reconciled. Closing commit contains documentation/evidence only; current required PR checks remain authoritative for final head. No merge/version bump/publication. See milestone-5-final-review-2026-11-17.md."
+      ],
+      "acceptanceScope": "Reviewed source/artifact/evidence certification at dfd3bb64; closing documentation-head required checks must pass before PR handoff"
+    }
+  ],
+  "activeOwnership": {
+    "root": "Source/evidence accepted; verify required checks on closing documentation head before final PR handoff. No hosted resources remain.",
+    "m5_integrated_review": "Independent source, HTTP/polling evidence and final PR/review wording accepted; no blocking findings or required corrections."
+  },
+  "notes": [
+    "Each company owns a separate deployment; no managed platform or shared-company tenancy.",
+    "Channels are optional; Next.js and HTTP are not runtime requirements.",
+    "Only root changes gate/task acceptance; producers cannot accept themselves.",
+    "G0/G1/G3 and M5-00/01/02/03/04/05/06/08 accepted for their scopes. Final83dca71 CI/release/Alpine package proof accepted. Railway authentication verified; hosted G4 engineering and concrete approval, M5-07 and final M5-09/10 remain open.",
+    "2026-11-15 approved G4 execution did not pass. Initial account read refreshed native OAuth config and invalidated its raw-byte pin; private-only identity-descriptor fix passed six focused tests and compiled preflight. One retry created a project and one HTTP service, then failed service admission before workloads, volumes or SSH registration. Project deletion confirmed; independent active/deleted inventory proves no active project/key remains. Cleanup oracle falsely rejected a deleted-project tombstone. Exact service readback/failing predicate was not retained. No further run is active; G4/M5-07 and final acceptance remain open. Private handoff: /private/tmp/m5-g4-current-status.json.",
+    "2026-11-15 focused G4 repairs accepted independently: bounded service-read/schema/GraphQL diagnostics and retained admission predicates; cleanup uses complete active-project inventory while preallocation retains history. Strict caps/ownership unchanged. 44 focused tests/348 assertions, repository lint/typecheck, private-controller typecheck and exact compiled preflight passed. Fresh plan de51e95d827c34deaba7098ab042184a65cd3edbc76ef5f1e6b00801ff1268a9 prepared for new isolated project; prior approval expired. Await renewed concrete approval; no new hosted allocation/execution. Handoff /private/tmp/m5-g4-ready-2ae0a736.json.",
+    "2026-11-15 actual2ae0a736 run identified legacy region:null as sole service admission failure; cleanup complete. Explicit multiRegionConfig/projected owned-service placement repair independently accepted (104focused tests/1087assertions, lint/typechecks). Corrective r1 verified all4service bindings live, then failed initial volume binding before workloads; cleanup fully confirmed. Initial volume readback absent; post-service-deletion snapshot is not causal evidence. Retain initial volume diagnostics before another attempt; original deadline/resource/cost limits preserved.",
+    "2026-11-15 r2 proved asynchronous volume provisioning; bounded read-only observation accepted independently (34 tests/242 assertions), and r3 volumes passed after two reads. Pre-native diagnostics accepted (40 tests/388 assertions). r4 isolated NEVER/retry10 mismatch before domain/upload; shared strict-NEVER semantics repair accepted independently (18 tests/250 assertions, lint and all typechecks), keeping setter0 and all other limits. All attempts through r4 fully cleaned; zero completed workload actions. G4 remains open; original execution deadline23:24:39UTC unchanged. See evidence document and private current-status handoff.",
+    "2026-11-15 r5 passed native domain and upload, then outer120s CLI supervisor timed out; provider status values were not retained, so build vs health wait is unknown. Cleanup fully confirmed. Public CLI allows600s Railway plus90s HTTP waits; private platform also incorrectly counted build time in upload-based60s readiness/105s stop windows. Narrow timing-boundary repair in progress with unchanged110s artifact watchdog, full upload-to-stop logs, original global deadline and cleanup. G4 remains open.",
+    "2026-11-15 timing correction accepted independently: managed-only780s supervision clipped to original normal execution/approval minus reap; ordinary120s unchanged. Earliest hash-bound exact SUCCESS anchors scheduling only; unchanged110s watchdog and expiry rejection remain authoritative, with full upload-to-stop logs. Maintenance uses at most120 read-only polls/5s within original deadlines; native128call limit unchanged.53 focused tests/584 assertions and all lint/typechecks passed. One further hosted attempt only; stop and report any further failure. No hosted acceptance claimed.",
+    "2026-11-15 final r6 stopped at first volume admission: observations1/2 had no instances; observation3 returned owned READY instance with serviceId:null and mountPath:/tmp. Expected exact service and /app/data; strict checks refused. No deployment/workload ran, so timing correction remains locally verified only. Provider intermediate-state explanation unproven. Cleanup complete with project/key absent and no failures/unknown allocations. No further automatic retries; G4/M5 remain incomplete.",
+    "R6 RCA confirmed from retained pre-deletion cleanup evidence: exact same volume/instance attached to expected service at /app/data about4s after refusal. Reconstructed create-input SHA matches recorded mutation. Harness retries only zero instances and prematurely rejects existing unattached provisioning state; tests encode this assumption and miss the multi-stage transition. No RCA live calls or implementation. Required correction: bounded owned-volume attachment convergence with strict final checks.",
+    "Volume-attachment fix locally verified and independently reviewed: narrow owned READY/unattached singleton at /tmp or approved mount may wait, with instance identity pinned before subsequent binding. Six-read/five-pause bounds, strict acceptance, deadline, one creation/claim, evidence/privacy and cleanup preserved.56 controller tests/490 assertions, private typecheck and two-file Biome check passed. Frozen r6 closure and RCA hashes unchanged. No build or hosted call; G4 remains open. Receipt /private/tmp/m5-g4-volume-attachment-acceptance.json.",
+    "2026-11-16UTC renewed user-authorized r7 used fixed attachment code, fresh60minute ceiling and same resource limits. Both volumes bound after2reads; intermediate unattached state did not recur. Domain/upload passed; Railway SUCCESS; managed CLI exit0 after180717ms with no runner issues. CLI success does not certify HTTP health, which retained evidence does not establish. Post-CLI domain binding passed; subsequent platform verification failed with generic unknown and no retained predicate/target observation. Zero completed root workload actions. Cleanup complete; no automatic retry. Receipt /private/tmp/m5-g4-r7-result.json.",
+    "Diagnostic patch locally accepted:34platform tests/452assertions +8runner tests/82assertions, combined typecheck and focused lint passed. r8 single authorized hosted validation stopped before deployment: six worker-volume observations had zero instances; pre-first-service-deletion cleanup snapshot later showed correct attachment. New diagnostic paths not exercised live. Cleanup complete:false, failed cleanup-http-original; projectDelete:true and complete project/key absence confirmed. Likely cleanup permitted-inventory bug excludes created-but-unbound worker volume; exact failed cleanup readback absent. No automatic repair/retry. Receipts /private/tmp/m5-g4-post-deployment-diagnostics-acceptance.json and /private/tmp/m5-g4-r8-result.json.",
+    "Final source/artifact/hosted and independent acceptance complete atdfd3bb64/runtime13bf80df. Closing evidence commit is documentation-only; required final-head PR checks remain the handoff condition. No hosted resources, merge or publication. M6 remains roadmap work."
+  ],
+  "preparation": {
+    "status": "accepted",
+    "scope": "Preparation superseded by accepted M5-00 concrete interface freeze",
+    "independentReview": "m5_contract_review: preparation recheck passed; R1/R2 resolved; no product acceptance",
+    "planSHA256": "0905fe797868cd78edb6a99368a0f11e4e5068cd312198400080cf5c3be43d16",
+    "contractSHA256": {
+      "C1": "8c44ce696c8192c742f20cffbcdf046b10e81117aa6b34f93af3766b2005af10",
+      "C2": "3e06671b3d87d5e98a319e3eed97a6438573513af1d0c1fba67ab581e12fce27",
+      "C3_C4": "6d82507234e3fca33402a49651d5708d599dbd00e0b09e892998c6186c774e70"
+    },
+    "dispositions": [
+      {
+        "id": "R1",
+        "status": "resolved_for_preparation",
+        "decision": "Fixture-only startup fetch overlay reaches normal Telegram HTTP/SQLite path; no production hook"
+      },
+      {
+        "id": "R2",
+        "status": "resolved_for_preparation",
+        "decision": "Railway-only empty-owned-mount mode initialization before ordinary admission; generic roots operator-provisioned",
+        "supersededBy": "railwayVolumeCompatibilityRollback: user-authorized root-only permission initialization includes populated owned mounts; generic roots remain operator-provisioned"
+      }
+    ],
+    "remainingFreezeChecks": []
+  },
+  "freeze": {
+    "status": "accepted",
+    "independentReview": "m5_freeze_review: accepted, no blockers",
+    "documents": [
+      "milestone-5-contracts/storage-freeze.md",
+      "milestone-5-contracts/deployment-freeze.md",
+      "milestone-5-contracts/integration-freeze.md",
+      "milestone-5-contracts/image-baseline.md"
+    ],
+    "contractModules": [
+      "src/runtime-data-contracts.ts",
+      "src/auth/external-auth-replay-contracts.ts",
+      "src/cli/deploy/contracts.ts",
+      "examples/company-app/src/server/contracts.ts",
+      "scripts/release-smoke/integration-contracts.ts"
+    ],
+    "compileFixture": "tests/fixtures/milestone-5-contracts.ts",
+    "imageIndex": "sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b47bdbf2152d2196383c0",
+    "defaultContainerUid": 0,
+    "defaultContainerGid": 0,
+    "localDocker": "available: existing Docker Desktop started for authorized local checks; server 29.1.3, Linux ARM64 VM",
+    "acceptedCommit": "e0ecbf767a8c4c26a022f8a59d59c257d7a217a2",
+    "initialLocalDocker": "unavailable: configured socket absent"
+  },
+  "verificationCheckpoint": {
+    "revision": "83dca716c3809d5277413735e374dab96b8b62cb",
+    "tree": "6f77d4ba6fca1ad856c6829900f098e42f8b9f83",
+    "ci": 43565040948,
+    "ciConclusion": "success",
+    "fullCodeQL": 43565060850,
+    "analysis": 2166514863,
+    "codeQLRules": 103,
+    "codeQLResults": 8,
+    "openAlertTriage": {
+      "number": 130,
+      "rule": "js/insecure-temporary-file",
+      "disposition": "False positive: flagged source open is O_RDONLY | O_NOFOLLOW | O_NONBLOCK; destination creation remains O_WRONLY | O_CREAT | O_EXCL with mode0600. Alert state unchanged."
+    },
+    "draftPR": "https://github.com/looselyorganized/auggy/pull/230",
+    "milestoneComplete": false,
+    "release": 43565040946,
+    "releaseConclusion": "success: all providers, application, inspection, migration, ownership and deployment passed",
+    "testedMergeRevision": "4ecece39c0c2bf522fae4852eac4a50ff67f404c",
+    "postgreSQL": {
+      "registered": 13,
+      "completed": 13,
+      "serverVersion": 170010,
+      "tests": 14,
+      "assertions": 60,
+      "failed": 0
+    },
+    "portableIntegration": {
+      "status": "passed",
+      "scenarios": 6,
+      "workspaceCleanup": "complete",
+      "aggregateSHA256": "8dae9ad5428c23ee607fd7217571d61a7eba4a6137a617329528c5332ca62165"
+    },
+    "supplementalVerification": "Accepted final83dca71 CI/release and final-archive Alpine create without source overlays; independent final evidence review accepted",
+    "additionalOpenAlertTriage": {
+      "numbers": [
+        131,
+        132,
+        133
+      ],
+      "rule": "js/file-system-race",
+      "disposition": "Independent and root review: test-only false positives over sequential inode/content observations in private fixture directories, not authorization decisions. Alert states unchanged."
+    }
+  },
+  "supplementalRepairs": {
+    "diagnostics": {
+      "commit": "c1c991fccebde338c2eeb613c5bafe8607be60ed",
+      "status": "accepted_source",
+      "independentTests": 5,
+      "independentAssertions": 29
+    },
+    "alpinePublication": {
+      "commit": "eb9b362",
+      "status": "accepted_source_and_explicit_overlay_experiment",
+      "sourceSHA256": "fa4c98eab981a05d605978a424fc7e0d1088ab06edaed2c7c72269dcfc1813e8",
+      "testsSHA256": "332e9d7fa3b5b84c50325402478af6a396da3b1f326b64faf86ee8bb2f3e17cd",
+      "independentTests": 21,
+      "independentAssertions": 119,
+      "alpineArm64Tests": 9,
+      "alpineX64Tests": 9,
+      "alpineArm64FreshCreates": 30,
+      "finalArchiveProof": {
+        "status": "passed",
+        "revision": "83dca716c3809d5277413735e374dab96b8b62cb",
+        "archiveSHA256": "779c806ac00ef2962671019c3d93f7a3b34ed88db89d944c151b06059e30e648",
+        "verifiedPackedFiles": 415,
+        "sourceOverlays": 0,
+        "ownedCleanup": "complete"
+      },
+      "originalUbuntu515Cause": "unexplained"
+    },
+    "volumeReadinessCleanup": {
+      "status": "locally-accepted",
+      "receipt": "/private/tmp/m5-g4-volume-readiness-cleanup-acceptance.json",
+      "reviewer": "volume_plan_review",
+      "tests": 117,
+      "assertions": 1412,
+      "typechecks": "repository/executor/controller passed",
+      "lint": "passed",
+      "privatePatch": "docs/plans/milestone-5-contracts/patches/volume-readiness-cleanup.patch",
+      "candidate": {
+        "runId": "2ae0a736-r9",
+        "planSHA256": "fb1fbb1089163873d029248280a862c7c95251bf5b5dda90812b200c4c11a682",
+        "preflight": "passed",
+        "executed": true,
+        "approvalPresent": true,
+        "result": "/private/tmp/m5-g4-r9-result.json"
+      },
+      "hostedAcceptance": false,
+      "hostedValidation": "allocation and cleanup passed; HTTP health timed out and stopped/crashed target refused; no behavior scenarios completed"
+    },
+    "railwayVolumeCompatibilityRollback": {
+      "status": "locally-accepted",
+      "receipt": "/private/tmp/m5-volume-rollback-proof/acceptance.json",
+      "reviewer": "volume_plan_review",
+      "tests": 53,
+      "assertions": 137,
+      "containerHealthStatus": 200,
+      "dataLayoutChanged": false,
+      "hostedValidation": false,
+      "freshCandidateRequired": true
+    },
+    "testExecutionSimplification": {
+      "status": "locally_verified",
+      "scope": "Remove duplicate executions and ad hoc runner; preserve core, packaged, browser, container and hosted recovery coverage",
+      "removedDuplicatePrimaryTestFileInvocations": 34,
+      "releaseRehearsal": "Keeps packed-consumer and release checks; source lint/tests/examples owned by primary CI",
+      "requiredGitHubChecksVerified": [
+        "Analyze (javascript-typescript)",
+        "v1 release gate",
+        "Release rehearsal"
+      ],
+      "integrationStages": [
+        "local",
+        "container",
+        "all"
+      ],
+      "ciDefaultStage": "all",
+      "hosted": "Existing TypeScript executor, installed-CLI export before allocation, CLI readiness without a second HTTP client; Python runner retired",
+      "verification": {
+        "focusedTests": 37,
+        "assertions": 319,
+        "repositoryTypecheck": "passed",
+        "executorTypecheck": "passed",
+        "lint": "passed",
+        "shellSyntax": "passed",
+        "patchDryRun": "passed"
+      },
+      "executorPatch": "milestone-5-contracts/patches/test-simplification.patch",
+      "hostedExecutionPerformed": false,
+      "productionArchitectureChanged": false,
+      "fullHostedAcceptance": "outstanding"
+    },
+    "hostedRunnerReplacement": {
+      "status": "hosted_accepted",
+      "plan": "milestone-5-hosted-runner.md",
+      "entrypoint": "scripts/release-smoke/hosted-runner.ts",
+      "supersedes": "private executor/controller/generated CLI guards",
+      "scenarios": [
+        "http",
+        "polling",
+        "recovery-http",
+        "recovery-polling"
+      ],
+      "lifecycleServices": 1,
+      "recoveryServices": 2,
+      "verification": {
+        "tests": 82,
+        "assertions": 970,
+        "typecheck": "passed",
+        "lint": "passed",
+        "pollingLocalPreflight": "passed",
+        "httpRecoveryLocalPreflight": "passed",
+        "linuxBackupRestore": "passed"
+      },
+      "adversarialReview": {
+        "planSection": "milestone-5-hosted-runner.md#principal-adversarial-review",
+        "scope": "tracked runner and remaining hosted acceptance; not final M5 integrated approval",
+        "corrections": [
+          "phase recording failure cannot skip driver cleanup or produce a false pass",
+          "same-deployment/image bounded restart during auth hold instead of rebuild",
+          "local fixture timing validation and exact authentication error assertions"
+        ],
+        "httpRecoveryLocalExport": "passed; no hosted resources created",
+        "newRestartHostedCertification": "pending",
+        "productArchitectureChanged": false
+      },
+      "productRuntimeChanges": false,
+      "hostedExecution": {
+        "scenario": "polling",
+        "runtimeRevision": "13bf80df4ead1bbf0b53ee0cc1b221df10868999",
+        "harnessRevision": "9461532f",
+        "execution": "passed",
+        "ownedResourceCleanup": "verified-complete",
+        "rawAggregateResult": "failed: final usage query after project deletion; preserved unchanged",
+        "assessment": "milestone-5-polling-evidence-2026-11-16.json",
+        "corrections": "32-character project-name limit; usage before deletion; telemetry warnings separate from resource cleanup; no product runtime changes"
+      },
+      "additionalHostedExecution": {
+        "evidence": "milestone-5-hosted-evidence-2026-11-16.json",
+        "harnessRevision": "f41526ef",
+        "httpLifecycle": "passed",
+        "httpRecovery": "failed after successful backup/restore/reconciliation: missing fixture initialization before seal",
+        "pollingRecovery": "not run after failure",
+        "cleanup": "both projects and all owned services/volumes/keys deleted; complete absence readbacks",
+        "localCorrection": "restored and restarted fixtures initialize their downstream checkpoint before probe/seal; actual local fixture regression passed",
+        "automaticHostedRetry": false
+      },
+      "targetedInitializationVerification": {
+        "sourceRevision": "ea05e7a7",
+        "testRevision": "32cdb854",
+        "focusedTests": 23,
+        "assertions": 462,
+        "typecheck": "passed",
+        "lint": "passed",
+        "sourceCI": "28 passed",
+        "testCI": "28 passed",
+        "hostedInitialization": "passed",
+        "hostedFullRecovery": "failed: readiness incorrectly required changed instance ID",
+        "evidence": "milestone-5-http-recovery-targeted-evidence-2026-11-16.json",
+        "cleanup": "verified complete; no unknown mutations",
+        "newReadinessCorrection": "not implemented",
+        "automaticRetry": false,
+        "productSourceChanged": false
+      },
+      "freshProcessReadinessCorrection": {
+        "sourceRevision": "c99497b4bf7f9a139a54dd7fc19507b9c0238b25",
+        "focusedTests": 36,
+        "assertions": 542,
+        "typecheck": "passed",
+        "lint": "passed",
+        "sourceCI": "28 passed",
+        "httpRecovery": "accepted at runtime candidate 13bf80df",
+        "elapsedSeconds": 650,
+        "evidence": "milestone-5-http-recovery-evidence-2026-11-16.json",
+        "cleanup": "verified complete; no unknown mutations or warnings",
+        "productSourceChanged": false,
+        "remaining": [
+          "hosted polling recovery",
+          "integrated review and final-revision CI/CodeQL findings disposition"
+        ]
+      },
+      "pollingRecovery": {
+        "status": "accepted",
+        "sourceRevision": "dfd3bb64bf117ac19d0fdf608323fc5019e45a13",
+        "runtimeCandidate": "13bf80df4ead1bbf0b53ee0cc1b221df10868999",
+        "elapsedSeconds": 407,
+        "evidence": "milestone-5-polling-recovery-evidence-2026-11-16.json",
+        "cleanup": "verified complete; no warnings/failures/unknown mutations",
+        "independentReview": "accepted; all66 referenced files verified"
+      }
+    }
+  },
+  "historicalOwnership": {
+    "root": "No hosted resources remain. HTTP/polling lifecycles and HTTP recovery accepted at candidate13bf80df. Hosted polling recovery and final integrated review/CI remain open.",
+    "m5_g4_platform_review": "Attached readonly guard callback and bounded provider log/domain observations; controller repair independently accepted",
+    "m5_g4_fixture_review": "Independent root/runner review and actual managed-image remote-directory verification; maintenance prerequisites independently accepted",
+    "m5_g4_http_engineer": "Guard lifetime/parent-death supervision, then separately inventoried hosted TTL180 contexts; no hosted calls"
+  },
+  "finalCertification": {
+    "status": "source-and-evidence-accepted",
+    "sourceCommit": "dfd3bb64bf117ac19d0fdf608323fc5019e45a13",
+    "runtimeCandidate": "13bf80df4ead1bbf0b53ee0cc1b221df10868999",
+    "independentReviewer": "m5_integrated_review",
+    "review": "milestone-5-final-review-2026-11-17.md",
+    "sourceCIChecksPassed": 28,
+    "codeql": {
+      "analysis": 2183672374,
+      "mergeCommit": "6d0420b128945d5abd53a2a64afd976871086773",
+      "rules": 103,
+      "results": 2,
+      "errors": 0,
+      "warnings": 0,
+      "dismissedUsedInTests": [
+        134,
+        135
+      ],
+      "sourceSuppressionAdded": false
+    },
+    "closingHeadCondition": "Documentation/evidence-only closing head must pass required PR230 checks and current-ref findings review before handoff; exact head/check identities recorded in PR230",
+    "mergeAuthorized": false,
+    "publicationAuthorized": false,
+    "postMergeFollowUp": "Trusted default-branch paid security canary and resulting-main verification; no branch-controlled code with repository eval keys",
+    "nextMilestone": "M6 upgrade and measured engineer inspectability"
+  }
+}

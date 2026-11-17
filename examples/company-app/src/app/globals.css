@@ -1,0 +1,217 @@
+@import "tailwindcss";
+@import "./auggy-theme.css";
+@source "../**/*.{ts,tsx}";
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+  }
+  body {
+    margin: 0;
+  }
+  button,
+  textarea {
+    font: inherit;
+  }
+  textarea {
+    caret-color: var(--foreground);
+  }
+  a {
+    text-underline-offset: 0.2em;
+  }
+  * {
+    scrollbar-color: var(--border) var(--background);
+  }
+}
+
+@layer components {
+  .app-shell {
+    max-width: 78rem;
+    margin: 0 auto;
+    padding: clamp(1rem, 4vw, 3rem);
+  }
+  .page-heading {
+    margin-bottom: 2rem;
+  }
+  .page-heading h1 {
+    font-size: clamp(1.75rem, 3vw, 2.5rem);
+    font-weight: 650;
+    line-height: 1.15;
+    letter-spacing: -0.025em;
+    text-wrap: balance;
+  }
+  .page-heading > p {
+    margin-top: 0.65rem;
+    color: var(--muted-foreground);
+  }
+  .support-workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 17rem;
+    gap: 2.5rem;
+    align-items: start;
+  }
+  .conversation {
+    min-width: 0;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    background: var(--card);
+    overflow: hidden;
+  }
+  .conversation-heading {
+    padding: 1.25rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .conversation-heading h2,
+  .reference-context h2 {
+    font-weight: 650;
+    font-size: 1rem;
+  }
+  .conversation-heading p {
+    margin-top: 0.4rem;
+    color: var(--muted-foreground);
+    font-size: 0.875rem;
+    line-height: 1.5;
+  }
+  .conversation-content {
+    min-height: 20rem;
+    max-height: 32rem;
+    overflow-y: auto;
+    padding: 1.5rem;
+    overscroll-behavior: contain;
+  }
+  .conversation-empty {
+    max-width: 32rem;
+    margin: 3rem auto;
+  }
+  .conversation-empty h3 {
+    font-size: 1.4rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+  }
+  .conversation-empty p,
+  .reference-context p,
+  .reference-context dd {
+    font-size: 0.9rem;
+    line-height: 1.65;
+    color: var(--muted-foreground);
+  }
+  .conversation-turn + .conversation-turn {
+    margin-top: 2rem;
+    border-top: 1px solid var(--border);
+    padding-top: 1.5rem;
+  }
+  .message + .message {
+    margin-top: 1.5rem;
+  }
+  .message h3 {
+    font-size: 0.8rem;
+    font-weight: 650;
+    margin-bottom: 0.4rem;
+  }
+  .message p {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 0.9375rem;
+    line-height: 1.65;
+  }
+  .message-user {
+    max-width: 90%;
+  }
+  .message-agent .response-status {
+    margin-top: 0.5rem;
+    font-size: 0.8125rem;
+    color: var(--muted-foreground);
+  }
+  .message-agent[data-state="failed"] .response-status {
+    color: var(--foreground);
+    font-weight: 500;
+  }
+  .composer {
+    border-top: 1px solid var(--border);
+    padding: 1.25rem 1.5rem;
+  }
+  .composer label {
+    display: block;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+  }
+  .composer textarea {
+    background: var(--background);
+    resize: vertical;
+    min-height: 6.5rem;
+    max-height: 18rem;
+  }
+  .composer-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 0.75rem;
+  }
+  .composer-actions p,
+  .delivery-note {
+    color: var(--muted-foreground);
+    font-size: 0.75rem;
+    line-height: 1.5;
+  }
+  .delivery-note {
+    margin-top: 0.75rem;
+  }
+  .configuration-error,
+  .delivery-retry {
+    margin-bottom: 1rem;
+    font-size: 0.875rem;
+    line-height: 1.55;
+  }
+  .delivery-retry p {
+    margin-bottom: 0.75rem;
+  }
+  .reference-context {
+    padding-top: 1.25rem;
+  }
+  .reference-context > p {
+    margin-top: 0.75rem;
+  }
+  .reference-context dl {
+    margin-top: 1.5rem;
+  }
+  .reference-context dl > div {
+    padding: 1rem 0;
+    border-top: 1px solid var(--border);
+  }
+  .reference-context dt {
+    font-size: 0.8125rem;
+    font-weight: 650;
+    margin-bottom: 0.25rem;
+  }
+  .reference-context .synthetic-notice {
+    border-top: 1px solid var(--border);
+    padding-top: 1.25rem;
+    margin-top: 1rem;
+    font-size: 0.8125rem;
+  }
+  @media (max-width: 60rem) {
+    .support-workspace {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 1.5rem;
+    }
+    .reference-context {
+      max-width: 44rem;
+      padding-top: 0;
+    }
+  }
+  @media (max-width: 30rem) {
+    .conversation-heading,
+    .conversation-content,
+    .composer {
+      padding: 1rem;
+    }
+    .composer-actions {
+      align-items: flex-end;
+    }
+    .composer-actions p {
+      max-width: 11rem;
+    }
+  }
+}

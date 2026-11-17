@@ -39,6 +39,7 @@ import {
   externalAuthClaimsToRouteContext,
   verifyExternalAuthAssertion,
   type ExternalAuthAssertionSecret,
+  type ExternalAuthClaims,
   type ExternalAuthPrincipalOptions,
   type ExternalAuthReplayStore,
 } from "../auth/external-auth";
@@ -100,6 +101,16 @@ import {
 
 import { createManagedHttpRouter, type HttpConnection } from "./managed-http-router";
 import { registerCleanupProof } from "../application/cleanup-proof";
+import type { RuntimeDataAdmission } from "../runtime-data-contracts";
+import {
+  EXTERNAL_AUTH_REPLAY_MAX_RETRY_AFTER_SECONDS,
+  type ManagedExternalAuthReplay,
+  type ManagedReplayVerifiedInput,
+} from "../auth/external-auth-replay-contracts";
+import {
+  createManagedExternalAuthReplay,
+  validateManagedReplayVerifiedInput,
+} from "../auth/external-auth-replay-store";
 
 const PUBLIC_PAGE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 const DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER = "x-auggy-auth-assertion";
@@ -160,6 +171,8 @@ export interface WebTransportExternalAuthOptions extends ExternalAuthPrincipalOp
   replayProtection?: {
     enabled?: boolean;
     store?: ExternalAuthReplayStore;
+    /** Managed SQLite replay. Requires an admitted runtime data root and explicit maximum TTL. */
+    dbPath?: string;
   };
   /**
    * Expected assertion audience. Defaults to the transport security namespace
@@ -293,10 +306,25 @@ function validateExternalAuthRuntimeOptions(value: unknown): void {
       "[web-transport] externalAuth.replayProtection.enabled must be a boolean when replayProtection is configured.",
     );
   }
-  if (replay.store !== undefined && replay.enabled !== true) {
-    throw new Error("[web-transport] externalAuth.replayProtection.store requires enabled: true.");
+  if ((replay.store !== undefined || replay.dbPath !== undefined) && replay.enabled !== true) {
+    throw new Error(
+      "[web-transport] externalAuth.replayProtection store/dbPath requires enabled: true.",
+    );
   }
+  if (replay.store !== undefined && replay.dbPath !== undefined)
+    throw new Error(
+      "[web-transport] externalAuth.replayProtection store and dbPath are mutually exclusive.",
+    );
   if (replay.enabled !== true) return;
+  if (replay.dbPath !== undefined) {
+    if (typeof replay.dbPath !== "string" || !replay.dbPath.trim() || replay.dbPath.includes("\0"))
+      throw new Error("[web-transport] externalAuth.replayProtection.dbPath must name a file.");
+    if (!Number.isSafeInteger(config.maxTtlSeconds) || (config.maxTtlSeconds as number) <= 0)
+      throw new Error(
+        "[web-transport] managed external auth replay requires an explicit positive maxTtlSeconds.",
+      );
+    return;
+  }
   if (replay.store === undefined) {
     throw new Error(
       "[web-transport] externalAuth.replayProtection requires an explicit atomic store. " +
@@ -1075,15 +1103,30 @@ export function webTransport(opts: WebTransportOptions): Augment {
 /** Package-private external binding; the YAML-resolved augment remains in the graph. */
 export function createManagedWebTransport(
   opts: WebTransportOptions,
-  owner: { name: string; canServe(): boolean },
+  owner: ManagedWebTransportOwner,
 ): ManagedWebTransport {
   return createWebTransportInstance(opts, owner);
 }
 
+interface ManagedWebTransportOwner {
+  name: string;
+  canServe(): boolean;
+  runtimeDataAdmission?: RuntimeDataAdmission;
+  managedExternalAuthDbPaths?: readonly string[];
+}
+
 function createWebTransportInstance(
   opts: WebTransportOptions,
-  owner?: { name: string; canServe(): boolean },
+  owner?: ManagedWebTransportOwner,
 ): ManagedWebTransport {
+  if (
+    opts.externalAuth?.replayProtection?.dbPath !== undefined &&
+    (!owner?.runtimeDataAdmission || !owner.managedExternalAuthDbPaths)
+  ) {
+    throw new Error(
+      "[web-transport] managed external auth replay requires the managed application host and an admitted AUGGY_DATA_DIR; prepare an owned 0700 data root and start the generated application",
+    );
+  }
   for (const field of ["allowAnonymous", "adminRoute", "publicIntegration"] as const) {
     if (opts[field] !== undefined && typeof opts[field] !== "boolean") {
       throw new TypeError(`[web-transport] ${field} must be a boolean when configured.`);
@@ -1121,6 +1164,7 @@ function createWebTransportInstance(
   }
   let consoleChatStore: ConsoleChatStore | null = null;
   let idempotencyStore: WebIdempotencyStore | null = null;
+  let managedExternalAuthReplay: ManagedExternalAuthReplay | null = null;
   let consoleHistoryPersistence: ReturnType<
     typeof createDeferredConsoleThreadHistoryPersistence
   > | null = null;
@@ -1361,6 +1405,7 @@ function createWebTransportInstance(
   // the augment-resolver, visitorAuth's signingKey is auto-injected and
   // enabled is set to true. Direct callers must pass both explicitly.
   const visitorTokensEnabled = opts.visitorTokens?.enabled === true;
+  const managedExternalAuthEnabled = opts.externalAuth?.replayProtection?.dbPath !== undefined;
   const externalAuthReplayProtectionEnabled = opts.externalAuth?.replayProtection?.enabled === true;
   const externalAuthReplayStore = externalAuthReplayProtectionEnabled
     ? (opts.externalAuth?.replayProtection?.store ?? null)
@@ -2057,35 +2102,152 @@ function createWebTransportInstance(
     return opts.externalAuth?.audience ?? requireSecurityAudience();
   }
 
-  async function resolveExternalVisitorAuth(
-    req: Request,
-    replayMode: "consume" | "defer" = "consume",
-  ): Promise<RouteVisitorAuthContext | null> {
+  const managedAuthFailureResponse = Symbol("managed external auth failure");
+
+  function managedAuthFailure(response: Response): Error {
+    return Object.assign(new Error("External authentication rejected."), {
+      [managedAuthFailureResponse]: response,
+    });
+  }
+
+  function managedAuthErrorResponse(error: unknown): Response | null {
+    if (error instanceof Error && managedAuthFailureResponse in error) {
+      const response = error[managedAuthFailureResponse];
+      if (response instanceof Response) return response;
+    }
+    return null;
+  }
+
+  function managedAuthUnavailable(retryAfterSeconds = 1): Response {
+    const boundedRetry = Number.isFinite(retryAfterSeconds)
+      ? Math.max(
+          1,
+          Math.min(EXTERNAL_AUTH_REPLAY_MAX_RETRY_AFTER_SECONDS, Math.ceil(retryAfterSeconds)),
+        )
+      : 1;
+    return json({ error: "external_auth_unavailable" }, 503, {
+      "retry-after": String(boundedRetry),
+      "cache-control": "no-store",
+    });
+  }
+
+  async function withManagedAuthBoundary(operation: () => Promise<Response>): Promise<Response> {
+    try {
+      return await operation();
+    } catch (error) {
+      const response = managedAuthErrorResponse(error);
+      if (response) return response;
+      throw error;
+    }
+  }
+
+  async function managedAuthNow(): Promise<number> {
+    try {
+      if (!managedExternalAuthReplay) throw managedAuthFailure(managedAuthUnavailable());
+      const availability = await managedExternalAuthReplay.checkAvailability(
+        opts.externalAuth!.maxTtlSeconds!,
+      );
+      if (availability.status === "ready") return availability.nowMs;
+      throw managedAuthFailure(
+        managedAuthUnavailable(
+          availability.status === "held" ? availability.retryAfterSeconds : undefined,
+        ),
+      );
+    } catch (error) {
+      if (managedAuthErrorResponse(error)) throw error;
+      throw managedAuthFailure(managedAuthUnavailable());
+    }
+  }
+
+  async function consumeManagedExternalAuth(
+    input: ManagedReplayVerifiedInput,
+  ): Promise<Response | null> {
+    try {
+      if (!managedExternalAuthReplay) return managedAuthUnavailable();
+      const claim = await managedExternalAuthReplay.consumeVerified(input);
+      if (claim.status === "consumed") return null;
+      if (claim.status === "rejected") return json({ error: "unauthorized" }, 401);
+      return managedAuthUnavailable(claim.status === "held" ? claim.retryAfterSeconds : undefined);
+    } catch {
+      return managedAuthUnavailable();
+    }
+  }
+
+  async function verifyExternalVisitorClaims(req: Request): Promise<ExternalAuthClaims | null> {
     const config = opts.externalAuth;
     if (!config) return null;
 
     const assertion = req.headers.get(externalAuthHeaderName);
-    if (!assertion) return null;
-
-    const verified = verifyExternalAuthAssertion(assertion, {
+    if (assertion === null) return null;
+    const verificationOptions = {
       secret: config.secret,
       keyId: config.keyId,
       secrets: config.secrets,
       audience: resolveExternalAuthAudience(),
       allowedProviders: config.allowedProviders,
       maxTtlSeconds: config.maxTtlSeconds,
-    });
-    if (!verified.ok) return null;
-    if (externalAuthReplayStore) {
-      if (!verified.claims.jti) return null;
+    };
+    // Reject unauthenticated input before durable guard I/O. Time failures still
+    // go through the managed clock so a wall-clock rollback cannot authorize it.
+    const precheck = managedExternalAuthEnabled
+      ? verifyExternalAuthAssertion(assertion, verificationOptions)
+      : undefined;
+    if (
+      precheck &&
+      !precheck.ok &&
+      precheck.reason !== "expired" &&
+      precheck.reason !== "not-yet-valid"
+    ) {
+      throw managedAuthFailure(json({ error: "unauthorized" }, 401));
+    }
+    const now = managedExternalAuthEnabled ? await managedAuthNow() : undefined;
+    const verified = verifyExternalAuthAssertion(assertion, { ...verificationOptions, now });
+    if (!verified.ok) {
+      if (managedExternalAuthEnabled)
+        throw managedAuthFailure(json({ error: "unauthorized" }, 401));
+      return null;
+    }
+    if (managedExternalAuthEnabled) {
+      const input: ManagedReplayVerifiedInput = {
+        audience: verified.claims.audience,
+        jti: verified.claims.jti ?? "",
+        issuedAt: verified.claims.issuedAt,
+        expiresAt: verified.claims.expiresAt,
+        maxTtlSeconds: config.maxTtlSeconds!,
+      };
+      if (validateManagedReplayVerifiedInput(input, now!)) {
+        throw managedAuthFailure(json({ error: "unauthorized" }, 401));
+      }
+    }
+    return verified.claims;
+  }
+
+  async function resolveExternalVisitorAuth(
+    req: Request,
+    replayMode: "consume" | "defer" = "consume",
+  ): Promise<RouteVisitorAuthContext | null> {
+    const claims = await verifyExternalVisitorClaims(req);
+    if (!claims) return null;
+    if (managedExternalAuthEnabled) {
       if (replayMode === "consume") {
-        const now = Date.now();
+        const denied = await consumeManagedExternalAuth({
+          audience: claims.audience,
+          jti: claims.jti!,
+          issuedAt: claims.issuedAt,
+          expiresAt: claims.expiresAt,
+          maxTtlSeconds: opts.externalAuth!.maxTtlSeconds!,
+        });
+        if (denied) throw managedAuthFailure(denied);
+      }
+    } else if (externalAuthReplayStore) {
+      if (!claims.jti) return null;
+      if (replayMode === "consume") {
         let accepted = false;
         try {
           accepted = await externalAuthReplayStore.consume(
-            verified.claims.jti,
-            verified.claims.expiresAt,
-            now,
+            claims.jti,
+            claims.expiresAt,
+            Date.now(),
           );
         } catch {
           console.warn("[web-transport] external auth replay store failed.");
@@ -2095,9 +2257,9 @@ function createWebTransportInstance(
       }
     }
 
-    return externalAuthClaimsToRouteContext(verified.claims, {
-      visitorId: config.visitorId,
-      includeUnverifiedEmail: config.includeUnverifiedEmail,
+    return externalAuthClaimsToRouteContext(claims, {
+      visitorId: opts.externalAuth!.visitorId,
+      includeUnverifiedEmail: opts.externalAuth!.includeUnverifiedEmail,
     });
   }
 
@@ -2861,6 +3023,17 @@ function createWebTransportInstance(
         return json({ error: "idempotency_unavailable" }, 503);
       }
 
+      // Followers may have waited while the restore hold, verifier TTL or
+      // assertion expiry changed. Recheck before exposing any saved outcome.
+      // A leader instead rechecks inside consumeVerified below, where denial
+      // also preserves its owned execution claim as outcome-unknown.
+      if (
+        claim.status !== "leader" &&
+        managedExternalAuthEnabled &&
+        turnAuth?.state === "recognized"
+      ) {
+        await verifyExternalVisitorClaims(req);
+      }
       if (claim.status === "replay") return replaySse(claim.responseBody);
       if (claim.status === "conflict") {
         return json({ error: "idempotency_key_conflict" }, 409);
@@ -2882,31 +3055,44 @@ function createWebTransportInstance(
 
       internalTurnId = claim.turnId;
       publicRunId = claim.turnId;
-      if (externalAuthReplayStore && turnAuth?.state === "recognized") {
+      if (
+        (managedExternalAuthEnabled || externalAuthReplayStore) &&
+        turnAuth?.state === "recognized"
+      ) {
         const replayId = turnAuth.externalAuth?.jti;
-        let accepted = false;
-        if (replayId) {
-          try {
-            accepted = await externalAuthReplayStore.consume(
-              replayId,
-              turnAuth.expiresAt,
-              Date.now(),
-            );
-          } catch {
-            console.warn("[web-transport] external auth replay store failed.");
+        let denied: Response | null = null;
+        if (managedExternalAuthEnabled) {
+          denied = await consumeManagedExternalAuth({
+            audience: resolveExternalAuthAudience(),
+            jti: replayId ?? "",
+            issuedAt: turnAuth.issuedAt,
+            expiresAt: turnAuth.expiresAt,
+            maxTtlSeconds: opts.externalAuth!.maxTtlSeconds!,
+          });
+        } else {
+          let accepted = false;
+          if (replayId && externalAuthReplayStore) {
+            try {
+              accepted = await externalAuthReplayStore.consume(
+                replayId,
+                turnAuth.expiresAt,
+                Date.now(),
+              );
+            } catch {
+              console.warn("[web-transport] external auth replay store failed.");
+            }
           }
+          if (!accepted) denied = json({ error: "unauthorized" }, 401);
         }
-        if (!accepted) {
-          // The assertion was replayed under a different execution claim, or
-          // the replay store failed. Preserve this claim as outcome-unknown so
-          // the caller cannot cycle the same key until an unsafe execution is
-          // eventually admitted.
+        if (denied) {
+          // Preserve a won execution claim as outcome-unknown on both replay
+          // rejection and managed hold/storage failure; it must not leak live.
           try {
             store.markUnknown(keyHash, claim.ownerToken);
           } catch {
             return json({ error: "idempotency_unavailable" }, 503);
           }
-          return json({ error: "unauthorized" }, 401);
+          return denied;
         }
       }
       beginLocalIdempotencyExecution(keyHash);
@@ -2915,6 +3101,10 @@ function createWebTransportInstance(
         keyHash,
         ownerToken: claim.ownerToken,
       };
+    }
+
+    if (managedExternalAuthEnabled && !durableIdempotency && turnAuth?.state === "recognized") {
+      await verifyExternalVisitorClaims(req);
     }
 
     const runStartedAt = Date.now();
@@ -3794,6 +3984,13 @@ function createWebTransportInstance(
         return json({ error: webhookPolicy.error }, webhookPolicy.status);
       }
 
+      if (
+        managedExternalAuthEnabled &&
+        routeAuth.context.mode === "visitor" &&
+        routeAuth.context.state === "recognized"
+      ) {
+        await verifyExternalVisitorClaims(req);
+      }
       try {
         const timeoutMs = augmentRoute.timeoutMs ?? 30_000;
         const response = await withTimeout(
@@ -3809,8 +4006,23 @@ function createWebTransportInstance(
           req.signal,
           trackExecution,
         );
+        if (
+          managedExternalAuthEnabled &&
+          routeAuth.context.mode === "visitor" &&
+          routeAuth.context.state === "recognized"
+        ) {
+          try {
+            await verifyExternalVisitorClaims(req);
+          } catch (error) {
+            // The denied private response is never handed to delivery tracking.
+            // Its asynchronous cancellation still owns augment resources.
+            if (response.body) trackExecution(response.body.cancel().catch(() => {}));
+            throw error;
+          }
+        }
         return withCorsHeaders(response);
       } catch (err) {
+        if (managedAuthErrorResponse(err)) throw err;
         if (err instanceof TimeoutError) {
           return json({ error: "timeout" }, 504);
         }
@@ -3861,8 +4073,10 @@ function createWebTransportInstance(
         : null;
     },
     agentRun: (req, connection) =>
-      handleAgentRun(req, resolveCallerIp(req, connection, trustedProxies, xffOnUntrusted)),
-    fallback: handleFallback,
+      withManagedAuthBoundary(() =>
+        handleAgentRun(req, resolveCallerIp(req, connection, trustedProxies, xffOnUntrusted)),
+      ),
+    fallback: (req, connection) => withManagedAuthBoundary(() => handleFallback(req, connection)),
   });
 
   const augment: Augment = {
@@ -3918,6 +4132,14 @@ function createWebTransportInstance(
           );
         }
         signingKey = await deriveSigningKey(keySource);
+      }
+      if (managedExternalAuthEnabled) {
+        managedExternalAuthReplay = createManagedExternalAuthReplay({
+          admission: owner!.runtimeDataAdmission!,
+          dbPath: opts.externalAuth!.replayProtection!.dbPath!,
+          managedDbPaths: owner!.managedExternalAuthDbPaths!,
+          maxTtlSeconds: opts.externalAuth!.maxTtlSeconds!,
+        });
       }
       const idempotencyDbPath = resolveIdempotencyDbPath(opts);
       if (idempotencyDbPath !== null) {
@@ -3978,6 +4200,8 @@ function createWebTransportInstance(
       consoleChatStore = null;
       idempotencyStore?.close();
       idempotencyStore = null;
+      managedExternalAuthReplay?.close();
+      managedExternalAuthReplay = null;
       for (const execution of localIdempotencyExecutions.values()) execution.resolve();
       localIdempotencyExecutions.clear();
       idempotencyWaitersByKey.clear();
@@ -4008,6 +4232,7 @@ function createWebTransportInstance(
       !server &&
       !consoleChatStore &&
       !idempotencyStore &&
+      !managedExternalAuthReplay &&
       !managedRootRetained &&
       !overrideRootRetained,
   );
@@ -4027,6 +4252,7 @@ function createWebTransportInstance(
         server ||
         consoleChatStore ||
         idempotencyStore ||
+        managedExternalAuthReplay ||
         managedRootRetained ||
         overrideRootRetained
           ? ("active" as const)

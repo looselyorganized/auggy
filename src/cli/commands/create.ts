@@ -53,6 +53,8 @@ import { assertSecureCredentialTransport } from "../../engines/_shared/credentia
 import { planApplicationScaffold } from "../scaffold-application";
 import { createMutationPlan } from "../authoring/mutation";
 import { publishMutationPlan } from "../authoring/publication";
+import { safeNavigation } from "../authoring/inspection-safety";
+import { AUTHORING_LIMITS } from "../authoring/contracts";
 import type {
   GeneratedApplicationFile,
   PlannedFile,
@@ -753,8 +755,20 @@ async function runCreateIntoDir(
   });
   const publication = publishMutationPlan(plan, { fault: opts.publicationFault });
   if (publication.status !== "complete") {
+    // Publication diagnostics contain controlled messages. Never render private
+    // receipt fields, diagnostic locations, or an original filesystem cause.
+    const diagnostics = publication.diagnostics
+      .slice(0, AUTHORING_LIMITS.diagnostics)
+      .map(({ code, message }) => {
+        const safeCode =
+          code.length > 0 && code.length <= 80 && !/[^a-z0-9-]/.test(code)
+            ? code
+            : "publication-failed";
+        return `[${safeCode}] ${safeNavigation(message, "Review the private operation locally before recovery.")}`;
+      })
+      .join("\n");
     throw new Error(
-      `Application publication ${publication.status}; the project is not ready. Preserve private operation ${publication.operationId}. Preview recovery: auggy migrate --project-dir ${shellArgument(finalDir)} --rollback ${publication.operationId}. Review that plan before adding --apply.`,
+      `Application publication ${publication.status}; the project is not ready. Preserve private operation ${publication.operationId}. Preview recovery: auggy migrate --project-dir ${shellArgument(finalDir)} --rollback ${publication.operationId}. Review that plan before adding --apply.${diagnostics ? `\n${diagnostics}` : ""}`,
     );
   }
   console.log("\n Adding core augments...\n");

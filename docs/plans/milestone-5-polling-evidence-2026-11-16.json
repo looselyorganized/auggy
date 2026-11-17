@@ -1,0 +1,261 @@
+{
+  "scope": "Actual polling lifecycle, not full M5",
+  "runtimeRevision": "13bf80df4ead1bbf0b53ee0cc1b221df10868999",
+  "harnessRevision": "9461532f",
+  "execution": "passed",
+  "ownedResourceCleanup": "verified-complete",
+  "checks": {
+    "projectDelete": true,
+    "volumeDelete": true,
+    "serviceDelete": true,
+    "keyDelete": true,
+    "projectAbsent": true,
+    "keyAbsent": true
+  },
+  "baseline": {
+    "effects": 1,
+    "duplicateEffects": 0,
+    "unauthorizedEffects": 0
+  },
+  "replacement": {
+    "effects": 1,
+    "duplicateEffects": 0,
+    "unauthorizedEffects": 0
+  },
+  "aggregateRawResult": "failed; preserved unchanged",
+  "telemetry": "Final usage query ran after project deletion and returned Project not found; separately failed telemetry does not negate six passed lifecycle assertions and verified resource deletion",
+  "evidence": [
+    {
+      "name": "result.json",
+      "sha256": "b91c4a5a162b14f6c1fc628959f3fc1e869256e1b8d53d2254e57733d334de3f"
+    },
+    {
+      "name": "cleanup.json",
+      "sha256": "44b44a6f331aa9885bf2baee0c78ef83156e78a7c38b5ad02892215ec89ee21f"
+    },
+    {
+      "name": "polling-baseline.json",
+      "sha256": "1b653b040cde8ef72ba3593f61600d51be96ceeec8228c05d7eaed499df096e8"
+    },
+    {
+      "name": "polling-edited.json",
+      "sha256": "8b7b3df4234d3e14621f85920d69d3fc7e70f86224ffe0d6ea7a077911c6022b"
+    },
+    {
+      "name": "stopped-1.json",
+      "sha256": "f6b75adb5720897a95be753b60d48796863a294ee6fa716d3a309011d7d5c1a7"
+    },
+    {
+      "name": "stopped-2.json",
+      "sha256": "d9aa9a8c61539b59954a5efb267500148c4467ba07a8744ed75f10f55008977d"
+    },
+    {
+      "name": "api-43-service-read-response.json",
+      "sha256": "449bbe76430e5b4e30435bb25a677faadbf11e86f3621a1bc35ec2856d19ed50"
+    },
+    {
+      "name": "api-41-deployment-read-response.json",
+      "sha256": "3996674b256e6e8e244e0646b290e99905eb0de2ed3c320ea6ec93fb4aec999f"
+    },
+    {
+      "name": "api-55-workspace-keys-response.json",
+      "sha256": "90f2cc301545e60c92c660885538017b06907f395964b0a2388272edeb5838ae"
+    },
+    {
+      "name": "api-47-project-read-response.json",
+      "sha256": "58af45950b77063dbe1386e0d02338a71d9dfa2c17b7c1102e61082f26cf221c"
+    },
+    {
+      "name": "api-6-service-caps-response.json",
+      "sha256": "aadc375297ba677afd88fc98a9b2e2387a23a86f541c61505ce75f2ae20aae14"
+    },
+    {
+      "name": "api-2-project-create-response.json",
+      "sha256": "a0fa35fad43736655a53bd459feec77306a1a762590f30f973459df5f96d9546"
+    },
+    {
+      "name": "api-37-deployment-read-response.json",
+      "sha256": "3996674b256e6e8e244e0646b290e99905eb0de2ed3c320ea6ec93fb4aec999f"
+    },
+    {
+      "name": "api-29-deployment-read-response.json",
+      "sha256": "5b8ccf9a054b9d12b3c646d955b125ea8a6f6a82b583bd031d521ecfbebd3275"
+    },
+    {
+      "name": "api-18-service-read-response.json",
+      "sha256": "16e2ab39701ba8973cae0d49d1dcf7647fb1b044c22ac6b98f9f96cb2914ed49"
+    },
+    {
+      "name": "api-21-service-read-response.json",
+      "sha256": "066d8bffd2bda8acf747d281a0f899fe37a2c27ee34704f94773d8475b1e86dd"
+    },
+    {
+      "name": "api-7-service-policy-response.json",
+      "sha256": "17bec69eeccf9753339834309e5b9f7aa10a5e65fe3714ab438b8086bca5b773"
+    },
+    {
+      "name": "api-46-deployment-read-response.json",
+      "sha256": "a8910691a7fb7290091930e133525c78dfbf9abbf9a2606306f24756caef6b88"
+    },
+    {
+      "name": "api-10-project-read-response.json",
+      "sha256": "f9762811deb1d2c46107e5b2172b42057a8e1a2a5d9878ec1365844261618dbc"
+    },
+    {
+      "name": "api-26-deployment-read-response.json",
+      "sha256": "381de3b6d9fc8d2ff1a16c07184ec7fdb384b285a0612d876a5ea72c38ea918e"
+    },
+    {
+      "name": "api-36-service-read-response.json",
+      "sha256": "449bbe76430e5b4e30435bb25a677faadbf11e86f3621a1bc35ec2856d19ed50"
+    },
+    {
+      "name": "api-20-deployment-read-response.json",
+      "sha256": "381de3b6d9fc8d2ff1a16c07184ec7fdb384b285a0612d876a5ea72c38ea918e"
+    },
+    {
+      "name": "api-19-service-read-response.json",
+      "sha256": "066d8bffd2bda8acf747d281a0f899fe37a2c27ee34704f94773d8475b1e86dd"
+    },
+    {
+      "name": "api-40-deployment-stop-response.json",
+      "sha256": "918ca20a0f7ee70433d0d1199e6fcbc9a0f259767df1d3f5cb2a020573797629"
+    },
+    {
+      "name": "api-12-workspace-keys-response.json",
+      "sha256": "90f2cc301545e60c92c660885538017b06907f395964b0a2388272edeb5838ae"
+    },
+    {
+      "name": "api-30-usage-response.json",
+      "sha256": "c99ca94eb29af254f758b48baa9ad59387807c09df1a8506be86dace4f04fa36"
+    },
+    {
+      "name": "api-11-project-read-response.json",
+      "sha256": "58af45950b77063dbe1386e0d02338a71d9dfa2c17b7c1102e61082f26cf221c"
+    },
+    {
+      "name": "api-1-workspace-capacity-response.json",
+      "sha256": "d86daf2bf42606296067389405d508d7458e523d4b3e81b1704ab5de9eb91e98"
+    },
+    {
+      "name": "api-45-service-read-response.json",
+      "sha256": "449bbe76430e5b4e30435bb25a677faadbf11e86f3621a1bc35ec2856d19ed50"
+    },
+    {
+      "name": "api-39-deployment-read-response.json",
+      "sha256": "3996674b256e6e8e244e0646b290e99905eb0de2ed3c320ea6ec93fb4aec999f"
+    },
+    {
+      "name": "api-27-deployment-read-response.json",
+      "sha256": "5b8ccf9a054b9d12b3c646d955b125ea8a6f6a82b583bd031d521ecfbebd3275"
+    },
+    {
+      "name": "api-5-service-create-response.json",
+      "sha256": "3305092f3e7acf3a1c32f9b8f3dc304e148df97f4c68d079605fab99847dd2d2"
+    },
+    {
+      "name": "api-8-service-read-response.json",
+      "sha256": "d94acf921e9f5dcba06c55515fc00cec69ffffbdf2c80a959f7d3287f0240d8f"
+    },
+    {
+      "name": "api-53-workspace-keys-response.json",
+      "sha256": "7f29aedda600540c4c26d8fdde82dfc39a9d3a081614b9d5783015c055db0d2b"
+    },
+    {
+      "name": "api-49-service-delete-response.json",
+      "sha256": "04085b968811308185d559c31dcd70b57e2edf32a6a7eae35a2d0eefb1074894"
+    },
+    {
+      "name": "api-24-deployment-read-response.json",
+      "sha256": "381de3b6d9fc8d2ff1a16c07184ec7fdb384b285a0612d876a5ea72c38ea918e"
+    },
+    {
+      "name": "api-38-service-read-response.json",
+      "sha256": "449bbe76430e5b4e30435bb25a677faadbf11e86f3621a1bc35ec2856d19ed50"
+    },
+    {
+      "name": "api-34-service-read-response.json",
+      "sha256": "449bbe76430e5b4e30435bb25a677faadbf11e86f3621a1bc35ec2856d19ed50"
+    },
+    {
+      "name": "api-44-deployment-read-response.json",
+      "sha256": "a8910691a7fb7290091930e133525c78dfbf9abbf9a2606306f24756caef6b88"
+    },
+    {
+      "name": "api-35-deployment-read-response.json",
+      "sha256": "3996674b256e6e8e244e0646b290e99905eb0de2ed3c320ea6ec93fb4aec999f"
+    },
+    {
+      "name": "api-13-key-create-response.json",
+      "sha256": "b36977673d84f1bcff48d6048c96fdf2d8e552eff7e82edf1e42575c07c1fa43"
+    },
+    {
+      "name": "api-50-project-delete-response.json",
+      "sha256": "e69c4b5d28c62191a91e21c21bbc277b813128174e8ac923cf081c531b8a5705"
+    },
+    {
+      "name": "api-9-volume-create-response.json",
+      "sha256": "13c2547674c9a7d45e9e31e602aaf36b8cacf92fcc0359613eaf437f1c513742"
+    },
+    {
+      "name": "api-48-volume-delete-response.json",
+      "sha256": "a14c7ce1645ea94aec95b91fd30601c91cb6e18c391e353ad90a5a235db1401f"
+    },
+    {
+      "name": "api-16-usage-response.json",
+      "sha256": "11bcca0f41f85ff150d94d0c7632730959c5a7ade9e93925bb3a0f4f358a56c2"
+    },
+    {
+      "name": "api-32-service-read-response.json",
+      "sha256": "066d8bffd2bda8acf747d281a0f899fe37a2c27ee34704f94773d8475b1e86dd"
+    },
+    {
+      "name": "api-51-workspace-active-projects-response.json",
+      "sha256": "21c62bae6aabcd82704a7ac3132f7a45faff80c78521e13bdd7c1146d3d23400"
+    },
+    {
+      "name": "api-28-service-read-response.json",
+      "sha256": "066d8bffd2bda8acf747d281a0f899fe37a2c27ee34704f94773d8475b1e86dd"
+    },
+    {
+      "name": "api-25-deployment-stop-response.json",
+      "sha256": "918ca20a0f7ee70433d0d1199e6fcbc9a0f259767df1d3f5cb2a020573797629"
+    },
+    {
+      "name": "api-14-usage-response.json",
+      "sha256": "11bcca0f41f85ff150d94d0c7632730959c5a7ade9e93925bb3a0f4f358a56c2"
+    },
+    {
+      "name": "api-3-project-read-response.json",
+      "sha256": "69765478a96b53302c9d9cef941606ce143a6dcbce43220b9cad4a803f748784"
+    },
+    {
+      "name": "api-4-project-read-response.json",
+      "sha256": "69765478a96b53302c9d9cef941606ce143a6dcbce43220b9cad4a803f748784"
+    },
+    {
+      "name": "api-54-key-delete-response.json",
+      "sha256": "49953cc036cd3d53590d433b25b4dee412158a3016f39f31e5fa91d56aa465ae"
+    },
+    {
+      "name": "api-23-service-read-response.json",
+      "sha256": "066d8bffd2bda8acf747d281a0f899fe37a2c27ee34704f94773d8475b1e86dd"
+    },
+    {
+      "name": "api-33-deployment-read-response.json",
+      "sha256": "5b8ccf9a054b9d12b3c646d955b125ea8a6f6a82b583bd031d521ecfbebd3275"
+    },
+    {
+      "name": "api-42-deployment-read-response.json",
+      "sha256": "a8910691a7fb7290091930e133525c78dfbf9abbf9a2606306f24756caef6b88"
+    },
+    {
+      "name": "api-22-deployment-read-response.json",
+      "sha256": "381de3b6d9fc8d2ff1a16c07184ec7fdb384b285a0612d876a5ea72c38ea918e"
+    }
+  ],
+  "resourceProof": {
+    "path": "/private/tmp/m5-simple-polling-hosted-r2/evidence/resource-proof.json",
+    "sha256": "3407fe3ff7002bce0f3e1189e1547b959016eb26929cd944d64b343682a7786d"
+  }
+}

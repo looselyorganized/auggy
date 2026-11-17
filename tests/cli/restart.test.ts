@@ -50,6 +50,73 @@ function manifest(configPath: string): PidManifest {
 }
 
 describe("restart target validation", () => {
+  for (const mode of ["dev", "launchd"] as const) {
+    test(`preserves admitted ${mode} storage when the restarting shell has no data-root variable`, async () => {
+      const path = config(AGENT_B, "agent-b");
+      const data = join(resolve(path, ".."), "durable-data");
+      const previous = process.env.AUGGY_DATA_DIR;
+      delete process.env.AUGGY_DATA_DIR;
+      const running = {
+        ...manifest(path),
+        mode,
+        runtimeData: { platform: "generic" as const, root: data },
+      };
+      let started = false;
+      const check = async (
+        _name: string | undefined,
+        options: { runtimeDataEnvironment?: { auggyDataDir: string | undefined } },
+      ) => {
+        expect(options.runtimeDataEnvironment?.auggyDataDir).toBe(data);
+        expect(process.env.AUGGY_DATA_DIR).toBeUndefined();
+        started = true;
+      };
+      try {
+        await runRestart("agent-b", {
+          config: path,
+          _readPidManifest: () => running,
+          _claimAgentLifecycle: () => () => {},
+          _runStop: async () => {},
+          _runStart: check,
+          _runDev: check,
+          _sleep: async () => {},
+        });
+        expect(started).toBe(true);
+      } finally {
+        if (previous === undefined) delete process.env.AUGGY_DATA_DIR;
+        else process.env.AUGGY_DATA_DIR = previous;
+      }
+    });
+  }
+
+  test("a changed data root or ambiguous pre-upgrade manifest refuses restart before stop", async () => {
+    const path = config(AGENT_B, "agent-b");
+    const previous = process.env.AUGGY_DATA_DIR;
+    process.env.AUGGY_DATA_DIR = "/different-data";
+    let stopped = false;
+    try {
+      for (const runtimeData of [
+        undefined,
+        { platform: "generic" as const, root: "/original-data" },
+        { platform: "generic" as const, root: null },
+      ]) {
+        await expect(
+          runRestart("agent-b", {
+            config: path,
+            _readPidManifest: () => ({ ...manifest(path), runtimeData }),
+            _claimAgentLifecycle: () => () => {},
+            _runStop: async () => {
+              stopped = true;
+            },
+          }),
+        ).rejects.toThrow(/No process was stopped/);
+      }
+      expect(stopped).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.AUGGY_DATA_DIR;
+      else process.env.AUGGY_DATA_DIR = previous;
+    }
+  });
+
   test("preflights a broken application before stopping the running incarnation", async () => {
     const path = config(AGENT_B, "agent-b");
     writeFileSync(

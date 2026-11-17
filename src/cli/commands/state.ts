@@ -4,7 +4,7 @@
  * storage of the resulting confidential bundle.
  */
 
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { Command } from "commander";
 import { parseConfig } from "../config-parser";
 import { resolveConfigPath } from "../resolve-config";
@@ -16,6 +16,8 @@ import {
   verifyRuntimeStateBundle,
 } from "../runtime-state-bundle";
 import { buildRuntimeStateInventory, type RuntimeStateInventory } from "../runtime-state-inventory";
+import { selectRuntimeDataRoot } from "../runtime-volume";
+import { EXTERNAL_AUTH_REPLAY_GUARD_PREREQUISITE } from "../../auth/external-auth-replay-contracts";
 
 export interface RuntimeStateCommandOptions {
   config?: string;
@@ -23,24 +25,63 @@ export interface RuntimeStateCommandOptions {
   root?: string;
 }
 
+export interface RuntimeStateRestoreCommandOptions extends RuntimeStateCommandOptions {
+  /** Final runtime mount used to check topology, distinct from the copy destination. */
+  runtimeRoot?: string;
+}
+
+function needsExternalRecoveryPoint(inventory: RuntimeStateInventory): boolean {
+  return inventory.externalPrerequisites.some(
+    (entry) => entry.id !== EXTERNAL_AUTH_REPLAY_GUARD_PREREQUISITE,
+  );
+}
+
 function requireRoot(options: RuntimeStateCommandOptions): string {
-  const configured = options.root ?? process.env.RAILWAY_VOLUME_MOUNT_PATH;
+  const configured = runtimeStateRoot(options);
   if (!configured) {
-    throw new Error("runtime state root is required (--root or RAILWAY_VOLUME_MOUNT_PATH)");
+    throw new Error(
+      "runtime state root is required (--root, AUGGY_DATA_DIR or RAILWAY_VOLUME_MOUNT_PATH)",
+    );
   }
-  return resolve(configured);
+  return configured;
+}
+
+function runtimeStateRoot(options: RuntimeStateCommandOptions): string | undefined {
+  if (options.root !== undefined) return resolve(options.root);
+  const selected = selectRuntimeDataRoot("foreground", {
+    auggyDataDir: process.env.AUGGY_DATA_DIR ?? process.env.RAILWAY_VOLUME_MOUNT_PATH,
+    railwayVolumeMountPath: undefined,
+  });
+  return selected.kind === "local" ? undefined : selected.runtimeDataRoot;
 }
 
 export function runRuntimeStateInventory(
   name: string | undefined,
   options: RuntimeStateCommandOptions = {},
 ): RuntimeStateInventory {
+  return runtimeStateContext(name, options, false).inventory;
+}
+
+function runtimeStateContext(
+  name: string | undefined,
+  options: RuntimeStateCommandOptions,
+  requireVolume: boolean,
+  runtimeRoot?: string,
+) {
+  if (runtimeRoot !== undefined && (!isAbsolute(runtimeRoot) || /\p{Cc}/u.test(runtimeRoot))) {
+    throw new Error("--runtime-root must be an absolute runtime mount path");
+  }
   const configPath = resolveConfigPath(name, options.config, { cwd: options.cwd });
   const config = parseConfig(configPath);
-  return buildRuntimeStateInventory(config, {
+  // parseConfig loads the selected project's .env before storage selection,
+  // including when --config points outside the operator's working directory.
+  const root = requireVolume ? requireRoot(options) : runtimeStateRoot(options);
+  const inventoryRoot = runtimeRoot === undefined ? root : resolve(runtimeRoot);
+  const inventory = buildRuntimeStateInventory(config, {
     agentDir: dirname(configPath),
-    ...(options.root ? { runtimeDataRoot: resolve(options.root) } : {}),
+    ...(inventoryRoot !== undefined ? { runtimeDataRoot: inventoryRoot } : {}),
   });
+  return { root, inventory };
 }
 
 export function runRuntimeStateBackup(
@@ -51,15 +92,14 @@ export function runRuntimeStateBackup(
     runtimeVolumeOnly: boolean;
   },
 ) {
-  const root = requireRoot(options);
-  const inventory = runRuntimeStateInventory(name, { ...options, root });
-  if (inventory.externalPrerequisites.length > 0 && !options.runtimeVolumeOnly) {
+  const { root, inventory } = runtimeStateContext(name, options, true);
+  if (needsExternalRecoveryPoint(inventory) && !options.runtimeVolumeOnly) {
     throw new Error(
       "external recovery prerequisites exist; supply their matching recovery points or explicitly select --runtime-volume-only",
     );
   }
   return createRuntimeStateBundle({
-    sourceRoot: root,
+    sourceRoot: root!,
     bundlePath: resolve(options.out),
     inventory,
     confirmStopped: options.confirmStopped,
@@ -68,23 +108,27 @@ export function runRuntimeStateBackup(
 
 export function runRuntimeStateRestore(
   bundlePath: string,
-  options: RuntimeStateCommandOptions & {
+  options: RuntimeStateRestoreCommandOptions & {
     confirmStopped: boolean;
     runtimeVolumeOnly: boolean;
   },
   name?: string,
 ) {
   const manifest = verifyRuntimeStateBundle(bundlePath);
-  if (manifest.inventory.externalPrerequisites.length > 0 && !options.runtimeVolumeOnly) {
+  if (needsExternalRecoveryPoint(manifest.inventory) && !options.runtimeVolumeOnly) {
     throw new Error(
       "bundle has external recovery prerequisites; restore their matching recovery points or explicitly select --runtime-volume-only",
     );
   }
-  const root = requireRoot(options);
-  const expectedInventory = runRuntimeStateInventory(name, { ...options, root });
+  const { root, inventory: expectedInventory } = runtimeStateContext(
+    name,
+    options,
+    true,
+    options.runtimeRoot,
+  );
   return restoreRuntimeStateBundle({
     bundlePath,
-    destinationRoot: root,
+    destinationRoot: root!,
     confirmStopped: options.confirmStopped,
     expectedInventory,
   });
@@ -92,7 +136,7 @@ export function runRuntimeStateRestore(
 
 export function runRuntimeStateRestoreResume(
   bundlePath: string,
-  options: RuntimeStateCommandOptions & {
+  options: RuntimeStateRestoreCommandOptions & {
     restoreId: string;
     confirmStopped: boolean;
     runtimeVolumeOnly: boolean;
@@ -100,17 +144,22 @@ export function runRuntimeStateRestoreResume(
   name?: string,
 ) {
   const manifest = verifyRuntimeStateBundle(bundlePath);
-  if (manifest.inventory.externalPrerequisites.length > 0 && !options.runtimeVolumeOnly) {
+  if (needsExternalRecoveryPoint(manifest.inventory) && !options.runtimeVolumeOnly) {
     throw new Error(
       "bundle has external recovery prerequisites; restore their matching recovery points or explicitly select --runtime-volume-only",
     );
   }
-  const root = requireRoot(options);
+  const { root, inventory: expectedInventory } = runtimeStateContext(
+    name,
+    options,
+    true,
+    options.runtimeRoot,
+  );
   return resumeRuntimeStateRestore({
     bundlePath,
-    destinationRoot: root,
+    destinationRoot: root!,
     restoreId: options.restoreId,
-    expectedInventory: runRuntimeStateInventory(name, { ...options, root }),
+    expectedInventory,
     confirmStopped: options.confirmStopped,
   });
 }
@@ -188,6 +237,10 @@ export function runtimeStateCommand(): Command {
     .description("Restore into an empty root and leave startup fenced for reconciliation")
     .option("--config <path>", "path to the current compatible agent.yaml")
     .option("--root <path>", "empty runtime data root")
+    .option(
+      "--runtime-root <path>",
+      "final absolute runtime mount for topology checks (defaults to --root)",
+    )
     .option("--confirm-stopped", "confirm the only replica is stopped and drained")
     .option(
       "--runtime-volume-only",
@@ -197,7 +250,7 @@ export function runtimeStateCommand(): Command {
       (
         bundle: string,
         name: string | undefined,
-        options: RuntimeStateCommandOptions & {
+        options: RuntimeStateRestoreCommandOptions & {
           confirmStopped?: boolean;
           runtimeVolumeOnly?: boolean;
         },
@@ -258,6 +311,10 @@ export function runtimeStateCommand(): Command {
     .requiredOption("--restore-id <id>", "exact restore ID stored in the copying fence")
     .option("--config <path>", "path to the current compatible agent.yaml")
     .option("--root <path>", "interrupted restore root")
+    .option(
+      "--runtime-root <path>",
+      "final absolute runtime mount for topology checks (defaults to --root)",
+    )
     .option("--confirm-stopped", "confirm the only replica is stopped and drained")
     .option(
       "--runtime-volume-only",
@@ -267,7 +324,7 @@ export function runtimeStateCommand(): Command {
       (
         bundle: string,
         name: string | undefined,
-        options: RuntimeStateCommandOptions & {
+        options: RuntimeStateRestoreCommandOptions & {
           restoreId: string;
           confirmStopped?: boolean;
           runtimeVolumeOnly?: boolean;

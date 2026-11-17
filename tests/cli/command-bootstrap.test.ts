@@ -28,6 +28,35 @@ let globalRoot: string;
 let localRoot: string;
 const roots: string[] = [];
 
+test("deploy profile grammar is passive, typed and rejects conflicting options", () => {
+  const command = createLaunchCommand("deploy")
+    .exitOverride()
+    .configureOutput({ writeErr() {} });
+  command.parse(
+    ["--config", "worker.yaml", "--ingress", "http", "--port", "9090", "--health-path", "/ready"],
+    { from: "user" },
+  );
+  expect(command.opts()).toMatchObject({
+    config: "worker.yaml",
+    ingress: "http",
+    port: 9090,
+    healthPath: "/ready",
+  });
+  for (const args of [
+    ["--ingress", "unknown"],
+    ["--port", "0"],
+    ["--port", "65536"],
+    ["--port", "8080", "--port", "9090"],
+    ["--config", " "],
+    ["--ingress", "none", "--ingress", "http"],
+  ]) {
+    const rejected = createLaunchCommand("deploy")
+      .exitOverride()
+      .configureOutput({ writeErr() {} });
+    expect(() => rejected.parse(args, { from: "user" })).toThrow();
+  }
+});
+
 // These fixtures exercise the actual bootstrap source with inert command bodies.
 // They are not evidence of an application launch or a packed runtime acceptance.
 function runtime(root: string, body: string, metadata = true) {
@@ -48,6 +77,7 @@ function runtime(root: string, body: string, metadata = true) {
     "authoring/document-io.ts",
     "command-bootstrap.ts",
     "launch-command-options.ts",
+    "export-bootstrap.ts",
     "agent-name.ts",
     "resolve-config.ts",
     "project-runtime.ts",

@@ -34,6 +34,15 @@ import {
 } from "../lib/posix-at";
 import type { RuntimeStateInventory } from "./runtime-state-inventory";
 import { RUNTIME_STATE_SQLITE_IDENTITIES } from "./runtime-state-sqlite-identities";
+import {
+  ensureRestoredExternalAuthReplayGuard,
+  inspectExternalAuthReplayGuard,
+} from "../auth/external-auth-replay-guard";
+import {
+  EXTERNAL_AUTH_REPLAY_GUARD_FILE,
+  EXTERNAL_AUTH_REPLAY_GUARD_PENDING_FILE,
+  EXTERNAL_AUTH_REPLAY_INVENTORY_SCHEMA,
+} from "../auth/external-auth-replay-contracts";
 
 export const RUNTIME_STATE_BUNDLE_FORMAT_VERSION = 1;
 export const RUNTIME_STATE_RESTORE_FENCE = ".auggy-restore-fence.json";
@@ -213,6 +222,14 @@ function assertSafeRelativePath(path: string): void {
   }
 }
 
+function isReplayControlPath(path: string): boolean {
+  const rootLeaf = path.split("/")[0]?.toLowerCase();
+  return (
+    rootLeaf === EXTERNAL_AUTH_REPLAY_GUARD_FILE ||
+    rootLeaf === EXTERNAL_AUTH_REPLAY_GUARD_PENDING_FILE
+  );
+}
+
 function isContained(root: string, target: string): boolean {
   const fromRoot = relative(root, target);
   return (
@@ -356,6 +373,7 @@ function walkAndCopy(
   files: Array<z.infer<typeof BundleFileSchema>>,
   depth = 0,
   budget: CopyBudget,
+  agentId: string,
 ): void {
   if (depth > MAX_DEPTH) throw contextualError(`runtime state exceeds depth ${MAX_DEPTH}`);
   const listed = listDirectoryFd(sourceDirectoryFd, Math.max(0, MAX_FILES - budget.entries));
@@ -366,6 +384,14 @@ function walkAndCopy(
     assertSafeRelativePath(relativePath);
     if (relativePath === RUNTIME_STATE_RESTORE_FENCE) {
       throw contextualError("runtime state has an unresolved restore fence");
+    }
+    if (isReplayControlPath(relativePath)) {
+      if (relativePath !== EXTERNAL_AUTH_REPLAY_GUARD_FILE)
+        throw contextualError(
+          "runtime state contains an unresolved or aliased replay guard control path",
+        );
+      inspectExternalAuthReplayGuard(sourceDirectoryFd, agentId);
+      continue;
     }
     const opened = tryOpenAt(
       sourceDirectoryFd,
@@ -397,6 +423,7 @@ function walkAndCopy(
             files,
             depth + 1,
             budget,
+            agentId,
           );
         } finally {
           closeSync(destinationChild);
@@ -763,9 +790,22 @@ export function createRuntimeStateBundle(
     closeSync(parent.fd);
     throw contextualError("bundle destination is unsafe");
   }
-  assertRuntimeStateIdentityFd(source.fd, inventory.agent.id);
-  assertRequiredRuntimeStatePresent(source.fd, inventory);
-  options.__testHooks?.afterRootsPinned?.();
+  try {
+    assertRuntimeStateIdentityFd(source.fd, inventory.agent.id);
+    assertRequiredRuntimeStatePresent(source.fd, inventory);
+    inspectExternalAuthReplayGuard(source.fd, inventory.agent.id, {
+      allowMissing: !inventory.stores.some(
+        (store) =>
+          store.schema === EXTERNAL_AUTH_REPLAY_INVENTORY_SCHEMA &&
+          store.backupPlane === "runtime-volume",
+      ),
+    });
+    options.__testHooks?.afterRootsPinned?.();
+  } catch (error) {
+    closeSync(source.fd);
+    closeSync(parent.fd);
+    throw error;
+  }
 
   const stagingName = `.${bundleName}.tmp.${randomUUID()}`;
   if (!mkdirAt(parent.fd, stagingName, 0o700)) {
@@ -785,12 +825,21 @@ export function createRuntimeStateBundle(
   const files: Array<z.infer<typeof BundleFileSchema>> = [];
   let published = false;
   try {
-    walkAndCopy(source.fd, payload, "", directories, files, 0, {
-      entries: 0,
-      bytes: 0,
-      maxFileBytes,
-      maxTotalBytes,
-    });
+    walkAndCopy(
+      source.fd,
+      payload,
+      "",
+      directories,
+      files,
+      0,
+      {
+        entries: 0,
+        bytes: 0,
+        maxFileBytes,
+        maxTotalBytes,
+      },
+      inventory.agent.id,
+    );
     addSqliteMetadata(payload, files);
     assertInventorySqliteCompatibility(inventory, files);
     // Read-only SQLite admission may update an existing shared-memory file.
@@ -937,6 +986,11 @@ function openVerifiedRuntimeStateBundle(bundlePath: string): OpenVerifiedBundle 
       throw contextualError("bundle must have mode 0700");
     }
     const manifest = readManifestFd(bundle.fd);
+    if (
+      [...manifest.files, ...manifest.directories].some((entry) => isReplayControlPath(entry.path))
+    ) {
+      throw contextualError("replay guard control state must never appear in bundle payload");
+    }
     const declaredBytes = manifest.files.reduce((total, file) => total + file.bytes, 0);
     if (!Number.isSafeInteger(declaredBytes) || declaredBytes > DEFAULT_MAX_TOTAL_BYTES) {
       throw contextualError("bundle exceeds the format byte limit");
@@ -1173,40 +1227,41 @@ export function restoreRuntimeStateBundle(
     throw contextualError("restore requires an explicit stopped-and-drained acknowledgement");
   }
   const opened = openVerifiedRuntimeStateBundle(options.bundlePath);
-  const manifest = opened.manifest;
-  assertRuntimeStateRestoreCompatibility(manifest.inventory, options.expectedInventory);
-  const configuredDestinationRoot = resolve(options.destinationRoot);
-  if (
-    isContained(opened.bundle.canonical, configuredDestinationRoot) ||
-    isContained(configuredDestinationRoot, opened.bundle.canonical)
-  ) {
-    closeSync(opened.payloadFd);
-    closeSync(opened.bundle.fd);
-    throw contextualError("restore destination and bundle must not contain one another");
-  }
-  const restoreId = (options.restoreId ?? randomUUID)();
-  if (!z.string().uuid().safeParse(restoreId).success) {
-    closeSync(opened.payloadFd);
-    closeSync(opened.bundle.fd);
-    throw contextualError("restore id must be a UUID");
-  }
-  const destination = ensureEmptyRestoreRoot(configuredDestinationRoot);
-  options.__testHooks?.afterRootsPinned?.();
-  const restoredAt = (options.now ?? (() => new Date()))().toISOString();
-  const copyingFence: RuntimeStateRestoreFence = {
-    version: 1,
-    status: "copying",
-    restoreId,
-    bundleManifestSha256: manifestDigest(manifest),
-    restoredAt,
-  };
+  let destination: PinnedDirectory | undefined;
   try {
+    const manifest = opened.manifest;
+    assertRuntimeStateRestoreCompatibility(manifest.inventory, options.expectedInventory);
+    const configuredDestinationRoot = resolve(options.destinationRoot);
+    if (
+      isContained(opened.bundle.canonical, configuredDestinationRoot) ||
+      isContained(configuredDestinationRoot, opened.bundle.canonical)
+    ) {
+      throw contextualError("restore destination and bundle must not contain one another");
+    }
+    const restoreId = (options.restoreId ?? randomUUID)();
+    if (!z.string().uuid().safeParse(restoreId).success) {
+      throw contextualError("restore id must be a UUID");
+    }
+    destination = ensureEmptyRestoreRoot(configuredDestinationRoot);
+    options.__testHooks?.afterRootsPinned?.();
+    const restoredAt = (options.now ?? (() => new Date()))().toISOString();
+    const copyingFence: RuntimeStateRestoreFence = {
+      version: 1,
+      status: "copying",
+      restoreId,
+      bundleManifestSha256: manifestDigest(manifest),
+      restoredAt,
+    };
     replacePinnedFile(
       destination.fd,
       RUNTIME_STATE_RESTORE_FENCE,
       JSON.stringify(copyingFence),
       "runtime state restore fence",
     );
+    ensureRestoredExternalAuthReplayGuard(destination.fd, {
+      agentId: manifest.inventory.agent.id,
+      restore: { restoreId, restoredAtMs: Date.parse(restoredAt) },
+    });
     copyVerifiedPayloadFd(
       manifest,
       opened.payloadFd,
@@ -1227,7 +1282,7 @@ export function restoreRuntimeStateBundle(
     fsyncSync(destination.fd);
     return finalFence;
   } finally {
-    closeSync(destination.fd);
+    if (destination) closeSync(destination.fd);
     closeSync(opened.payloadFd);
     closeSync(opened.bundle.fd);
   }
@@ -1303,6 +1358,8 @@ export function resumeRuntimeStateRestore(
     const allowedDirectories = new Set(opened.manifest.directories.map((entry) => entry.path));
     const allowedFiles = new Set([
       RUNTIME_STATE_RESTORE_FENCE,
+      EXTERNAL_AUTH_REPLAY_GUARD_FILE,
+      EXTERNAL_AUTH_REPLAY_GUARD_PENDING_FILE,
       ...opened.manifest.files.map((entry) => entry.path),
     ]);
     if (
@@ -1311,6 +1368,11 @@ export function resumeRuntimeStateRestore(
     ) {
       throw contextualError("interrupted restore contains files outside the bundle");
     }
+
+    ensureRestoredExternalAuthReplayGuard(destination.fd, {
+      agentId: opened.manifest.inventory.agent.id,
+      restore: { restoreId: fence.restoreId, restoredAtMs: Date.parse(fence.restoredAt) },
+    });
 
     copyVerifiedPayloadFd(
       opened.manifest,

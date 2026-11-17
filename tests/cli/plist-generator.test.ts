@@ -104,9 +104,13 @@ describe("generatePlist", () => {
       configPath: "/path/with <angle>/agent.yaml",
       bunPath: "/usr/bin/bun",
       cliEntryPoint: "/cli/index.ts",
+      runtimeDataRoot: "/data/company & support",
     });
     expect(escaped).toContain("test&amp;agent");
     expect(escaped).toContain("&lt;angle&gt;");
     expect(escaped).not.toContain("<angle>");
+    expect(escaped).toContain("<key>AUGGY_DATA_DIR</key>");
+    expect(escaped).toContain("<string>/data/company &amp; support</string>");
+    expect(plist).not.toContain("<key>AUGGY_DATA_DIR</key>");
   });
 });

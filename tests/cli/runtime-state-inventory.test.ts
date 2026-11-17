@@ -96,6 +96,54 @@ function config(): ParsedConfig {
 }
 
 describe("runtime state inventory", () => {
+  test("managed assertion replay inventories durable claims but keeps the local guard outside recovery payload", () => {
+    const paths = fixture();
+    const value = config();
+    const web = value.augments.find((augment) => augment.type === "webTransport")!;
+    const externalAuth = {
+      secret: "private-signing-sentinel",
+      audience: "company-app",
+      maxTtlSeconds: 60,
+      replayProtection: { enabled: true, dbPath: "./data/app-replay.db" },
+    };
+    web.options = { ...web.options, externalAuth };
+    const first = buildRuntimeStateInventory(value, paths);
+    expect(first.stores.find((entry) => entry.id === "external-auth-replay:web")).toMatchObject({
+      owner: "augment:web",
+      namespace: "company-app",
+      schema: "EARP/v1",
+      relativePath: "app-replay.db",
+      backupPlane: "runtime-volume",
+      required: true,
+      replayCritical: true,
+      restoreOrder: 40,
+    });
+    expect(
+      first.externalPrerequisites.filter((entry) => entry.id === "external-auth-replay-guard"),
+    ).toHaveLength(1);
+    expect(first.stores.some((entry) => entry.relativePath?.includes("replay-guard"))).toBe(false);
+    expect(JSON.stringify(first)).not.toContain(externalAuth.secret);
+    externalAuth.secret = "rotated-private-signing-sentinel";
+    externalAuth.maxTtlSeconds = 120;
+    expect(buildRuntimeStateInventory(value, paths).configShapeSha256).toBe(
+      first.configShapeSha256,
+    );
+    externalAuth.audience = "other-app";
+    expect(buildRuntimeStateInventory(value, paths).configShapeSha256).not.toBe(
+      first.configShapeSha256,
+    );
+    value.augments.push({
+      name: "second-web",
+      type: "webTransport",
+      options: {
+        idempotency: { dbPath: null },
+        consoleChat: { dbPath: null },
+        externalAuth,
+      },
+    });
+    expect(() => buildRuntimeStateInventory(value, paths)).toThrow(/multiple owners/);
+  });
+
   test("classifies all shipped local state with stable ownership and restore metadata", () => {
     const paths = fixture();
     const inventory = buildRuntimeStateInventory(config(), paths);

@@ -1,5 +1,38 @@
 import { describe, expect, test } from "bun:test";
-import { generateDockerfile, generateEntrypoint } from "../../../src/cli/deploy/dockerfile";
+import {
+  generateDockerfile,
+  generateEntrypoint,
+  generateRailwayEntrypoint,
+  generateRailwayCompatibilityDockerfile,
+} from "../../../src/cli/deploy/dockerfile";
+
+test("Railway foreground bootstrap leaves durable admission to the host", () => {
+  const entry = generateRailwayEntrypoint();
+  expect(entry).toContain('--config "$2" --internal-mode railway');
+  expect(entry).toContain("--no-env-file --no-install --config=/dev/null");
+  expect(entry).not.toMatch(/\b(?:chmod|mkdir|ln)\b/);
+  expect(Bun.spawnSync(["sh", "-n"], { stdin: Buffer.from(entry) }).exitCode).toBe(0);
+});
+
+test("legacy Railway archives retain explicit compatibility without manufacturing worker ingress", () => {
+  const worker = generateRailwayCompatibilityDockerfile({
+    agentName: "worker",
+    configPath: "agent.yaml",
+    profile: { kind: "none" },
+    runtimeTarballName: "vendor/runtime.tgz",
+  });
+  expect(worker).toContain("@sha256:");
+  expect(worker).toContain('COPY ["vendor/runtime.tgz","/app/vendor/runtime.tgz"]');
+  expect(worker).not.toMatch(/EXPOSE|ENV PORT|ENV AUGGY_DEPLOYMENT_MANIFEST|frozen-lockfile/);
+  expect(worker).toContain("not a portable frozen-build certification");
+  const http = generateRailwayCompatibilityDockerfile({
+    agentName: "http",
+    configPath: "custom.yaml",
+    profile: { kind: "http", port: 8081, healthPath: null, consolePath: null },
+  });
+  expect(http).toContain("ENV PORT=8081\nEXPOSE 8081");
+  expect(http).toContain('"/app/custom.yaml"');
+});
 
 describe("generateDockerfile", () => {
   test("uses a pinned Bun base image", () => {

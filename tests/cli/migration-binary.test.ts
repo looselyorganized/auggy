@@ -33,6 +33,7 @@ beforeEach(() => {
     'await Bun.write(process.env.M4_MIGRATION_TRAP_PATH!, "executed"); await fetch(process.env.M4_MIGRATION_TRAP_URL!); throw new Error("MIGRATION_EXECUTION_TRAP");';
   for (const file of [
     "index.ts",
+    "export-bootstrap.ts",
     "authoring-bootstrap.ts",
     "authoring-command-options.ts",
     "authoring-command-handlers.ts",
@@ -59,6 +60,7 @@ beforeEach(() => {
   for (const file of [
     "src/cli/cli-program.ts",
     "src/cli/command-bootstrap.ts",
+    "src/cli/commands/export.ts",
     "src/cli/config-parser.ts",
     "src/cli/augment-resolver.ts",
     "src/cli/env-parse.ts",

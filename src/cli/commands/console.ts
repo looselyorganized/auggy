@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
 import { Command } from "commander";
-import { readBoundCloudRecord } from "../agent-index";
+import { normalizeCloudRecord, readBoundCloudRecord } from "../agent-index";
 import { openConsoleWithSignIn, type OpenConsoleResult } from "../console-login";
 import { displayPath } from "../display-path";
 import { openBrowser, type OpenBrowserResult } from "../open-browser";
@@ -65,8 +65,6 @@ export async function runConsole(
   const agentDir = dirname(configPath);
   const agentId = parseAgentIdOnly(configPath);
   const agentName = readAgentName(configPath);
-  const webOptions = parseAugmentConfigOnly(configPath, "webTransport");
-  const bearer = readConsoleBearer(webOptions);
   const liveManifest = opts.cloud
     ? null
     : (deps.readLiveManifest ?? readLivePidManifest)(agentId, {
@@ -88,9 +86,17 @@ export async function runConsole(
       throw new Error(`No Console is available for "${agentName}". ${localHint}`);
     }
     runtime = "Railway";
-    baseUrl = cloud.url;
+    const deployment = normalizeCloudRecord(cloud);
+    if (deployment.profile.kind === "none" || deployment.profile.consolePath === null) {
+      throw new Error(
+        `No Railway Console is configured for "${agentName}". Inspect its deployment profile and use \`auggy logs\` for Railway logs.`,
+      );
+    }
+    baseUrl = deployment.url!;
   }
 
+  const webOptions = parseAugmentConfigOnly(configPath, "webTransport");
+  const bearer = readConsoleBearer(webOptions);
   const open = deps.open ?? openBrowser;
   const result = await (deps.openConsole ?? openConsoleWithSignIn)({ baseUrl, bearer, open });
   const log = deps.log ?? console.log;

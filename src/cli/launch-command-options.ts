@@ -1,4 +1,5 @@
-import { Command } from "commander";
+import { Command, InvalidArgumentError, Option } from "commander";
+import { portArgument, rejectConflictingOptions } from "./export-bootstrap";
 
 /** The bootstrap and full CLI use the same argument grammar. No handlers here. */
 export const PROJECT_COMMANDS = [
@@ -19,15 +20,28 @@ export function createLaunchCommand(name: BootstrapCommand): Command {
   if (name === "status")
     return command.description("Show running agents or detail a specific one").argument("[name]");
   if (name === "deploy") {
-    return command
+    command
       .description("Deploy an agent to the cloud (--to railway)")
       .argument("[name]")
-      .option("--to <provider>", "deploy target (only `railway` supported in v1.0)", "railway")
+      .option("--config <path>", "path to agent.yaml", (value) => {
+        if (!value.trim()) throw new InvalidArgumentError("config must name an explicit file path");
+        return value;
+      })
+      .addOption(
+        new Option("--ingress <kind>", "hosting profile: auto, none or http")
+          .choices(["auto", "none", "http"])
+          .default("auto"),
+      )
+      .option("--port <number>", "existing HTTP listener port", portArgument)
+      .option("--health-path <path>", "existing origin-relative HTTP health endpoint")
+      .option("--to <provider>", "deployment platform (railway)", "railway")
       .option("--project <project-id>", "deploy into an existing Railway project")
       .option("--project-name <name>", "create a new Railway project with this name")
       .option("--service <name-or-id>", "deploy into an existing Railway service")
       .option("--workspace <workspace>", "Railway workspace name or ID when creating a new project")
       .option("--yes", "skip the secrets-push confirmation prompt");
+    rejectConflictingOptions(command);
+    return command;
   }
   if (name === "run")
     return command

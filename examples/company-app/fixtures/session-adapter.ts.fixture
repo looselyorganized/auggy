@@ -1,0 +1,63 @@
+import "server-only";
+import { constants, closeSync, fstatSync, openSync, readSync } from "node:fs";
+import type { VerifiedAppSession, VerifiedSessionAdapter } from "./contracts";
+
+// M5_FIXTURE_AUTH_BUILD_V1 — copied only into an isolated, hash-recorded fixture build.
+// The production composition never imports this module. Cookies are seeded out of band.
+export const sessionAdapter: VerifiedSessionAdapter = {
+  async verify(request) {
+    const matches = (request.headers.get("cookie") ?? "")
+      .split(";")
+      .map((part) => part.trim())
+      .filter((part) => part.startsWith("auggy_fixture_session="));
+    if (matches.length !== 1) return null;
+    const cookie = matches[0]!.slice("auggy_fixture_session=".length);
+    if (!/^[0-9a-f]{64}$/.test(cookie)) return null;
+    const path = process.env.AUGGY_FIXTURE_SESSIONS_FILE;
+    if (!path) throw new Error("Fixture registry unavailable");
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const stat = fstatSync(fd);
+      if (
+        !stat.isFile() ||
+        stat.nlink !== 1 ||
+        (stat.mode & 0o7777) !== 0o600 ||
+        stat.size > 65536 ||
+        (typeof process.getuid === "function" && stat.uid !== process.getuid())
+      )
+        throw new Error("Fixture registry unavailable");
+      // Bound the read itself as well as fstat: another process could grow the file.
+      const bytes = Buffer.alloc(65537);
+      let size = 0;
+      while (size < bytes.length) {
+        const count = readSync(fd, bytes, size, bytes.length - size, null);
+        if (count === 0) break;
+        size += count;
+      }
+      if (size > 65536) throw new Error("Fixture registry unavailable");
+      const registry = JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, size)),
+      ) as { version?: unknown; sessions?: { cookie: string; session: VerifiedAppSession }[] };
+      if (
+        registry.version !== 1 ||
+        !Array.isArray(registry.sessions) ||
+        registry.sessions.length > 64
+      )
+        throw new Error("Fixture registry unavailable");
+      const records = registry.sessions.filter((entry) => entry.cookie === cookie);
+      if (records.length !== 1) return null;
+      const session = records[0]!.session;
+      if (
+        session.provider !== "fixture-app" ||
+        session.orgId !== "synthetic-company" ||
+        !["customer-a", "customer-b", "support-agent", "app-admin"].includes(session.userId) ||
+        !Array.isArray(session.roles) ||
+        session.roles.some((role) => typeof role !== "string")
+      )
+        throw new Error("Fixture registry unavailable");
+      return session;
+    } finally {
+      closeSync(fd);
+    }
+  },
+};

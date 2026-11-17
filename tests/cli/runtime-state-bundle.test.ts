@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSqliteTelegramReplayStore } from "../../src/augments/telegramTransport/replay-store";
@@ -26,6 +27,12 @@ import {
   verifyRuntimeStateBundle,
 } from "../../src/cli/runtime-state-bundle";
 import type { RuntimeStateInventory } from "../../src/cli/runtime-state-inventory";
+import { prepareRuntimeDataVolume } from "../../src/cli/runtime-volume";
+import { createManagedExternalAuthReplay } from "../../src/auth/external-auth-replay-store";
+import {
+  EXTERNAL_AUTH_REPLAY_GUARD_FILE,
+  EXTERNAL_AUTH_REPLAY_GUARD_PENDING_FILE,
+} from "../../src/auth/external-auth-replay-contracts";
 import {
   createWebIdempotencyStore,
   hashIdempotencyBinding,
@@ -110,6 +117,118 @@ function seedReplayState(root: string) {
 }
 
 describe("runtime state bundle", () => {
+  test.each([false, true])(
+    "backs up managed replay while refusing unsafe local guard state (populated=%s)",
+    async (populated) => {
+      const paths = fixture();
+      const lease = prepareRuntimeDataVolume(
+        { kind: "explicit", runtimeDataRoot: paths.source },
+        AGENT_ID,
+      );
+      const dbPath = join(paths.source, "app-replay.db");
+      const replay = createManagedExternalAuthReplay({
+        admission: lease.runtimeDataAdmission,
+        dbPath,
+        managedDbPaths: [dbPath],
+        maxTtlSeconds: 60,
+      });
+      try {
+        if (populated) {
+          const now = Date.now();
+          expect(
+            await replay.consumeVerified({
+              audience: "app",
+              jti: "consumed-before-backup",
+              issuedAt: now,
+              expiresAt: now + 60_000,
+              maxTtlSeconds: 60,
+            }),
+          ).toEqual({ status: "consumed" });
+        }
+      } finally {
+        replay.close();
+        lease.release();
+      }
+      const state = inventory();
+      state.stores.push({
+        id: "external-auth-replay:web",
+        owner: "augment:web",
+        namespace: "app",
+        kind: "sqlite",
+        backupPlane: "runtime-volume",
+        relativePath: "app-replay.db",
+        schema: "EARP/v1",
+        retention: "unexpired",
+        restoreOrder: 40,
+        replayCritical: true,
+        required: true,
+      });
+      const guardPath = join(paths.source, EXTERNAL_AUTH_REPLAY_GUARD_FILE);
+      const guard = readFileSync(guardPath, "utf8");
+      const bundle = join(paths.backups, "replay.auggy-state");
+      const manifest = createRuntimeStateBundle({
+        sourceRoot: paths.source,
+        bundlePath: bundle,
+        inventory: state,
+        confirmStopped: true,
+      });
+      expect(manifest.files.some((file) => file.path === "app-replay.db")).toBe(true);
+      expect(manifest.files.some((file) => file.path.includes("auth-replay-guard"))).toBe(false);
+      expect(readFileSync(guardPath, "utf8")).toBe(guard);
+      const refused = () =>
+        createRuntimeStateBundle({
+          sourceRoot: paths.source,
+          bundlePath: join(paths.backups, "refused"),
+          inventory: state,
+          confirmStopped: true,
+        });
+      rmSync(guardPath);
+      expect(refused).toThrow();
+      writeFileSync(guardPath, "{", { mode: 0o600 });
+      expect(refused).toThrow();
+      writeFileSync(guardPath, guard);
+      const pending = join(paths.source, EXTERNAL_AUTH_REPLAY_GUARD_PENDING_FILE);
+      writeFileSync(pending, guard, { mode: 0o600 });
+      expect(refused).toThrow();
+      expect(readFileSync(pending, "utf8")).toBe(guard);
+      expect(existsSync(join(paths.backups, "refused"))).toBe(false);
+    },
+  );
+
+  test("rejects incoming replay control files and aliases even with matching payload hashes", () => {
+    const paths = fixture();
+    const bundle = join(paths.backups, "hostile.auggy-state");
+    const manifest = createRuntimeStateBundle({
+      sourceRoot: paths.source,
+      bundlePath: bundle,
+      inventory: inventory(),
+      confirmStopped: true,
+    });
+    const bytes = "{}";
+    for (const path of [
+      EXTERNAL_AUTH_REPLAY_GUARD_FILE,
+      EXTERNAL_AUTH_REPLAY_GUARD_PENDING_FILE,
+      ".AUGGY-AUTH-REPLAY-GUARD.JSON",
+    ]) {
+      writeFileSync(join(bundle, "payload", path), bytes, { mode: 0o600 });
+      const injected = {
+        ...manifest,
+        files: [
+          ...manifest.files,
+          {
+            path,
+            bytes: 2,
+            sha256: createHash("sha256").update(bytes).digest("hex"),
+            mode: "0600",
+          },
+        ],
+      };
+      writeFileSync(join(bundle, "manifest.json"), JSON.stringify(injected));
+      expect(() => verifyRuntimeStateBundle(bundle)).toThrow(/control state/);
+      rmSync(join(bundle, "payload", path));
+    }
+  });
+
   test("restores completed, unknown, and quarantined replay state behind a startup fence", () => {
     const paths = fixture();
     const keys = seedReplayState(paths.source);
@@ -523,6 +642,7 @@ describe("runtime state bundle", () => {
         restoreId: () => "9fb78f48-61f3-41ca-a38f-0be277897f52",
         __testHooks: {
           beforeCopy: () => {
+            expect(existsSync(join(destination, EXTERNAL_AUTH_REPLAY_GUARD_FILE))).toBe(true);
             copied += 1;
             if (copied === 2) throw new Error("injected copy interruption");
           },
@@ -530,6 +650,12 @@ describe("runtime state bundle", () => {
       }),
     ).toThrow("injected copy interruption");
     const copying = readRuntimeStateRestoreFence(destination)!;
+    const guardPath = join(destination, EXTERNAL_AUTH_REPLAY_GUARD_FILE);
+    const originalGuard = JSON.parse(readFileSync(guardPath, "utf8"));
+    expect(originalGuard.latestRestore).toEqual({
+      restoreId: copying.restoreId,
+      restoredAtMs: Date.parse(copying.restoredAt),
+    });
     expect(copying.status).toBe("copying");
     expect(() => assertNoRuntimeStateRestoreFence(destination)).toThrow("is copying");
     expect(() =>
@@ -541,6 +667,20 @@ describe("runtime state bundle", () => {
         confirmStopped: true,
       }),
     ).toThrow("restore id does not match");
+    const resume = () =>
+      resumeRuntimeStateRestore({
+        bundlePath: bundle,
+        destinationRoot: destination,
+        expectedInventory: value,
+        restoreId: copying.restoreId,
+        confirmStopped: true,
+      });
+    const unrelated = join(destination, ".auggy-auth-replay-guard.pending.unrelated");
+    writeFileSync(unrelated, "{}", { mode: 0o600 });
+    expect(resume).toThrow(/outside the bundle/);
+    rmSync(unrelated);
+    // A verified copying fence may repair only the exact interrupted pending leaf.
+    writeFileSync(join(destination, EXTERNAL_AUTH_REPLAY_GUARD_PENDING_FILE), "{", { mode: 0o600 });
     const resumed = resumeRuntimeStateRestore({
       bundlePath: bundle,
       destinationRoot: destination,
@@ -551,6 +691,17 @@ describe("runtime state bundle", () => {
     expect(resumed.status).toBe("requires-reconciliation");
     expect(readFileSync(join(destination, "a.json"), "utf8")).toBe('{"a":1}');
     expect(readFileSync(join(destination, "b.json"), "utf8")).toBe('{"b":2}');
+    expect(existsSync(join(destination, EXTERNAL_AUTH_REPLAY_GUARD_PENDING_FILE))).toBe(false);
+    expect(JSON.parse(readFileSync(guardPath, "utf8")).latestRestore).toEqual(
+      originalGuard.latestRestore,
+    );
+    const beforeReconcile = readFileSync(guardPath, "utf8");
+    reconcileRuntimeStateRestore({
+      runtimeDataRoot: destination,
+      restoreId: resumed.restoreId,
+      confirmDownstreamReconciled: true,
+    });
+    expect(readFileSync(guardPath, "utf8")).toBe(beforeReconcile);
   });
 
   test("keeps bundle and restore traversal pinned across root path replacement", () => {

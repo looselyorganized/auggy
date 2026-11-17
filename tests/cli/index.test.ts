@@ -148,6 +148,20 @@ describe("auggy CLI command table", () => {
         projectId: "proj_123",
         serviceId: "dx-agent",
         volumeId: "dx-agent-data",
+        profile: { kind: "http", port: 8080, healthPath: "/health", consolePath: "/console" },
+        readiness: {
+          platform: "ready",
+          http: {
+            state: "ready",
+            result: {
+              ok: true,
+              url: "https://dx-agent.up.railway.app/health",
+              attempts: 1,
+              status: 200,
+            },
+          },
+          channel: { state: "unverified" },
+        },
         health: {
           ok: true,
           url: "https://dx-agent.up.railway.app/health",
@@ -158,7 +172,9 @@ describe("auggy CLI command table", () => {
       { nameArg: undefined },
     );
 
-    expect(out).toContain("dx-agent is live on Railway.");
+    expect(out).toContain("Railway deployment submitted for dx-agent.");
+    expect(out).toContain("Platform: ready");
+    expect(out).toContain("Channel:  unverified");
     expect(out).toContain("  Chat:     https://dx-agent.up.railway.app/console/chat");
     expect(out).toContain("  Console:  https://dx-agent.up.railway.app/console");
     expect(out).toContain("  Health:   https://dx-agent.up.railway.app/health");
@@ -171,6 +187,31 @@ describe("auggy CLI command table", () => {
     expect(out).toContain("  Project:  proj_123");
     expect(out).toContain("  Service:  dx-agent");
     expect(out).not.toContain("Current health is passing");
+  });
+
+  test("worker deploy output has no invented HTTP URLs or console command", () => {
+    const out = formatDeployResultMessage({
+      name: "worker",
+      projectId: "project",
+      serviceId: "service",
+      volumeId: "volume",
+      profile: { kind: "none" },
+      url: null,
+      health: null,
+      readiness: {
+        platform: "unverified",
+        platformReason: "wait-disabled",
+        http: { state: "not-applicable", reason: "no-ingress" },
+        channel: { state: "unverified" },
+      },
+    });
+    expect(out).toContain("Ingress:  none (worker)");
+    expect(out).toContain("Platform: unverified");
+    expect(out).toContain("HTTP:     not-applicable");
+    expect(out).not.toContain("http://");
+    expect(out).not.toContain("https://");
+    expect(out).not.toContain("auggy console");
+    expect(out).not.toContain("Sign-in:");
   });
 });
 
@@ -188,6 +229,8 @@ describe("Railway deploy prompt copy", () => {
         ],
       },
       {
+        version: 1,
+        agentId: "aug1_00000000-0000-4000-8000-000000000001",
         provider: "railway",
         projectId: "proj_123",
         serviceId: "dx-lab-agent",
@@ -211,6 +254,8 @@ describe("Railway deploy prompt copy", () => {
         },
       },
       {
+        version: 1,
+        agentId: "aug1_00000000-0000-4000-8000-000000000001",
         provider: "railway",
         projectId: "proj_123",
         serviceId: "dx-lab-agent",

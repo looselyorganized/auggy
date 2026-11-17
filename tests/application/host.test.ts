@@ -1,5 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
@@ -15,6 +23,8 @@ import { createMockModel } from "../fixtures/mock-model";
 import { contractComposer, contractTurnProgram } from "../fixtures/application-contract";
 import { createSqliteDurableJobStore } from "../../src/jobs/sqlite-store";
 import { routeFixtureAugment } from "../fixtures/route-fixture-augment";
+import { prepareRuntimeDataVolume } from "../../src/cli/runtime-volume";
+import { deploymentManifestFixture } from "../fixtures/deployment-manifest";
 
 const roots: string[] = [];
 const hosts: OwnedApplicationHost[] = [];
@@ -102,6 +112,253 @@ function fixture(augments: Augment[] = []) {
     },
   };
 }
+
+test("deployment metadata rejects wrong identity or known ingress before provider and augment effects", async () => {
+  const f = fixture();
+  const metadata = join(f.project, "auggy-deployment.json");
+  const previous = process.env.AUGGY_DEPLOYMENT_MANIFEST;
+  process.env.AUGGY_DEPLOYMENT_MANIFEST = metadata;
+  let calls = 0;
+  try {
+    const manifest = deploymentManifestFixture({
+      agentId: f.id,
+      agentName: "host-test",
+      configPath: "agent.yaml",
+    });
+    for (const value of [
+      { ...manifest, agentId: `aug1_${crypto.randomUUID()}` },
+      {
+        ...manifest,
+        profile: { kind: "http", port: 8080, healthPath: "/health", consolePath: null },
+      },
+    ]) {
+      writeFileSync(metadata, JSON.stringify(value));
+      const host = f.host({
+        factories: {
+          resolveEngine: async () => {
+            calls++;
+            return createMockModel();
+          },
+          resolveAugments: async () => {
+            calls++;
+            return [];
+          },
+        },
+      });
+      await expect(host.prepare()).rejects.toThrow();
+      await host.stop();
+      expect(f.manifest()).toBeNull();
+    }
+    expect(calls).toBe(0);
+  } finally {
+    if (previous === undefined) delete process.env.AUGGY_DEPLOYMENT_MANIFEST;
+    else process.env.AUGGY_DEPLOYMENT_MANIFEST = previous;
+  }
+});
+
+test("all managed replay paths are admitted before any provider or transport factory", async () => {
+  const f = fixture();
+  const data = join(f.root, "durable-data");
+  mkdirSync(data, { mode: 0o700 });
+  const previous = process.env.AUGGY_DATA_DIR;
+  delete process.env.AUGGY_DATA_DIR;
+  const web = (name: string, port: number, dbPath: string) => ({
+    name,
+    type: "webTransport",
+    options: {
+      port,
+      auth: { type: "bearer", token: "test-bearer" },
+      adminRoute: false,
+      externalAuth: {
+        secret: "fixture-app-secret",
+        maxTtlSeconds: 60,
+        replayProtection: { enabled: true, dbPath },
+      },
+    },
+  });
+  let calls = 0;
+  const factories = {
+    resolveEngine: async () => {
+      calls++;
+      return createMockModel();
+    },
+    resolveAugments: async () => {
+      calls++;
+      return [];
+    },
+  };
+  try {
+    f.configure({ augments: [web("first", 8087, "./data/replay.db")] });
+    const absent = f.host({ factories });
+    await expect(absent.prepare()).rejects.toThrow(/admitted AUGGY_DATA_DIR/);
+    await absent.stop();
+    process.env.AUGGY_DATA_DIR = data;
+    f.configure({
+      augments: [web("first", 8087, "./data/replay.db"), web("second", 8088, "../../outside.db")],
+    });
+    const outside = f.host({ factories });
+    await expect(outside.prepare()).rejects.toThrow(/within/);
+    await outside.stop();
+    expect(existsSync(join(data, "replay.db"))).toBe(false);
+    f.configure({
+      augments: [web("first", 8087, "./data/replay.db"), web("second", 8088, "./data/replay.db")],
+    });
+    const duplicate = f.host({ factories });
+    await expect(duplicate.prepare()).rejects.toThrow(/distinct augment owners/);
+    await duplicate.stop();
+    for (const dbPath of [
+      ":memory:",
+      "file:replay.db",
+      "sqlite:replay.db",
+      ".auggy-auth-replay-guard.json/child.db",
+      ".AUGGY-AUTH-REPLAY-GUARD.PENDING/child.db",
+      join(data, ".auggy-state-identity.json", "child.db"),
+    ]) {
+      f.configure({ augments: [web("first", 8087, dbPath)] });
+      const invalid = f.host({ factories });
+      await expect(invalid.prepare()).rejects.toThrow(
+        /ordinary file|reserved runtime control path/,
+      );
+      await invalid.stop();
+    }
+    expect(existsSync(join(data, ".auggy-auth-replay-guard.json"))).toBe(false);
+    expect(existsSync(join(data, ".AUGGY-AUTH-REPLAY-GUARD.PENDING"))).toBe(false);
+    expect(calls).toBe(0);
+  } finally {
+    if (previous === undefined) delete process.env.AUGGY_DATA_DIR;
+    else process.env.AUGGY_DATA_DIR = previous;
+  }
+});
+
+for (const launch of [
+  { mode: "direct", legacy: false },
+  { mode: "foreground", legacy: false },
+  { mode: "foreground", legacy: true },
+] as const) {
+  test(`${launch.mode}${launch.legacy ? " legacy" : ""} admits explicit storage before factories and holds it through shutdown`, async () => {
+    const f = fixture();
+    const data = join(f.root, "durable-data");
+    mkdirSync(data, { mode: 0o700 });
+    const previous = process.env.AUGGY_DATA_DIR;
+    process.env.AUGGY_DATA_DIR = data;
+    const selection = { kind: "explicit", runtimeDataRoot: data } as const;
+    let factoryCalls = 0;
+    let shutdowns = 0;
+    const assertHeld = () =>
+      expect(() => prepareRuntimeDataVolume(selection, f.id)).toThrow(/another live replica/);
+    const host = f.host({
+      ...launch,
+      factories: {
+        resolveEngine: async () => {
+          factoryCalls++;
+          assertHeld();
+          return createMockModel();
+        },
+        resolveAugments: async (_configs, _dir, options) => {
+          factoryCalls++;
+          expect(options?.runtimeDataRoot).toBe(data);
+          expect(options?.runtimeDataPlatform).toBe("generic");
+          assertHeld();
+          return [
+            {
+              name: "storage-owner",
+              onShutdown: async () => {
+                shutdowns++;
+                assertHeld();
+              },
+            },
+          ];
+        },
+      },
+    });
+    try {
+      await host.prepare();
+      expect(factoryCalls).toBe(2);
+      expect(f.manifest()?.runtimeData).toEqual({ platform: "generic", root: data });
+      await host.start({ http: [] });
+      expect(await host.stop()).toMatchObject({ status: "stopped", ownership: "released" });
+      expect(shutdowns).toBe(1);
+      const next = prepareRuntimeDataVolume(selection, f.id);
+      next.release();
+    } finally {
+      await host.stop();
+      if (previous === undefined) delete process.env.AUGGY_DATA_DIR;
+      else process.env.AUGGY_DATA_DIR = previous;
+    }
+  });
+}
+
+test("explicit missing or unsafe data roots fail before any provider or augment factory", async () => {
+  const f = fixture();
+  const unsafe = join(f.root, "unsafe-data");
+  const missing = join(f.root, "missing-data");
+  mkdirSync(unsafe);
+  chmodSync(unsafe, 0o755);
+  const previous = process.env.AUGGY_DATA_DIR;
+  let factoryCalls = 0;
+  try {
+    for (const root of [missing, unsafe]) {
+      process.env.AUGGY_DATA_DIR = root;
+      const host = f.host({
+        factories: {
+          resolveEngine: async () => {
+            factoryCalls++;
+            return createMockModel();
+          },
+          resolveAugments: async () => {
+            factoryCalls++;
+            return [];
+          },
+        },
+      });
+      await expect(host.prepare()).rejects.toThrow();
+      expect(await host.stop()).toMatchObject({ ownership: "released" });
+      expect(f.manifest()).toBeNull();
+    }
+    expect(factoryCalls).toBe(0);
+    expect(existsSync(missing)).toBe(false);
+    expect(existsSync(join(unsafe, "agent-mail"))).toBe(false);
+  } finally {
+    if (previous === undefined) delete process.env.AUGGY_DATA_DIR;
+    else process.env.AUGGY_DATA_DIR = previous;
+  }
+});
+
+test("stopping during pending construction retains the data lease until resources settle", async () => {
+  const f = fixture();
+  const data = join(f.root, "durable-data");
+  mkdirSync(data, { mode: 0o700 });
+  const previous = process.env.AUGGY_DATA_DIR;
+  process.env.AUGGY_DATA_DIR = data;
+  const entered = deferred();
+  const settled = deferred();
+  const selection = { kind: "explicit", runtimeDataRoot: data } as const;
+  const host = f.host({
+    factories: {
+      resolveEngine: async () => {
+        entered.resolve();
+        await settled.promise;
+        return createMockModel();
+      },
+    },
+  });
+  try {
+    const preparing = host.prepare().catch((error) => error);
+    await entered.promise;
+    expect(await host.stop({ deadlineMs: 5 })).toMatchObject({ status: "retained" });
+    expect(() => prepareRuntimeDataVolume(selection, f.id)).toThrow(/another live replica/);
+    settled.resolve();
+    expect(await preparing).toBeInstanceOf(Error);
+    expect(await host.stop()).toMatchObject({ status: "stopped", ownership: "released" });
+    const next = prepareRuntimeDataVolume(selection, f.id);
+    next.release();
+  } finally {
+    settled.resolve();
+    await host.stop();
+    if (previous === undefined) delete process.env.AUGGY_DATA_DIR;
+    else process.env.AUGGY_DATA_DIR = previous;
+  }
+});
 
 test("claims precede every factory and composition; readiness and one-shot cleanup are explicit", async () => {
   const events: string[] = [];

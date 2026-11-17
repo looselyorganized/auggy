@@ -1,0 +1,65 @@
+{
+  "scope": "Hosted HTTP recovery accepted at exact candidate; not full M5",
+  "runtimeRevision": "13bf80df4ead1bbf0b53ee0cc1b221df10868999",
+  "harnessRevision": "c99497b4bf7f9a139a54dd7fc19507b9c0238b25",
+  "status": "passed",
+  "elapsedWallMs": 649806,
+  "recovery": {
+    "backup": "passed",
+    "freshVolumeRestore": "passed",
+    "reconcile": "passed",
+    "reconcileGuardUnchanged": true,
+    "downstreamEffectsBeforeRestore": 2,
+    "downstreamEffectsAfterFreshWork": 3,
+    "firstHoldStatus": 503,
+    "restartedHoldStatus": 503,
+    "firstRetryAfter": "109",
+    "restartedRetryAfter": "97",
+    "sameDeployment": true,
+    "sameImage": true,
+    "sameInstanceId": true,
+    "freshProcess": true,
+    "freshFixtureState": "waiting",
+    "holdUntilMs": 1794895948818,
+    "expiredAssertionStatus": 401,
+    "completedReplay": true,
+    "completedReplayDigest": "4b55d878d005ef3907f815b633c76bc80e05a90af29b7c6ca7ef58b18ba847b0",
+    "newEffects": 1,
+    "duplicateEffects": 0,
+    "unauthorizedEffects": 0,
+    "verifiedStops": 6,
+    "restartedZeroDomainCalls": true,
+    "restartedZeroModelRequests": true,
+    "restartedCheckpointPreserved": true
+  },
+  "cleanup": {
+    "verifiedComplete": true,
+    "projectsDeleted": 1,
+    "servicesDeleted": 2,
+    "volumesDeleted": 2,
+    "temporaryKeysDeleted": 1,
+    "projectAbsent": true,
+    "keyAbsent": true,
+    "unknownMutations": 0,
+    "warnings": []
+  },
+  "ci": {
+    "sourceRevision": "c99497b4bf7f9a139a54dd7fc19507b9c0238b25",
+    "checksPassed": 28
+  },
+  "localVerification": {
+    "tests": 36,
+    "assertions": 542,
+    "typecheck": "passed",
+    "lint": "passed"
+  },
+  "assessment": {
+    "path": "/private/tmp/m5-http-recovery-fresh-1794895402908/evidence/assessment.json",
+    "sha256": "5acca622a99153f463bd1ede8d7cf9042e1432213bd96996c775334580c1fa31"
+  },
+  "remaining": [
+    "hosted polling recovery",
+    "final integrated review and final-revision CI/CodeQL findings disposition"
+  ],
+  "productSourceChanged": false
+}

@@ -150,6 +150,51 @@ describe("PID manifest lifecycle", () => {
   });
 });
 
+test("runtime storage policy is validated and round-trips without upgrading old manifests", () => {
+  const id = "aug1_33333333-3333-4333-8333-333333333333";
+  const base: PidManifest = {
+    pid: process.pid,
+    name: "storage-policy",
+    agentId: id,
+    claimNonce: "33333333-3333-4333-8333-333333333333",
+    processIdentity: PROCESS_IDENTITY,
+    resourceClaims: [`agent-id:${id}`],
+    resourceClaimStore: "sqlite-v1",
+    port: null,
+    configPath: "/project/agent.yaml",
+    agentDir: "/project",
+    startedAt: new Date().toISOString(),
+    mode: "dev",
+  };
+  for (const runtimeData of [
+    undefined,
+    { platform: "generic", root: null },
+    { platform: "generic", root: "/private-data" },
+    { platform: "railway", root: "/app/data" },
+  ] as const) {
+    writePidManifest({ ...base, runtimeData }, { auggyDir });
+    expect(readPidManifest(id, { auggyDir })?.runtimeData).toEqual(runtimeData);
+    removePidManifest(id, { auggyDir });
+  }
+  for (const runtimeData of [
+    null,
+    [],
+    {},
+    { platform: "generic" },
+    { platform: "unknown", root: null },
+    { platform: "generic", root: "relative" },
+    { platform: "generic", root: "/bad\0path" },
+    { platform: "railway", root: null },
+    { platform: "railway", root: "/other" },
+    { platform: "generic", root: null, extra: true },
+  ]) {
+    expect(() => writePidManifest({ ...base, runtimeData } as PidManifest, { auggyDir })).toThrow(
+      /Invalid Auggy runtime manifest/,
+    );
+    expect(readPidManifest(id, { auggyDir })).toBeNull();
+  }
+});
+
 describe("runtime PID manifest policy", () => {
   test("Railway boot ignores a stale same-PID manifest without deleting it", () => {
     const name = "railway-stale";

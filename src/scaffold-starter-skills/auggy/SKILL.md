@@ -326,9 +326,8 @@ are clear. Do not require these scripts when shell access is unavailable.
 - `.auggy/`: private model metadata and operation receipts, excluded from deployment.
 
 Use `auggy inspect` for passive navigation; partial output does not prove readiness.
-Normal Bun startup may preload `.env`; use
-`bun --no-env-file node_modules/auggy/src/cli/index.ts inspect` when inspection
-must not read it. `auggy routes` loads configuration and augment implementations.
+The `auggy` executable disables Bun environment loading, automatic installation
+and local configuration preloads during inspection. `auggy routes` loads configuration and augment implementations.
 
 For legacy referenced YAML, preview `auggy migrate`, then explicitly apply after
 review. `--application` separately adopts owned execution files, refuses collisions,

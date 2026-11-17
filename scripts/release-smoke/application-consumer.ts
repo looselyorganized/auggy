@@ -4,25 +4,15 @@
  * The integrated reference runner must supply the explicit domain contract.
  */
 import { createHash } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { lstatSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { TurnFinalizationObservation } from "../../src/index";
-import { redactEvidence } from "./export-evidence";
+import { APPLICATION_BOUNDS } from "./application-child";
+export { APPLICATION_BOUNDS, startApplicationChild } from "./application-child";
 import type { ProviderFixtureEvidence, ProviderFixtureTool } from "./provider-fixture";
 import { readBoundedRegularFile } from "./bounded-file";
-
-export const APPLICATION_BOUNDS = Object.freeze({
-  readinessMs: 60_000,
-  scenarioMs: 120_000,
-  shutdownMs: 15_000,
-  reapMs: 5_000,
-  outputBytes: 2 * 1024 * 1024,
-  sourceBytes: 2 * 1024 * 1024,
-  artifactSourceFiles: 128,
-  artifactBytes: 256 * 1024 * 1024,
-});
 
 export const APPLICATION_ROWS = [
   "L01-launch-parity",
@@ -508,172 +498,6 @@ export function applicationEnvironment(
     CI: "1",
     npm_config_userconfig: "/dev/null",
     ...values,
-  };
-}
-
-/** A process group contains any delegated CLI child; never kill by a discovered PID. */
-export function startApplicationChild(options: {
-  command: readonly string[];
-  cwd: string;
-  env: Record<string, string>;
-  secrets: readonly string[];
-  timeoutMs?: number;
-  maxOutputBytes?: number;
-}) {
-  check(options.command.length > 0, "Fixture child requires a command");
-  const timeoutMs = options.timeoutMs ?? APPLICATION_BOUNDS.scenarioMs;
-  const maxOutputBytes = options.maxOutputBytes ?? APPLICATION_BOUNDS.outputBytes;
-  check(
-    Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= APPLICATION_BOUNDS.scenarioMs,
-    "Invalid child lifetime bound",
-  );
-  check(
-    Number.isSafeInteger(maxOutputBytes) &&
-      maxOutputBytes > 0 &&
-      maxOutputBytes <= APPLICATION_BOUNDS.outputBytes,
-    "Invalid child output bound",
-  );
-  const started = Date.now();
-  const child = spawn(options.command[0]!, options.command.slice(1), {
-    cwd: options.cwd,
-    env: options.env,
-    detached: process.platform !== "win32",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const chunks: { stdout: Buffer[]; stderr: Buffer[] } = { stdout: [], stderr: [] };
-  let bytes = 0;
-  let exceededOutput = false;
-  let timedOut = false;
-  let spawnFailed = false;
-  let orphanedGroup = false;
-  let leaderExited = false;
-  let streamsClosed = false;
-  let cleanupConfirmed = false;
-  let terminalSettled = false;
-  let forced = false;
-  let outcome: { exitCode: number | null; signal: NodeJS.Signals | null } = {
-    exitCode: null,
-    signal: null,
-  };
-  const groupState = (): "gone" | "live" | "unknown" => {
-    if (process.platform === "win32") return leaderExited ? "gone" : "live";
-    if (!child.pid) return spawnFailed ? "gone" : "unknown";
-    try {
-      process.kill(-child.pid, 0);
-      return "live";
-    } catch (error) {
-      return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "unknown";
-    }
-  };
-  const signal = (value: NodeJS.Signals) => {
-    if (!child.pid || cleanupConfirmed || terminalSettled) return;
-    try {
-      if (process.platform === "win32") child.kill(value);
-      else if (groupState() !== "gone") process.kill(-child.pid, value);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") orphanedGroup = true;
-    }
-  };
-  let resolveTerminal!: (value: typeof outcome) => void;
-  const exited = new Promise<typeof outcome>((resolveExit) => {
-    resolveTerminal = resolveExit;
-  });
-  let finalizeTask: Promise<void> | undefined;
-  let stopTimer: ReturnType<typeof setTimeout> | undefined;
-  const finalize = () =>
-    (finalizeTask ??= (async () => {
-      const deadline = Date.now() + APPLICATION_BOUNDS.reapMs;
-      while (Date.now() < deadline) {
-        if ((leaderExited || spawnFailed) && streamsClosed && groupState() === "gone") {
-          cleanupConfirmed = true;
-          break;
-        }
-        await new Promise((resolveWait) => setTimeout(resolveWait, 10));
-      }
-      clearTimeout(lifetimeTimer);
-      if (stopTimer) clearTimeout(stopTimer);
-      terminalSettled = true;
-      // Close our own pipes after a failed reap observation. Do not certify that
-      // another process has exited merely because its inherited pipe was closed.
-      child.stdout?.destroy();
-      child.stderr?.destroy();
-      resolveTerminal(outcome);
-    })());
-  const lifetimeTimer = setTimeout(() => {
-    timedOut = true;
-    signal("SIGKILL");
-    void finalize();
-  }, timeoutMs);
-  for (const stream of ["stdout", "stderr"] as const) {
-    child[stream]!.on("data", (value: Buffer) => {
-      const available = Math.max(0, maxOutputBytes - bytes);
-      if (available) chunks[stream].push(value.subarray(0, available));
-      bytes += value.length;
-      if (bytes > maxOutputBytes && !exceededOutput) {
-        exceededOutput = true;
-        signal("SIGKILL");
-        void finalize();
-      }
-    });
-  }
-  child.once("error", () => {
-    spawnFailed = true;
-    void finalize();
-  });
-  child.once("exit", (exitCode, exitSignal) => {
-    leaderExited = true;
-    outcome = { exitCode, signal: exitSignal };
-    if (groupState() !== "gone") {
-      orphanedGroup = true;
-      signal("SIGKILL");
-    }
-    void finalize();
-  });
-  child.once("close", (exitCode, exitSignal) => {
-    streamsClosed = true;
-    if (!leaderExited) outcome = { exitCode, signal: exitSignal };
-    void finalize();
-  });
-  return {
-    pid: child.pid,
-    exited,
-    signal,
-    async finish() {
-      const terminal = await exited;
-      const stdout = redactEvidence(Buffer.concat(chunks.stdout).toString("utf8"), [
-        ...options.secrets,
-      ]);
-      const stderr = redactEvidence(Buffer.concat(chunks.stderr).toString("utf8"), [
-        ...options.secrets,
-      ]);
-      return {
-        ...terminal,
-        pid: child.pid ?? null,
-        spawnFailed,
-        timedOut,
-        exceededOutput,
-        orphanedGroup,
-        cleanupConfirmed,
-        durationMs: Date.now() - started,
-        stdout,
-        stderr,
-        stdoutSHA256: applicationHash(stdout),
-        stderrSHA256: applicationHash(stderr),
-      };
-    },
-    async stop(requestedSignal: "SIGINT" | "SIGTERM" = "SIGTERM") {
-      const wasRunning = !leaderExited && !terminalSettled;
-      if (!terminalSettled) {
-        signal(requestedSignal);
-        stopTimer ??= setTimeout(() => {
-          forced = true;
-          signal("SIGKILL");
-          void finalize();
-        }, APPLICATION_BOUNDS.shutdownMs);
-      }
-      const result = await this.finish();
-      return { wasRunning, forced, ...result };
-    },
   };
 }
 

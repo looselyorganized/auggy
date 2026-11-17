@@ -19,6 +19,18 @@ and response bodies, then closes resources and releases ownership. A deadline
 does not prove cleanup: unresolved work or an incomplete factory with unknown
 resources retains ownership and produces an unsuccessful stop result.
 
+When `AUGGY_DATA_DIR` is set, preparation admits the existing private root and
+claims its singleton lease before runtime provider/augment construction and
+ingress. Missing, unsafe, wrong-agent or unreconciled state fails closed. This
+does not prevent arbitrary top-level effects in application modules imported
+before preparation. Keep imports side-effect-free and put startup work behind
+the managed lifecycle. See [explicit storage admission](./16-storage-layout.md#explicit-runtime-data-root).
+
+An agent may start only a polling channel. HTTP bindings are present only when
+the enabled graph contributes them; a worker needs no frontend or HTTP health
+endpoint. Process startup, HTTP health and a successful channel exchange are
+separate observations.
+
 The lifecycle below also describes the underlying embedded `defineAgent` API.
 Application composition binds the owned turn program to the configured graph;
 it does not replace that graph with a second augment registry.

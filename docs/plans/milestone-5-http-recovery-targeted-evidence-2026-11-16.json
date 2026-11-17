@@ -1,0 +1,52 @@
+{
+  "scope": "One targeted HTTP recovery attempt; full recovery not accepted",
+  "runtimeRevision": "13bf80df4ead1bbf0b53ee0cc1b221df10868999",
+  "harnessRevision": "32cdb854142bd1504ee65d46066b8eaaef9f7330",
+  "status": "failed",
+  "elapsedWallMs": 541946,
+  "targetedInitialization": {
+    "passed": true,
+    "heldStatus": 503,
+    "error": {
+      "error": "external_auth_unavailable"
+    },
+    "zeroDomainCalls": true,
+    "zeroModelRequests": true,
+    "checkpointPreserved": true
+  },
+  "restart": {
+    "nativeAcknowledged": true,
+    "sameDeployment": true,
+    "sameImage": true,
+    "sameInstanceId": true,
+    "observedStatus": "SUCCESS",
+    "observedInstanceStatus": "RUNNING",
+    "firstBoot": "2026-11-17T05:11:10.073571592Z",
+    "quiescence": "2026-11-17T05:11:30.081424516Z",
+    "secondBoot": "2026-11-17T05:11:30.584536450Z",
+    "diagnosis": "Provider preserved the instance ID across a successful process restart; harness incorrectly required a changed ID",
+    "postRestartHold": "not reached",
+    "postHoldOperation": "not reached"
+  },
+  "cleanup": {
+    "verifiedComplete": true,
+    "projectsDeleted": 1,
+    "servicesDeleted": 2,
+    "volumesDeleted": 2,
+    "temporaryKeysDeleted": 1,
+    "projectAbsent": true,
+    "keyAbsent": true,
+    "unknownMutations": 0,
+    "warnings": []
+  },
+  "assessment": {
+    "path": "/private/tmp/m5-http-recovery-targeted-1794891834837/evidence/assessment.json",
+    "sha256": "dd26bb3459c6409fa2a1599692c743535c037cf16a815dd987d40d2364a9ac73"
+  },
+  "nextCorrection": "Use existing fixture lifecycle reset plus successful reinitialization to establish fresh-process readiness; retain exact target/image checks and bounded waits. No implementation or further hosted retry in this attempt.",
+  "remaining": [
+    "HTTP recovery across restart and post-hold operation",
+    "polling recovery",
+    "final integrated review and CI/findings disposition"
+  ]
+}

@@ -1,12 +1,24 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   assertGeneratedDeploymentBundle,
+  createGeneratedDeploymentStagingWorkspace,
   verifyGeneratedDeployment,
 } from "../../scripts/release-smoke/authoring-deployment";
-import { stageBundle } from "../../src/cli/deploy/bundle";
+import { stageBundle, stageBundleWithManifest } from "../../src/cli/deploy/bundle";
 
 // Compile the installed-artifact runner; unit fixtures below are never executed as applications.
 void verifyGeneratedDeployment;
@@ -101,5 +113,74 @@ describe("generated deployment verifier controls", () => {
         sourceFiles: [...sourceFiles, "src/turn.ts"],
       }),
     ).toThrow("bounded and unique");
+  });
+});
+
+describe("generated deployment staging ownership", () => {
+  test("actual manifest bundler stages in the owned private parent and cleanup removes it", () => {
+    const owner = createGeneratedDeploymentStagingWorkspace(root);
+    const bundle = stageBundleWithManifest(
+      { agentDir: consumer, agentName: "generated-deployment" },
+      owner.directory,
+    );
+    expect(owner.accept(bundle.directory)).toBe(bundle.directory);
+    expect(dirname(bundle.directory)).toBe(owner.directory);
+    expect(lstatSync(owner.directory).mode & 0o777).toBe(0o700);
+    expect(lstatSync(bundle.directory).mode & 0o777).toBe(0o700);
+    expect(
+      Object.keys(
+        assertGeneratedDeploymentBundle({ consumer, staged: bundle.directory, sourceFiles }),
+      ),
+    ).toEqual(sourceFiles);
+    bundle.verifySource();
+    owner.cleanup();
+    expect(existsSync(owner.directory)).toBe(false);
+    expect(readFileSync(join(consumer, ".env"), "utf8")).toBe("private fixture");
+  });
+
+  test("outside same-prefix directories and the owned parent are never accepted or deleted", () => {
+    const owner = createGeneratedDeploymentStagingWorkspace(root);
+    const outside = mkdtempSync(join(root, "auggy-deploy-"));
+    write(join(outside, "preserve"));
+    for (const unexpected of [outside, owner.directory, consumer, null, "auggy-deploy-relative"])
+      expect(() => owner.accept(unexpected)).toThrow("unexpected cleanup destination");
+    owner.cleanup();
+    expect(readFileSync(join(outside, "preserve"), "utf8")).toBe("private fixture");
+    expect(existsSync(consumer)).toBe(true);
+  });
+
+  test("linked and nonprivate returned children fail without touching the outside target", () => {
+    const owner = createGeneratedDeploymentStagingWorkspace(root);
+    const outside = mkdtempSync(join(root, "outside-"));
+    write(join(outside, "preserve"));
+    const linked = join(owner.directory, "auggy-deploy-linked");
+    symlinkSync(outside, linked);
+    expect(() => owner.accept(linked)).toThrow("ownership changed");
+    const shared = mkdtempSync(join(owner.directory, "auggy-deploy-"));
+    chmodSync(shared, 0o770);
+    expect(() => owner.accept(shared)).toThrow("ownership changed");
+    owner.cleanup();
+    expect(readFileSync(join(outside, "preserve"), "utf8")).toBe("private fixture");
+  });
+
+  test.each(["parent", "child"])("replaced %s identity prevents destructive cleanup", (target) => {
+    const owner = createGeneratedDeploymentStagingWorkspace(root);
+    const bundle = stageBundleWithManifest(
+      { agentDir: consumer, agentName: "generated-deployment" },
+      owner.directory,
+    );
+    owner.accept(bundle.directory);
+    const replaced = target === "parent" ? owner.directory : bundle.directory;
+    renameSync(replaced, `${replaced}.original`);
+    mkdirSync(replaced, { mode: 0o700 });
+    write(join(replaced, "preserve"));
+    expect(() => owner.cleanup()).toThrow("ownership changed");
+    expect(readFileSync(join(replaced, "preserve"), "utf8")).toBe("private fixture");
+    expect(existsSync(`${replaced}.original`)).toBe(true);
+  });
+
+  test("a nonprivate workspace is rejected before creating a staging owner", () => {
+    chmodSync(root, 0o770);
+    expect(() => createGeneratedDeploymentStagingWorkspace(root)).toThrow("ownership changed");
   });
 });

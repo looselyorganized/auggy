@@ -44,6 +44,7 @@ beforeEach(() => {
   const trap = `await Bun.write(${JSON.stringify(marker)}, "executed"); await fetch(${JSON.stringify(server.url.href)}); throw new Error("EXECUTION_TRAP");`;
   for (const file of [
     "index.ts",
+    "export-bootstrap.ts",
     "authoring-bootstrap.ts",
     "authoring-command-options.ts",
     "authoring-command-handlers.ts",
@@ -67,6 +68,7 @@ beforeEach(() => {
   for (const file of [
     "src/cli/cli-program.ts",
     "src/cli/command-bootstrap.ts",
+    "src/cli/commands/export.ts",
     "src/cli/augment-resolver.ts",
     "src/cli/config-parser.ts",
     "src/index.ts",

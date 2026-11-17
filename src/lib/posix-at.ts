@@ -13,11 +13,13 @@ interface PosixAtSymbols {
   readdir(directory: unknown): unknown;
   closedir(directory: unknown): number;
   errno(): number;
+  clearErrno(): void;
 }
 
 let symbols: PosixAtSymbols | null = null;
 let library: ReturnType<typeof dlopen> | null = null;
 let noReplaceLibrary: ReturnType<typeof dlopen> | null = null;
+let noReplaceSyscallLibrary: ReturnType<typeof dlopen> | null = null;
 
 function libcPaths(): string[] {
   if (process.platform === "darwin") return ["/usr/lib/libSystem.B.dylib"];
@@ -82,6 +84,7 @@ function requireSymbols(): PosixAtSymbols {
       args: [],
       returns: FFIType.ptr,
     },
+    memset: { args: [FFIType.ptr, FFIType.i32, FFIType.uint64_t], returns: FFIType.ptr },
   } as const;
   for (const libraryPath of libraryPaths) {
     try {
@@ -106,6 +109,15 @@ function requireSymbols(): PosixAtSymbols {
     readdir: linked.readdir as unknown as PosixAtSymbols["readdir"],
     closedir: linked.closedir as unknown as PosixAtSymbols["closedir"],
     errno: () => ffiRead.i32(linked[errnoSymbol]!() as never, 0),
+    clearErrno: () => {
+      // errno is a thread-local C int on the supported Darwin/Linux ABIs.
+      const clear = linked.memset as unknown as (
+        pointer: unknown,
+        value: number,
+        size: number,
+      ) => unknown;
+      clear(linked[errnoSymbol]!(), 0, 4);
+    },
   };
   return symbols;
 }
@@ -209,7 +221,9 @@ export function renameAtNoReplace(
       }
     }
   }
-  if (!noReplaceLibrary) return false;
+  if (!noReplaceLibrary) {
+    return linuxRenameAtNoReplace(olddirfd, source, newdirfd, destination);
+  }
   const rename = noReplaceLibrary.symbols[symbol] as unknown as (
     oldfd: number,
     oldpath: Uint8Array,
@@ -219,6 +233,58 @@ export function renameAtNoReplace(
   ) => number;
   const exclusive = process.platform === "darwin" ? 0x4 : 0x1;
   return rename(olddirfd, source, newdirfd, destination, exclusive) === 0;
+}
+
+function linuxRenameAtNoReplace(
+  olddirfd: number,
+  source: Uint8Array,
+  newdirfd: number,
+  destination: Uint8Array,
+): boolean {
+  if (process.platform !== "linux") return false;
+  // Linux UAPI: arch/x86/entry/syscalls/syscall_64.tbl (x86_64),
+  // include/uapi/asm-generic/unistd.h (arm64). Never guess for another ABI.
+  const syscallNumber = process.arch === "x64" ? 316 : process.arch === "arm64" ? 276 : null;
+  if (syscallNumber === null) return false;
+  // musl may expose syscall without a renameat2 wrapper. These Linux LP64 ABIs
+  // pass long/pointer arguments in full-width slots. Supply all six syscall
+  // argument slots, including the unused last one; libc returns a C long.
+  if (!noReplaceSyscallLibrary) {
+    for (const path of libcPaths()) {
+      try {
+        noReplaceSyscallLibrary = dlopen(path, {
+          syscall: {
+            args: [
+              FFIType.i64_fast,
+              FFIType.i64_fast,
+              FFIType.ptr,
+              FFIType.i64_fast,
+              FFIType.ptr,
+              FFIType.i64_fast,
+              FFIType.i64_fast,
+            ],
+            returns: FFIType.i64_fast,
+          },
+        });
+        break;
+      } catch {
+        // An unavailable syscall binding remains fail-closed.
+      }
+    }
+  }
+  if (!noReplaceSyscallLibrary) return false;
+  const syscall = noReplaceSyscallLibrary.symbols.syscall as unknown as (
+    number: number,
+    oldfd: number,
+    oldpath: Uint8Array,
+    newfd: number,
+    newpath: Uint8Array,
+    flags: number,
+    unused: number,
+  ) => number | bigint;
+  // RENAME_NOREPLACE is enforced atomically by the kernel. ENOSYS, unsupported
+  // filesystems and every other failure stay failures; never retry with rename.
+  return syscall(syscallNumber, olddirfd, source, newdirfd, destination, 0x1, 0) === 0;
 }
 
 export function duplicateFd(fd: number): number {
@@ -260,6 +326,8 @@ function reopenDirectoryFd(fd: number): number {
 export function listDirectoryFd(
   fd: number,
   maxEntries: number,
+  /** @internal Inject a directory-read result; never passed by production callers. */
+  testHooks?: { readEntry?: () => unknown },
 ): { names: string[]; truncated: boolean } {
   if (!Number.isSafeInteger(maxEntries) || maxEntries < 0) {
     throw new Error("directory entry limit must be a non-negative safe integer");
@@ -277,8 +345,15 @@ export function listDirectoryFd(
   let truncated = false;
   try {
     while (true) {
-      const entry = linked.readdir(directory);
-      if (!entry) break;
+      // POSIX readdir returns null both at EOF and on failure. An unreadable
+      // directory must never be accepted as empty by storage admission.
+      linked.clearErrno();
+      const entry = testHooks?.readEntry ? testHooks.readEntry() : linked.readdir(directory);
+      if (!entry) {
+        const errno = linked.errno();
+        if (errno !== 0) throw new Error(`directory enumeration failed (errno ${errno})`);
+        break;
+      }
       const nameOffset = process.platform === "darwin" ? 21 : 19;
       const nameLength =
         process.platform === "darwin" ? ffiRead.u16(entry as never, 18) : undefined;

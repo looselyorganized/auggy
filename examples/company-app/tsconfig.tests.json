@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "lib": ["ESNext"],
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "noUncheckedIndexedAccess": true,
+    "types": ["bun"],
+    "esModuleInterop": true
+  },
+  "include": ["tests/**/*.ts", "agent-integration/**/*.ts", "fixtures/**/*.ts"],
+  "exclude": ["node_modules", ".next"]
+}

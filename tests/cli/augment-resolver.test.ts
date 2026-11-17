@@ -2400,27 +2400,54 @@ describe("resolveAugments — identity-loss warning when visitorAuth removed (fi
 describe("resolveTrustedProxies — Railway ingress default", () => {
   test("explicit trustedProxies always win, Railway runtime defaults to its ingress network, elsewhere stays unset", async () => {
     const { resolveTrustedProxies } = await import("../../src/cli/augment-resolver");
-    const { RAILWAY_RUNTIME_DATA_ROOT } = await import("../../src/cli/runtime-volume");
     const { RAILWAY_INGRESS_PROXY_NETWORKS } = await import(
       "../../src/transports/console-request-security"
     );
     const logSpy = spyOn(console, "log").mockImplementation(() => {});
     try {
-      expect(resolveTrustedProxies(["10.1.0.0/16"], RAILWAY_RUNTIME_DATA_ROOT)).toEqual([
-        "10.1.0.0/16",
-      ]);
-      expect(resolveTrustedProxies([], RAILWAY_RUNTIME_DATA_ROOT)).toEqual([]);
+      expect(resolveTrustedProxies(["10.1.0.0/16"], "railway")).toEqual(["10.1.0.0/16"]);
+      expect(resolveTrustedProxies([], "railway")).toEqual([]);
       expect(resolveTrustedProxies(undefined, undefined)).toBeUndefined();
-      expect(resolveTrustedProxies(undefined, "/somewhere/else")).toBeUndefined();
+      expect(resolveTrustedProxies(undefined, "generic")).toBeUndefined();
       expect(logSpy).not.toHaveBeenCalled();
 
-      expect(resolveTrustedProxies(undefined, RAILWAY_RUNTIME_DATA_ROOT)).toEqual([
+      expect(resolveTrustedProxies(undefined, "railway")).toEqual([
         ...RAILWAY_INGRESS_PROXY_NETWORKS,
       ]);
       expect(logSpy).toHaveBeenCalledTimes(1);
       expect(String(logSpy.mock.calls[0]?.[0])).toContain("Railway runtime");
     } finally {
       logSpy.mockRestore();
+    }
+  });
+
+  test("an ordinary /app/data root grants no Railway proxy trust through the resolver", async () => {
+    for (const platform of [undefined, "generic", "railway"] as const) {
+      let proxies: string[] | undefined;
+      await resolveAugments(
+        [
+          {
+            name: "web",
+            type: "webTransport",
+            options: { port: 8080, adminRoute: false, idempotency: { dbPath: null } },
+          },
+        ],
+        TMP,
+        {
+          runtimeDataRoot: "/app/data",
+          runtimeDataPlatform: platform,
+          webTransportFactory(options) {
+            proxies = options.trustedProxies;
+            return { name: "web" };
+          },
+        },
+      );
+      if (platform === "railway") {
+        const { RAILWAY_INGRESS_PROXY_NETWORKS } = await import(
+          "../../src/transports/console-request-security"
+        );
+        expect(proxies).toEqual([...RAILWAY_INGRESS_PROXY_NETWORKS]);
+      } else expect(proxies).toBeUndefined();
     }
   });
 });

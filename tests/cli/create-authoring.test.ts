@@ -16,6 +16,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parse } from "yaml";
 import { runCreate, runInit, type CreateOptions } from "../../src/cli/commands/create";
+import { AuthoringError } from "../../src/cli/authoring/document-io";
+import { AUTHORING_LIMITS } from "../../src/cli/authoring/contracts";
 import { planApplicationScaffold } from "../../src/cli/scaffold-application";
 import { AUGGY_RUNTIME_PACKAGE_MARKER } from "../../src/cli/runtime-package-marker";
 import { getAuggyVersion } from "../../src/cli/scaffold-package-json";
@@ -292,6 +294,73 @@ describe("collision-safe initialization", () => {
     expect(existsSync(join(directory, ".env"))).toBe(false);
     expect(readFileSync(join(directory, "owned.txt"), "utf8")).toBe("preserve");
   });
+
+  test("create shows controlled publication diagnostics without private locations", async () => {
+    const failure = await runCreate("diagnostic", {
+      ...automatic,
+      cwd: directory,
+      publicationFault: ({ boundary }) => {
+        if (boundary === "before-ignore")
+          throw new AuthoringError("publication-stale", "An input changed before publication.", {
+            path: "PRIVATE_PATH_CANARY",
+            field: "PRIVATE_FIELD_CANARY",
+          });
+      },
+    }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toContain("Application publication rolled-back; the project is not ready.");
+    expect(message).toContain("[publication-stale] An input changed before publication.");
+    expect(message).toMatch(/Preserve private operation [a-f0-9-]{36}/);
+    expect(message).toContain("Preview recovery: auggy migrate --project-dir");
+    expect(message).toContain("Review that plan before adding --apply.");
+    expect(message).not.toContain("PRIVATE_PATH_CANARY");
+    expect(message).not.toContain("PRIVATE_FIELD_CANARY");
+    expect(existsSync(join(directory, "diagnostic", "agent.yaml"))).toBe(false);
+  });
+
+  test("init shows a generic diagnostic without exposing the original publication error", async () => {
+    const failure = await runInit({
+      ...automatic,
+      name: "diagnostic",
+      cwd: directory,
+      publicationFault: ({ boundary }) => {
+        if (boundary === "before-ignore")
+          throw new Error("PRIVATE_NATIVE_ERROR_CANARY https://user:secret@example.test");
+      },
+    }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toContain("[publication-failed] Authoring publication failed.");
+    expect(message).not.toContain("PRIVATE_NATIVE_ERROR_CANARY");
+    expect(message).not.toContain("user:secret");
+    expect(existsSync(join(directory, "agent.yaml"))).toBe(false);
+  });
+
+  for (const message of [
+    "Unsafe\nPRIVATE_OUTPUT_CANARY",
+    "https://user:PRIVATE_OUTPUT_CANARY@example.test",
+    "x".repeat(AUTHORING_LIMITS.pathBytes + 1),
+  ]) {
+    test("publication diagnostic text remains bounded and safe for terminal output", async () => {
+      const failure = await runCreate("diagnostic", {
+        ...automatic,
+        cwd: directory,
+        publicationFault: ({ boundary }) => {
+          if (boundary === "before-ignore")
+            throw new AuthoringError("publication-stale\n", message);
+        },
+      }).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      const output = (failure as Error).message;
+      expect(output).toContain(
+        "[publication-failed] Review the private operation locally before recovery.",
+      );
+      expect(output).not.toContain("publication-stale");
+      expect(output).not.toContain("PRIVATE_OUTPUT_CANARY");
+      expect(Buffer.byteLength(output)).toBeLessThan(AUTHORING_LIMITS.pathBytes);
+    });
+  }
 });
 
 function installedRuntime(

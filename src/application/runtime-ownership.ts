@@ -10,8 +10,13 @@ import {
   readPidManifest,
   releaseRuntimePidManifest,
 } from "../cli/pid-registry";
-import { prepareRailwayRuntimeVolume } from "../cli/runtime-volume";
+import { prepareRuntimeDataVolume, selectRuntimeDataRoot } from "../cli/runtime-volume";
 import { runtimeResourceClaims } from "../cli/runtime-resource-claims";
+import type {
+  AdmittedRuntimeVolumeLease,
+  RuntimeDataEnvironment,
+  RuntimeDataOwnership,
+} from "../runtime-data-contracts";
 import type { ApplicationLaunch } from "../types";
 
 /** Only the validated package launcher/operator path constructs these options. */
@@ -21,14 +26,23 @@ export interface RuntimeOwnershipOptions {
   processIdentityForPid?: (pid: number) => string | null;
   /** Existing restart path already holds the operator's lifecycle fence. */
   lifecycleOwned?: boolean;
+  /** Internal restart handoff; validated again before acquiring any resource. */
+  runtimeDataEnvironment?: RuntimeDataEnvironment;
 }
 
 export function acquireRuntimeOwnership(
   configPath: string,
   config: ParsedConfig,
   options: RuntimeOwnershipOptions,
-  retain?: (ownership: { readonly runtimeDataRoot?: string; release(): void }) => void,
-): { runtimeDataRoot?: string; release(): void } {
+  retain?: (ownership: RuntimeDataOwnership) => void,
+): RuntimeDataOwnership {
+  const selection = selectRuntimeDataRoot(
+    options.mode,
+    options.runtimeDataEnvironment ?? {
+      auggyDataDir: process.env.AUGGY_DATA_DIR,
+      railwayVolumeMountPath: process.env.RAILWAY_VOLUME_MOUNT_PATH,
+    },
+  );
   const internalMode =
     options.mode === "railway" || options.mode === "launchd" ? options.mode : undefined;
   const mode = internalMode === "launchd" ? "launchd" : "dev";
@@ -42,7 +56,7 @@ export function acquireRuntimeOwnership(
   ) {
     throw new Error("[runtime] launchd mode requires a valid installation generation");
   }
-  let volume: ReturnType<typeof prepareRailwayRuntimeVolume> | null = null;
+  let volume: AdmittedRuntimeVolumeLease | null = null;
   const registry = {
     auggyDir: options.auggyDir,
     processIdentityForPid: options.processIdentityForPid,
@@ -57,16 +71,19 @@ export function acquireRuntimeOwnership(
     volume?.release();
     released = true;
   };
-  const ownership = {
+  const ownership: RuntimeDataOwnership = {
+    platform: selection.kind === "railway" ? "railway" : "generic",
     get runtimeDataRoot() {
       return volume?.runtimeDataRoot;
+    },
+    get runtimeDataAdmission() {
+      return volume?.runtimeDataAdmission;
     },
     release,
   };
   retain?.(ownership);
   try {
-    if (internalMode === "railway")
-      volume = prepareRailwayRuntimeVolume(process.env.RAILWAY_VOLUME_MOUNT_PATH, config.id);
+    if (selection.kind !== "local") volume = prepareRuntimeDataVolume(selection, config.id);
     if (mode === "dev" && !options.lifecycleOwned) {
       releaseAdmission = claimAgentLifecycle(config.id, config.name, registry);
     }
@@ -94,6 +111,7 @@ export function acquireRuntimeOwnership(
       agentDir: resolve(agentDir),
       startedAt: new Date().toISOString(),
       mode,
+      runtimeData: { platform: ownership.platform, root: volume?.runtimeDataRoot ?? null },
     };
     claimed = claimRuntimePidManifest(manifest, { ...registry, internalMode });
   } catch (error) {

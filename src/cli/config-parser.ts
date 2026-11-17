@@ -24,6 +24,7 @@ import type {
   ApplicationConfig,
 } from "./types";
 import { parseApplicationDeclaration } from "./application-definition";
+import { isManagedReplayFilePath } from "../auth/external-auth-replay-path";
 import { VALID_NAME_RE } from "./agent-name";
 import { BUILTIN_TYPES } from "./builtin-types";
 export { VALID_NAME_RE } from "./agent-name";
@@ -617,9 +618,28 @@ function validateWebTransportOptions(
               `${optionsPrefix}.externalAuth.replayProtection.store: executable stores cannot be configured in YAML`,
             );
           }
-          if (replay.enabled === true) {
+          if (replay.dbPath !== undefined && !isManagedReplayFilePath(replay.dbPath)) {
             errors.push(
-              `${optionsPrefix}.externalAuth.replayProtection: enabled protection requires a programmatic atomic store`,
+              `${optionsPrefix}.externalAuth.replayProtection.dbPath: must name an ordinary file, not a SQLite URI or in-memory database`,
+            );
+          }
+          if (replay.dbPath !== undefined && replay.enabled !== true) {
+            errors.push(
+              `${optionsPrefix}.externalAuth.replayProtection.dbPath: requires enabled: true`,
+            );
+          }
+          if (replay.enabled === true && replay.dbPath === undefined) {
+            errors.push(
+              `${optionsPrefix}.externalAuth.replayProtection: enabled protection in YAML requires a managed dbPath`,
+            );
+          }
+          if (
+            replay.dbPath !== undefined &&
+            (!Number.isSafeInteger(externalAuth.maxTtlSeconds) ||
+              (externalAuth.maxTtlSeconds as number) <= 0)
+          ) {
+            errors.push(
+              `${optionsPrefix}.externalAuth.maxTtlSeconds: managed replay requires an explicit positive integer`,
             );
           }
         }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seedAgentForTest, setCloud } from "../../../src/cli/agent-index";
@@ -38,6 +38,8 @@ describe("runLogs", () => {
     setCloud(
       "zip",
       {
+        version: 1,
+        agentId: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
         provider: "railway",
         projectId: "proj_abc",
         serviceId: "svc_def",
@@ -84,8 +86,36 @@ describe("runLogs", () => {
     }
   });
 
+  test("worker logs use the bound Railway target without a fabricated app URL", async () => {
+    const agentId = "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c";
+    const dir = seedAgentForTest("zip", { auggyDir, yaml: `id: ${agentId}\nname: zip\n` });
+    setCloud(
+      "zip",
+      {
+        version: 2,
+        agentId,
+        provider: "railway",
+        projectId: "proj_abc",
+        serviceId: "svc_def",
+        url: null,
+        profile: { kind: "none" },
+        volumeId: "volume",
+        deployedAt: "2026-05-12T00:00:00.000Z",
+      },
+      { auggyDir },
+    );
+    const before = readFileSync(join(dir, ".auggy-cloud.json"), "utf8");
+    const message = await captureLog(() => runLogs("zip", { auggyDir }));
+    expect(message).toContain("Worker:       no public HTTP endpoint");
+    expect(message).not.toContain("App URL:");
+    expect(message).not.toContain("null");
+    expect(readFileSync(join(dir, ".auggy-cloud.json"), "utf8")).toBe(before);
+  });
+
   test("formats Railway dashboard URLs with encoded IDs", () => {
     const message = formatRailwayLogsMessage("zip", {
+      version: 1,
+      agentId: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
       provider: "railway",
       projectId: "proj a/b",
       serviceId: "svc c/d",

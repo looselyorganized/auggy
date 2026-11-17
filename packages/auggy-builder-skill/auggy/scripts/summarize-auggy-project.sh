@@ -14,5 +14,5 @@ if ! command -v bun >/dev/null 2>&1 || [ ! -f "$local_cli" ]; then
   exit 1
 fi
 
-# Disable Bun automatic .env loading as well as using the passive CLI command.
-exec bun --no-env-file "$local_cli" inspect --config "$agent_yaml"
+# Disable automatic .env/config loading and installs before the passive CLI starts.
+exec bun --no-env-file --no-install --config=/dev/null "$local_cli" inspect --config "$agent_yaml"

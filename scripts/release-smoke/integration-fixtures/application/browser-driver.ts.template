@@ -1,0 +1,132 @@
+import { chromium } from "playwright";
+import { createHash } from "node:crypto";
+import { constants, openSync, closeSync, fstatSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+function check(value, message) { if (!value) throw new Error(message); }
+const configPath = process.env.AUGGY_FIXTURE_BROWSER_CONFIG;
+check(configPath, "Browser fixture configuration missing");
+const fd = openSync(configPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+let config;
+try {
+  const stat = fstatSync(fd);
+  check(stat.isFile() && stat.nlink === 1 && (stat.mode & 0o7777) === 0o600 && stat.size <= 16384, "Browser fixture configuration is not private and bounded");
+  config = JSON.parse(readFileSync(fd, "utf8"));
+} finally { closeSync(fd); }
+for (const value of [config.appOrigin, config.agentOrigin, config.controlOrigin, process.env.AUGGY_FIXTURE_BROWSER_CDP_ENDPOINT]) {
+  const url = new URL(value);
+  check(url.protocol === "http:" && url.hostname === "127.0.0.1" && url.port && url.pathname === "/" && !url.username && !url.password && !url.search && !url.hash, "Browser fixture requires owned loopback origins");
+}
+const browser = await chromium.connectOverCDP(process.env.AUGGY_FIXTURE_BROWSER_CDP_ENDPOINT, { timeout: 15000 });
+const contexts = [];
+const observations = { version: 1, firstChunkBeforeTerminal: false, directAgentRequests: 0, freshAssertionCount: 0, stableRetryKey: false, applicationCookiesSentToAgent: false, creatorCredentialSentToAgent: false, interruptedThenCompleted: false, mobileOverflow: false, desktopOverflow: false, layout: {}, keyboardFocusVisible: false, checks: [] };
+const assertions = new Set();
+const keys = [];
+const pending = [];
+let phase = "initial-browser";
+async function control(path, body) {
+  const response = await fetch(`${config.controlOrigin}${path}`, { method: "POST", headers: { authorization: `Bearer ${config.controlToken}`, "content-type": "application/json" }, body: JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(10000) });
+  check(response.ok, "Private browser control rejected operation");
+  return await response.json();
+}
+async function pageFor(cookie) {
+  check(/^[0-9a-f]{64}$/.test(cookie), "Invalid opaque fixture session");
+  const context = await browser.newContext({ viewport: { width: 1365, height: 1000 }, reducedMotion: "reduce" });
+  contexts.push(context);
+  await context.route("**/*", route => {
+    const origin = new URL(route.request().url()).origin;
+    return [config.appOrigin, config.agentOrigin].includes(origin) ? route.continue() : route.abort("blockedbyclient");
+  });
+  await context.addCookies([{ name: "auggy_fixture_session", value: cookie, url: config.appOrigin, httpOnly: true, sameSite: "Strict" }]);
+  const page = await context.newPage();
+  page.setDefaultTimeout(15000);
+  page.on("request", request => {
+    if (new URL(request.url()).origin !== config.agentOrigin || new URL(request.url()).pathname !== "/agent/run" || request.method() !== "POST") return;
+    pending.push((async () => {
+      const headers = await request.allHeaders();
+      observations.directAgentRequests++;
+      observations.applicationCookiesSentToAgent ||= Boolean(headers.cookie);
+      observations.creatorCredentialSentToAgent ||= Boolean(headers.authorization);
+      check(typeof headers["x-auggy-auth-assertion"] === "string", "Direct request has no assertion");
+      assertions.add(createHash("sha256").update(headers["x-auggy-auth-assertion"]).digest("hex"));
+      keys.push(headers["idempotency-key"]);
+    })());
+  });
+  await page.goto(config.appOrigin, { waitUntil: "networkidle", timeout: 30000 });
+  await page.locator("#support-message").waitFor({ state: "visible" });
+  await page.waitForFunction(() => !document.querySelector("#support-message")?.disabled);
+  return page;
+}
+async function send(page, text) {
+  await page.locator("#support-message").fill(text);
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+}
+async function measureLayout(page) {
+  return await page.evaluate(async () => {
+    await document.fonts.ready;
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const rect = selector => {
+      const element = document.querySelector(selector);
+      if (!element) throw new Error("Required layout region missing");
+      const { left, right, width } = element.getBoundingClientRect();
+      return { left, right, width };
+    };
+    return { innerWidth: window.innerWidth, clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth, app: rect(".app-shell"), conversation: rect(".conversation") };
+  });
+}
+async function captureLayout(page, size) {
+  const before = await measureLayout(page);
+  // Full-page capture can remove the scrollbar, reflow the page, then retain the
+  // former clip width. A viewport capture preserves the visible outer gutters.
+  await page.screenshot({ path: join(config.screenshotDirectory, `application-${size}.png`), fullPage: false });
+  const after = await measureLayout(page);
+  observations.layout[size] = { before, after };
+  observations[`${size}Overflow`] = [before, after].some(layout => layout.scrollWidth > layout.clientWidth || layout.app.left < 0 || layout.app.right > layout.clientWidth || layout.conversation.left < 8 || layout.conversation.right > layout.clientWidth - 8);
+}
+try {
+  phase = "customer-read";
+  await control("/configure", { scenario: "read-a" });
+  const customer = await pageFor(config.sessions.customerA);
+  await customer.locator("#support-message").focus();
+  observations.keyboardFocusVisible = await customer.locator("#support-message").evaluate(el => el === document.activeElement && (getComputedStyle(el).boxShadow !== "none" || getComputedStyle(el).outlineStyle !== "none"));
+  await captureLayout(customer, "desktop");
+  await send(customer, "Read my order order-a");
+  await customer.locator('[data-testid="agent-response"][data-state="streaming"] .response-text').waitFor({ state: "visible" });
+  check((await customer.locator('[data-testid="agent-response"]').last().innerText()).includes(config.expectedMarker), "Browser never received actual model text");
+  observations.firstChunkBeforeTerminal = (await customer.locator('[data-testid="agent-response"]').last().getAttribute("data-state")) === "streaming";
+  await customer.locator('[data-testid="agent-response"][data-state="completed"]').waitFor();
+  observations.checks.push("actual-browser-saw-content-before-terminal", "customer-assertion-direct-agent-flow");
+  await customer.setViewportSize({ width: 390, height: 844 });
+  await captureLayout(customer, "mobile");
+  observations.checks.push("settled-client-width-and-gutters-before-and-after-viewport-capture");
+
+  phase = "support-interruption-retry";
+  await control("/configure", { scenario: "refund" });
+  const support = await pageFor(config.sessions.support);
+  await send(support, "Simulate a 1250 cent refund for order-a");
+  await support.locator('[data-testid="agent-response"][data-state="streaming"] .response-text').waitFor();
+  const originalKey = await support.locator("article[data-operation-key]").last().getAttribute("data-operation-key");
+  await support.getByRole("button", { name: "Stop receiving", exact: true }).click();
+  await support.locator('[data-testid="agent-response"][data-state="interrupted"]').waitFor();
+  await control("/settled", {});
+  await support.getByRole("button", { name: "Retry delivery", exact: true }).click();
+  await support.locator('[data-testid="agent-response"][data-state="completed"]').waitFor();
+  const repeatedKey = await support.locator("article[data-operation-key]").last().getAttribute("data-operation-key");
+  await Promise.all(pending);
+  observations.stableRetryKey = Boolean(originalKey && originalKey === repeatedKey && keys.at(-1) === keys.at(-2));
+  observations.interruptedThenCompleted = true;
+  observations.freshAssertionCount = assertions.size;
+  observations.checks.push("browser-disconnect-does-not-cancel-keyed-operation", "retry-uses-fresh-assertion-and-original-operation-key", "browser-omits-app-session-and-creator-credentials");
+  check(observations.firstChunkBeforeTerminal && observations.stableRetryKey && observations.freshAssertionCount === observations.directAgentRequests && observations.directAgentRequests === 3 && !observations.applicationCookiesSentToAgent && !observations.creatorCredentialSentToAgent && !observations.mobileOverflow && !observations.desktopOverflow && observations.keyboardFocusVisible, "Browser acceptance observations failed");
+  const status = await control("/verify", {});
+  check(status.oneBrowserEffect && status.noRetryModelCall, "Authoritative browser effect proof failed");
+  writeFileSync(config.outputPath, `${JSON.stringify(observations, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+} catch (error) {
+  let message = error instanceof Error ? error.message : "Browser fixture failed";
+  for (const secret of [config.controlToken, ...Object.values(config.sessions)]) message = message.split(secret).join("[REDACTED]");
+  writeFileSync(join(config.screenshotDirectory, "browser-failure.json"), JSON.stringify({phase,message:message.slice(0,4096)}), {flag:"wx",mode:0o600});
+  throw new Error(`Browser fixture failed at ${phase}`);
+} finally {
+  for (const context of contexts.reverse()) await context.close();
+  await browser.close();
+}

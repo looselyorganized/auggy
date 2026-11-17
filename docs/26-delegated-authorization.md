@@ -6,7 +6,12 @@ tools. This lets a frontend backed by Supabase Auth, Clerk, Auth0, or custom
 session middleware call Auggy app-backend surfaces without making Auggy a
 general-purpose identity provider.
 
-The split is deliberate:
+Each company deploys its own Auggy agent with independent credentials, audience
+and durable state. The optional [company application reference](../examples/company-app/README.md)
+shows a separate Next.js frontend/backend calling that agent; Next.js is not an
+agent dependency.
+
+The responsibilities are:
 
 - The app verifies the user session and decides what the user may do.
 - The app mints a compact, short-lived Auggy assertion.
@@ -16,7 +21,9 @@ The split is deliberate:
 
 Auggy does not run the app's RBAC system. It does not infer permissions from
 roles. Roles can be preserved as context, but `requires` is satisfied only by
-explicit delegated scopes or grants minted by the app backend.
+explicit delegated scopes or grants minted by the app backend. A verified app
+user, including an app administrator, remains `public` / `recognized`; app roles
+never become Auggy `creator` trust or grant access to operator endpoints.
 
 ## Flow
 
@@ -86,31 +93,76 @@ Entries can include `keyId`, so assertions with `kid` only try the matching
 key; assertions without `kid` remain compatible and are tried against the
 configured keyring.
 
-`externalAuth.replayProtection.enabled` rejects reused assertions before they
-can establish external app auth for `visitor.required` routes and `/agent/run`.
-When enabled, every accepted assertion must carry a unique `jti`; assertions
-without `jti` and assertions whose `jti` has already been seen are treated like
-invalid external assertions. The public route response remains the generic
-`visitor-auth-required` body when the assertion is required, so replay internals
-are not exposed to browsers.
+## Replay protection and recovery
 
-Replay protection requires an explicit store and fails at boot when it is
-missing. This prevents a multi-instance deployment from silently degrading to
-process-local replay state. Pass a shared store:
+For a generated, single-replica agent, configure managed SQLite replay in the
+existing `webTransport.options.externalAuth` declaration:
+
+```yaml
+externalAuth:
+  secret: ${AUGGY_AUTH_SECRET}
+  keyId: ${AUGGY_AUTH_KEY_ID}
+  audience: ${AUGGY_AUTH_AUDIENCE}
+  allowedProviders: [company-session-provider]
+  maxTtlSeconds: 60
+  replayProtection:
+    enabled: true
+    dbPath: ./data/external-auth-replay.sqlite
+```
+
+Set an explicit `AUGGY_DATA_DIR` to an existing private directory owned by the
+runtime user with mode `0700`, or use the admitted Railway volume. Managed replay
+requires the managed application host and its storage admission; a plain
+programmatic transport without that host cannot open this store. Missing admission,
+an unsafe path, an absent positive maximum TTL, or `dbPath` combined with `store`
+fails startup. See [storage setup](./16-storage-layout.md#explicit-runtime-data-root).
+
+Every new assertion needs a unique `jti`. The managed database atomically consumes
+`audience + jti`, across transports sharing that database and across process
+replacement. Changing a signing key ID does not make a consumed `jti` reusable.
+Only expired claims are pruned; capacity (100,000 unexpired claims), storage and
+clock failures fail closed instead of evicting still-valid claims or falling back
+to anonymous authority. Invalid assertions and reuse for a new execution receive
+authentication failure; managed storage or restore-hold unavailability returns `503 external_auth_unavailable`
+with bounded retry information.
+
+An assertion authenticates a request; an `Idempotency-Key` identifies an operation.
+Retry the original operation with the **same operation key and a fresh assertion**.
+Request a fresh assertion on every delivery attempt instead of caching it as a
+login session. Authentication and the
+managed replay guard are checked before a completed operation response can be
+returned. The run ledger also checks the current identity, authorization and request
+binding; changed grants cannot retrieve an unauthorized earlier response. The
+external assertion is consumed after the existing operation classification, so a
+permitted follower or saved response does not become a second business effect.
+
+The replay database is part of the offline runtime-volume backup. Its local
+`.auggy-auth-replay-guard.json` control file is excluded from backup payload.
+Auggy restore creates a destination restore epoch before copying state. After
+operator reconciliation, external assertions remain unavailable until
+`restoredAt + current maxTtlSeconds + 30 seconds`. The epoch survives restart and
+successful use; increasing the TTL can reopen the hold. A backwards wall clock
+fails closed. This relies on trusted synchronized destination time and covers
+Auggy's restore protocol; a raw volume snapshot that also rolls back the guard
+requires the separate recovery/old-key-removal procedure in
+[Runtime State Recovery](./27-runtime-state-recovery.md#external-assertion-replay-after-restore).
+
+Programmatic applications may instead supply their own atomic replay store:
 
 ```ts
 const web = webTransport({
-  // ...
+  // ... agent-side transport options
   externalAuth: {
     secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
     audience: "storefront-agent",
+    maxTtlSeconds: 60,
     replayProtection: {
       enabled: true,
       store: {
         async consume(jti, expiresAt, now) {
           const ttlMs = Math.max(0, expiresAt - now);
-          // Atomically SET jti if absent with ttlMs. Return false when present.
-          return redisSetOnce(`auggy:external-auth:jti:${jti}`, "1", ttlMs);
+          // Atomically set this audience's jti if absent; false means already used.
+          return redisSetOnce(`auggy:storefront-agent:jti:${jti}`, "1", ttlMs);
         },
       },
     },
@@ -118,16 +170,15 @@ const web = webTransport({
 });
 ```
 
-Replay stores must be atomic and keyed by `jti`. They should retain each key no
-longer than the assertion expiry (`expiresAt - now`), and they should be shared
-by every Auggy process that accepts the same external auth audience and secrets.
-For explicitly single-process local development, callers may deliberately pass
-`createInMemoryExternalAuthReplayStore()`. Do not use it in a multi-process,
-restart-sensitive, or horizontally scaled deployment.
+Such a store remains caller-owned, including its lifetime, persistence and recovery
+contract. `createInMemoryExternalAuthReplayStore()` is an explicit development
+choice with no restart protection. A shared replay store alone does not make
+horizontal Auggy replicas supported; the supported runtime topology remains one
+replica with its own state. Never accept requests against two active copies of
+one logical agent merely because they share assertion signing material.
 
-For `/agent/run`, a valid external auth assertion admits the request as
-`public` + `recognized` even when `allowAnonymous` is `false`. That keeps normal
-app-login chat separate from public anonymous chat.
+For `/agent/run`, a valid external assertion admits `public` / `recognized` even
+when `allowAnonymous` is `false`. App-login chat does not require anonymous access.
 
 ## Mint Assertions
 
@@ -135,7 +186,7 @@ The app backend owns session verification and authorization calculation. After
 that, it signs an Auggy assertion:
 
 ```ts
-import { createExternalAuthAssertion } from "auggy";
+import { createExternalAuthAssertion } from "auggy/auth";
 
 export async function mintAuggyAssertionForUser(user: {
   id: string;
@@ -168,8 +219,9 @@ Keep assertions short-lived. The app can mint a fresh assertion when the
 browser needs to call Auggy. Do not put `AUGGY_EXTERNAL_AUTH_SECRET` in browser
 code.
 
-`createExternalAuthAssertion` is the supported server-side helper for this
-contract. The app chooses the assertion `audience` to match the Auggy agent,
+`auggy/auth` is the pure server-side signing and verification entrypoint for
+Node.js or Bun application backends. It does not import the agent runtime or
+Bun SQLite. `createExternalAuthAssertion` is the supported helper for this contract. The app chooses the assertion `audience` to match the Auggy agent,
 sets `provider` to the app identity source (`"supabase"`, `"clerk"`, or a
 custom provider name), sets `keyId` when using rotation, and uses short TTLs.
 Auggy verifies the signature, key id, audience, provider allowlist, expiry, and
@@ -201,7 +253,7 @@ protection.
 ```ts
 // app/api/auggy-auth-assertion/route.ts
 import { createClient } from "@supabase/supabase-js";
-import { createExternalAuthAssertion, type AuthorizationGrant } from "auggy";
+import { createExternalAuthAssertion, type AuthorizationGrant } from "auggy/auth";
 import { assertionJson, assertionMethodNotAllowed } from "./assertion-response";
 
 const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
@@ -275,7 +327,7 @@ Supabase session and app roles go into `appPolicy`; only the derived
 ```ts
 // app/api/auggy-auth-assertion/route.ts
 import { auth, currentUser } from "@clerk/nextjs/server";
-import { createExternalAuthAssertion, type AuthorizationGrant } from "auggy";
+import { createExternalAuthAssertion, type AuthorizationGrant } from "auggy/auth";
 import {
   assertionJson,
   assertionMethodNotAllowed,
@@ -640,8 +692,9 @@ and audit attribution are future multi-operator/team auth work.
   assertions with a new `keyId`, keep the previous key in
   `externalAuth.secrets` until its assertions expire, then remove it.
 - Enable replay protection for high-risk routes, tool-enabled app sessions, or
-  any deployment where a captured assertion should not be usable twice. Use a
-  shared atomic store when more than one Auggy process can receive assertions.
+  any deployment where a captured assertion should not be usable twice. Use
+  managed durable replay on the supported single-replica runtime, or supply a
+  caller-owned store with an explicit persistence and recovery contract.
 - Do not put app RBAC policy, broad role interpretation, or provider secrets in
   Auggy route handlers.
 - Do not let the model decide whether a user is authorized.
@@ -663,8 +716,8 @@ and audit attribution are future multi-operator/team auth work.
   previous key in `externalAuth.secrets` until old assertions expire.
 - **Replay protection:** Enable `externalAuth.replayProtection` for
   tool-enabled sessions and high-risk routes. Mint a fresh assertion per Auggy
-  request when replay protection is enabled, and use a shared atomic store
-  outside single-process local deployments.
+  request while retaining the operation key on a delivery retry. Include managed
+  replay state in offline backups and rehearse the restore guard.
 - **Audit:** Register `onDelegatedAuthorizationDenied` when denied route/tool
   attempts need to land in app logs or security telemetry.
 - **Client boundary:** Generate a browser client for public/visitor routes and

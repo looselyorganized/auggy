@@ -17,6 +17,7 @@ mock.module("@inquirer/prompts", () => ({
     return confirmAnswer;
   },
   input: async () => "",
+  password: async () => "",
   select: async (config: { choices?: Array<{ value: unknown }> }) => config.choices?.[0]?.value,
 }));
 
@@ -323,6 +324,8 @@ describe("runRemove", () => {
     setCloud(
       "zip",
       {
+        version: 1,
+        agentId: IMMUTABLE_ID,
         provider: "railway",
         projectId: "proj_abc",
         serviceId: "svc_def",
@@ -358,6 +361,12 @@ describe("runRemove", () => {
       async createService() {},
       async setVariable() {},
       async up() {},
+      async inspectVolume() {
+        throw new Error("Removal must not inspect or mutate volumes");
+      },
+      async inspectIngress() {
+        throw new Error("Removal must not inspect or mutate ingress");
+      },
       async generateDomain() {
         return "https://x";
       },
@@ -386,6 +395,8 @@ describe("runRemove", () => {
     setCloud(
       "zip",
       {
+        version: 1,
+        agentId: IMMUTABLE_ID,
         provider: "railway",
         projectId: "proj_abc",
         serviceId: "svc_def",
@@ -422,6 +433,12 @@ describe("runRemove", () => {
       async createService() {},
       async setVariable() {},
       async up() {},
+      async inspectVolume() {
+        throw new Error("Removal must not inspect or mutate volumes");
+      },
+      async inspectIngress() {
+        throw new Error("Removal must not inspect or mutate ingress");
+      },
       async generateDomain() {
         return "https://x";
       },
@@ -449,6 +466,8 @@ describe("runRemove", () => {
     setCloud(
       "zip",
       {
+        version: 1,
+        agentId: IMMUTABLE_ID,
         provider: "railway",
         projectId: "proj_abc",
         serviceId: "svc_def",
@@ -481,6 +500,12 @@ describe("runRemove", () => {
       async createService() {},
       async setVariable() {},
       async up() {},
+      async inspectVolume() {
+        throw new Error("Removal must not inspect or mutate volumes");
+      },
+      async inspectIngress() {
+        throw new Error("Removal must not inspect or mutate ingress");
+      },
       async generateDomain() {
         return "https://x";
       },
