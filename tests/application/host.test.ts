@@ -895,3 +895,325 @@ test("streaming HTTP response drains before shutdown of the route's augment reso
     await host.stop();
   }
 });
+
+test("phased assembly exposes frozen metadata and executes each configured stage before transport startup", async () => {
+  const events: string[] = [];
+  let turns = 0;
+  let kernel: import("../../src/types").TransportKernel | undefined;
+  const transport: Augment = {
+    name: "inbound",
+    onBoot: async () => {
+      events.push("boot");
+    },
+    onShutdown: async () => {
+      events.push("shutdown");
+    },
+    transport: {
+      identify: () => null,
+      register: async (bound) => {
+        kernel = bound;
+        events.push("register");
+      },
+      ready: async () => {
+        events.push("ready");
+      },
+    },
+  };
+  const f = fixture([transport]);
+  const model = createMockModel({ response: "phased response" });
+  const host = f.host({
+    compose: () => {
+      throw new Error("phased assembly must not invoke the adapter");
+    },
+    factories: {
+      resolveEngine: async () => {
+        events.push("model");
+        return model;
+      },
+      resolveAugments: async () => {
+        events.push("augments");
+        return [transport];
+      },
+    },
+  });
+  const config = await host.prepareConfiguration();
+  expect(Object.keys(config)).toEqual(["name", "engine", "augments"]);
+  expect(config).toMatchObject({
+    name: "host-test",
+    engine: { provider: "anthropic", model: "fixture" },
+  });
+  expect(Object.keys(config.augments[0]!)).toEqual(["name", "type"]);
+  for (const value of [config, config.engine, config.augments, config.augments[0]!])
+    expect(Object.isFrozen(value)).toBe(true);
+  expect(f.manifest()?.agentId).toBe(f.id);
+  expect(events).toEqual([]);
+  const managedModel = await host.createModel(config);
+  expect(Object.keys(managedModel)).toEqual(["provider", "model"]);
+  const augments = await host.createAugments(config);
+  expect(augments.names).toEqual(["inbound"]);
+  const agent = host.createAgent({
+    config,
+    model: managedModel,
+    augments,
+    turnProgram: {
+      ...contractTurnProgram,
+      run: async (turn) => {
+        turns++;
+        return contractTurnProgram.run(turn);
+      },
+    },
+  });
+  expect(Object.keys(agent)).toEqual(["name"]);
+  const transports = host.transportsFrom(augments);
+  expect(transports.map(({ name, kind }) => ({ name, kind }))).toEqual([
+    { name: "inbound", kind: "other" },
+  ]);
+  host.bindTransport(transports[0]!, agent);
+  expect(events).toEqual(["model", "augments"]);
+  expect(host.httpBindings(agent)).toEqual([]);
+  await host.start({ agent, http: [] });
+  expect(events).toEqual(["model", "augments", "boot", "register", "ready"]);
+  expect(kernel).toBeDefined();
+  expect(host.isReady).toBe(true);
+  const peer = {
+    id: "caller",
+    kind: "human",
+    trustLevel: "creator",
+    sourceAugment: "inbound",
+  } as const;
+  const result = await kernel!.handleInbound({
+    type: "message",
+    turnId: crypto.randomUUID(),
+    timestamp: Date.now(),
+    source: "inbound",
+    peer,
+    payload: {
+      parts: [{ kind: "text", text: "hello" }],
+      sourceAugment: "inbound",
+      peer,
+      timestamp: Date.now(),
+    },
+  });
+  expect(result.success).toBe(true);
+  expect(turns).toBe(1);
+  expect(model.calls).toHaveLength(1);
+  await host.stop();
+  expect(events.at(-1)).toBe("shutdown");
+  expect(f.manifest()).toBeNull();
+});
+
+test("phased assembly rejects repeated stages, copied handles and duplicate transport bindings", async () => {
+  const f = fixture([
+    { name: "transport", transport: { identify: () => null, register: async () => {} } },
+  ]);
+  const host = f.host();
+  const config = await host.prepareConfiguration();
+  await expect(host.prepareConfiguration()).rejects.toThrow(/one-shot/);
+  const model = await host.createModel(config);
+  await expect(host.createModel(config)).rejects.toThrow(/one-shot/);
+  const augments = await host.createAugments(config);
+  await expect(host.createAugments(config)).rejects.toThrow(/one-shot/);
+  const agent = host.createAgent({ config, model, augments, turnProgram: contractTurnProgram });
+  expect(() =>
+    host.createAgent({ config, model, augments, turnProgram: contractTurnProgram }),
+  ).toThrow(/one-shot/);
+  expect(() => host.transportsFrom({ ...augments })).toThrow(/foreign augment/);
+  const transports = host.transportsFrom(augments);
+  expect(() => host.transportsFrom(augments)).toThrow(/one-shot/);
+  expect(() => host.bindTransport({ ...transports[0]! }, agent)).toThrow(/foreign transport/);
+  expect(() => host.bindTransport(transports[0]!, { ...agent })).toThrow(/foreign agent/);
+  expect(() => host.httpBindings(agent)).toThrow(/bind every/);
+  host.bindTransport(transports[0]!, agent);
+  expect(() => host.bindTransport(transports[0]!, agent)).toThrow(/already bound/);
+  expect(() => host.httpBindings({ ...agent })).toThrow(/foreign agent/);
+  expect(host.httpBindings(agent)).toEqual([]);
+  expect(() => host.httpBindings(agent)).toThrow(/one-shot/);
+  await host.start({ agent, http: [] });
+  await host.stop();
+  expect(() => host.bindTransport(transports[0]!, agent)).toThrow(/shutdown/);
+  expect(() => host.httpBindings(agent)).toThrow(/shutdown/);
+  await expect(host.createAugments(config)).rejects.toThrow(/shutdown/);
+});
+
+test("phased assembly rejects missing transport selection before boot and cleans the full graph", async () => {
+  let boots = 0;
+  let closes = 0;
+  const f = fixture([
+    {
+      name: "unbound",
+      onBoot: async () => {
+        boots++;
+      },
+      onShutdown: async () => {
+        closes++;
+      },
+      transport: {
+        identify: () => null,
+        register: async () => {
+          throw new Error("must not register");
+        },
+      },
+    },
+  ]);
+  const host = f.host();
+  const config = await host.prepareConfiguration();
+  const model = await host.createModel(config);
+  const augments = await host.createAugments(config);
+  const agent = host.createAgent({ config, model, augments, turnProgram: contractTurnProgram });
+  host.transportsFrom(augments);
+  await expect(host.start({ agent, http: [] })).rejects.toThrow(/must be bound/);
+  expect(await host.stop()).toMatchObject({ status: "stopped" });
+  expect(boots).toBe(0);
+  expect(closes).toBe(1);
+});
+
+for (const foreign of ["configuration", "model", "augments", "agent"] as const) {
+  test(`phased assembly rejects a foreign ${foreign} handle and releases owned resources`, async () => {
+    const host = fixture().host();
+    const config = await host.prepareConfiguration();
+    if (foreign === "configuration") {
+      await expect(host.createModel({ ...config })).rejects.toThrow(/foreign configuration/);
+    } else {
+      const model = await host.createModel(config);
+      const augments = await host.createAugments(config);
+      if (foreign === "model" || foreign === "augments") {
+        expect(() =>
+          host.createAgent({
+            config,
+            model: foreign === "model" ? { ...model } : model,
+            augments: foreign === "augments" ? { ...augments } : augments,
+            turnProgram: contractTurnProgram,
+          }),
+        ).toThrow(/foreign/);
+      } else {
+        const agent = host.createAgent({
+          config,
+          model,
+          augments,
+          turnProgram: contractTurnProgram,
+        });
+        host.transportsFrom(augments);
+        await expect(host.start({ agent: { ...agent }, http: [] })).rejects.toThrow(
+          /foreign agent/,
+        );
+      }
+    }
+    expect(await host.stop()).toMatchObject({ status: "stopped", ownership: "released" });
+  });
+}
+
+for (const during of ["configuration", "model", "augments", "agent"] as const) {
+  test(`phased shutdown after ${during} owns every allocation and permanently rejects assembly`, async () => {
+    let closes = 0;
+    const f = fixture([
+      {
+        name: "resource",
+        onShutdown: async () => {
+          closes++;
+        },
+      },
+    ]);
+    const host = f.host();
+    const config = await host.prepareConfiguration();
+    const model = during !== "configuration" ? await host.createModel(config) : undefined;
+    const augments =
+      during === "augments" || during === "agent" ? await host.createAugments(config) : undefined;
+    if (during === "agent")
+      host.createAgent({
+        config,
+        model: model!,
+        augments: augments!,
+        turnProgram: contractTurnProgram,
+      });
+    expect(await host.stop()).toMatchObject({ status: "stopped", cleanup: "complete" });
+    expect(closes).toBe(augments ? 1 : 0);
+    expect(f.manifest()).toBeNull();
+    await expect(host.createModel(config)).rejects.toThrow(/shutdown/);
+    await expect(host.createAugments(config)).rejects.toThrow(/shutdown/);
+  });
+}
+
+for (const factory of ["model", "augments"] as const) {
+  test(`phased shutdown joins an interrupted ${factory} factory before releasing claims`, async () => {
+    const entered = deferred();
+    const held = deferred();
+    let closes = 0;
+    const f = fixture();
+    const host = f.host({
+      factories: {
+        resolveEngine: async () => {
+          if (factory === "model") {
+            entered.resolve();
+            await held.promise;
+          }
+          return createMockModel();
+        },
+        resolveAugments: async () => {
+          entered.resolve();
+          await held.promise;
+          return [
+            {
+              name: "late",
+              onShutdown: async () => {
+                closes++;
+              },
+            },
+          ];
+        },
+      },
+    });
+    const config = await host.prepareConfiguration();
+    if (factory === "augments") await host.createModel(config);
+    const pending = (
+      factory === "model" ? host.createModel(config) : host.createAugments(config)
+    ).catch((error) => error);
+    await entered.promise;
+    expect(await host.stop({ deadlineMs: 5 })).toMatchObject({
+      status: "retained",
+      reason: "deadline",
+    });
+    expect(f.manifest()?.agentId).toBe(f.id);
+    held.resolve();
+    expect(await pending).toBeInstanceOf(Error);
+    expect(await host.stop()).toMatchObject({ status: "stopped" });
+    expect(closes).toBe(factory === "augments" ? 1 : 0);
+    expect(f.manifest()).toBeNull();
+  });
+}
+
+test("a rejecting augment factory without rollback evidence retains runtime ownership", async () => {
+  const f = fixture();
+  const host = f.host({
+    factories: {
+      resolveEngine: async () => createMockModel(),
+      resolveAugments: async () => {
+        throw new Error("unreported partial construction");
+      },
+    },
+  });
+  const config = await host.prepareConfiguration();
+  await host.createModel(config);
+  await expect(host.createAugments(config)).rejects.toThrow(/unreported/);
+  expect(await host.stop()).toMatchObject({ status: "retained", reason: "outcome-unknown" });
+  expect(f.manifest()?.agentId).toBe(f.id);
+});
+
+test("shutdown before an asynchronous stage enters prevents its factory acquisition", async () => {
+  let calls = 0;
+  const f = fixture();
+  const host = f.host({
+    factories: {
+      resolveEngine: async () => {
+        calls++;
+        return createMockModel();
+      },
+    },
+  });
+  const config = await host.prepareConfiguration();
+  const model = host.createModel(config).catch((error) => error);
+  const stopping = host.stop();
+  expect(await model).toBeInstanceOf(Error);
+  expect(await stopping).toMatchObject({ status: "stopped" });
+  expect(calls).toBe(0);
+  expect(f.manifest()).toBeNull();
+});

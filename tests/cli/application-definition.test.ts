@@ -84,11 +84,18 @@ describe("application declaration preflight", () => {
       [],
       "src/index.ts",
       {},
-      { ...declaration, contractVersion: 2 },
+      { ...declaration, contractVersion: 3 },
     ]) {
       writeFileSync(configPath, stringify({ ...baseConfig, application }));
       expect(() => readApplicationDefinition(configPath)).toThrow(/application/);
     }
+  });
+
+  test("contract 2 metadata is supported without importing application code", () => {
+    const application = { ...declaration, contractVersion: 2 } as const;
+    writeFileSync(configPath, stringify({ ...baseConfig, application }));
+    expect(readApplicationDefinition(configPath)!.application).toEqual(application);
+    expect(parseConfig(configPath).application).toEqual(application);
   });
 
   test("full parser retains the same opt-in declaration and existing legacy fields", () => {

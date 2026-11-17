@@ -194,8 +194,9 @@ export function createHostedAgent(
   config: AgentConfig,
   model: ModelClient,
   execution: AgentExecutionOptions,
+  options?: { explicitTransportBindings?: boolean },
 ): HostedAgentInstance {
-  return createAgentInstance(config, model, execution, true);
+  return createAgentInstance(config, model, execution, true, options);
 }
 
 function createAgentInstance(
@@ -203,7 +204,10 @@ function createAgentInstance(
   model: ModelClient,
   execution: AgentExecutionOptions | undefined,
   hostedMode: boolean,
+  options?: { explicitTransportBindings?: boolean },
 ): HostedAgentInstance {
+  const selectedTransports = new Set<Augment>();
+  let registrationStarted = false;
   let hostAdmission: "pending" | "open" | "closed" = hostedMode ? "pending" : "open";
   const hostWaiters = new Set<(admitted: boolean) => void>();
   const pendingTurnOperations = new Set<Promise<TurnResult>>();
@@ -988,7 +992,20 @@ function createAgentInstance(
           // Register every transport before any transport is allowed to start
           // listeners. This closes the startup window where early inbound data
           // could arrive without a kernel handle.
-          for (const aug of effectiveAugments) {
+          registrationStarted = true;
+          const transportAugments = options?.explicitTransportBindings
+            ? effectiveAugments.filter((augment) => selectedTransports.has(augment))
+            : effectiveAugments;
+          if (
+            options?.explicitTransportBindings &&
+            transportAugments.length !==
+              effectiveAugments.filter((augment) => augment.transport).length
+          ) {
+            throw new Error(
+              "[application] every configured transport must be bound before startup",
+            );
+          }
+          for (const aug of transportAugments) {
             assertStartupAllowed();
             if (aug.transport) {
               const sourcePolicy: SchedulerSourcePolicy = {
@@ -1182,6 +1199,19 @@ function createAgentInstance(
 
   return Object.freeze({
     agent: handle,
+    bindTransport(augment: Augment) {
+      assertStartupAllowed();
+      if (!hostedMode || started || registrationStarted || hostAdmission !== "pending")
+        throw new Error("[application] transport binding is closed");
+      const effective = effectiveAugments.find(
+        (candidate) => candidate.transport === augment.transport && candidate.name === augment.name,
+      );
+      if (!config.augments.includes(augment) || !augment.transport || !effective)
+        throw new Error("[application] foreign transport augment");
+      if (selectedTransports.has(effective))
+        throw new Error("[application] transport already bound");
+      selectedTransports.add(effective);
+    },
     openAdmission() {
       if (!hostedMode || !started || hostAdmission !== "pending")
         throw new Error("[application] host admission cannot open in this state");

@@ -162,7 +162,8 @@
     "schemaVersion": 1,
     "launcherProtocol": 1,
     "applicationContracts": [
-      1
+      1,
+      2
     ]
   }
 }
