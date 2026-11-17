@@ -4,6 +4,7 @@ import {
   assertHostedExpiredAssertion,
   assertHostedHttpFixture,
   observeHostedHttpHold,
+  isFreshHostedHttpFixture,
 } from "../../scripts/release-smoke/hosted-http-recovery";
 import { createHostedHttpFixture } from "../../scripts/release-smoke/integration-fixtures/http-container/startup";
 import { parseHostedHttpSnapshot } from "../../scripts/release-smoke/integration-hosted-http";
@@ -109,6 +110,15 @@ test("restored and restarted real fixtures require checkpoint initialization bef
         signal: AbortSignal.timeout(2000),
       });
     try {
+      const waiting = {
+        generationId,
+        snapshot: await (await call({ operation: "snapshot" })).text(),
+      };
+      expect(isFreshHostedHttpFixture(waiting, generationId)).toBe(true);
+      expect(isFreshHostedHttpFixture(null, generationId)).toBe(false);
+      expect(() => isFreshHostedHttpFixture(waiting, "wrong-generation")).toThrow(
+        "generation changed",
+      );
       // Reproduce the hosted failure before using the corrected runner operation.
       const premature = await call({ operation: "seal" });
       expect(premature.status).toBe(400);
@@ -126,6 +136,12 @@ test("restored and restarted real fixtures require checkpoint initialization bef
           const snapshot = parseHostedHttpSnapshot(await current.text());
           expect(snapshot.state).toBe("active");
           expect(snapshot.initialEffects).toBe(1);
+          expect(() =>
+            isFreshHostedHttpFixture(
+              { generationId, snapshot: JSON.stringify(snapshot) },
+              generationId,
+            ),
+          ).toThrow("not a fresh waiting process");
           return { status: 503, retryAfter: "120", body: { error: "external_auth_unavailable" } };
         },
       });
@@ -135,6 +151,9 @@ test("restored and restarted real fixtures require checkpoint initialization bef
       expect(sealed.checkpoint.effects).toHaveLength(1);
       expect(sealed.domain.calls).toBe(0);
       expect(sealed.model.totalRequests).toBe(0);
+      expect(
+        isFreshHostedHttpFixture({ generationId, snapshot: held.sealedSnapshot }, generationId),
+      ).toBe(false);
     } finally {
       await peer.stop();
     }

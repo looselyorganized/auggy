@@ -42,6 +42,7 @@ import {
   assertHostedExpiredAssertion,
   assertHostedHttpFixture,
   observeHostedHttpHold,
+  isFreshHostedHttpFixture,
   HOSTED_HTTP_RESTORE_HOLD_MS,
   HOSTED_HTTP_EXPIRY_PROBE_TTL_SECONDS,
 } from "./hosted-http-recovery";
@@ -104,6 +105,7 @@ export function createHostedDriver(
         generationId: string;
         origin: string | null;
         sealedSHA256?: string;
+        previousQuiescenceTimestamp?: string;
         maintenance: boolean;
       }
     | undefined;
@@ -286,7 +288,10 @@ export function createHostedDriver(
         ? "auggy-hosted-http-fixtures:quiescent"
         : "auggy-telegram-container-fixtures:quiescent";
       const matching = logs.filter(
-        (l) => l.message === marker && l.tags.deploymentInstanceId === c.deployment.instanceId,
+        (l) =>
+          l.message === marker &&
+          l.tags.deploymentInstanceId === c.deployment.instanceId &&
+          l.timestamp !== c.previousQuiescenceTimestamp,
       );
       check(
         matching.length === 1 && c.sealedSHA256,
@@ -483,19 +488,34 @@ export function createHostedDriver(
         const after = await provider().restart(
           active.service,
           before,
+          async (deployment, deadline) => {
+            const control = createScenarioControl(ctx, deployment, active.consumer);
+            const snapshot = await control(
+              "http-control",
+              { operation: "snapshot" },
+              { snapshotDeadline: deadline },
+            );
+            const fresh = isFreshHostedHttpFixture(snapshot, active.generationId);
+            if (fresh)
+              ctx.save("http-restart-fresh.json", { deployment, snapshot, freshProcess: true });
+            return fresh;
+          },
           Math.min(60000, until - Date.now() - 5000),
         );
         const logs = await provider().logs(before);
+        const priorQuiescence = logs.filter(
+          (l) =>
+            l.tags.deploymentInstanceId === before.instanceId &&
+            l.message === "auggy-hosted-http-fixtures:quiescent",
+        );
         check(
           !logs.some((l) => /activity-deadline-exceeded|lifetime-expired/.test(l.message)) &&
-            logs.filter(
-              (l) =>
-                l.tags.deploymentInstanceId === before.instanceId &&
-                l.message === "auggy-hosted-http-fixtures:quiescent",
-            ).length === 1,
+            priorQuiescence.length === 1,
           "Pre-restart instance did not quiesce cleanly",
         );
         active.deployment = after;
+        active.previousQuiescenceTimestamp =
+          before.instanceId === after.instanceId ? priorQuiescence[0]!.timestamp : undefined;
         active.sealedSHA256 = undefined;
         check(
           active.origin && Date.now() + 5000 < until,
@@ -515,6 +535,8 @@ export function createHostedDriver(
           restartedHeld: restartedHold.held,
           holdUntilMs: until,
           rebuild: false,
+          freshProcess: true,
+          previousQuiescenceTimestamp: active.previousQuiescenceTimestamp,
         });
         active.sealedSHA256 = hash(restartedHold.sealedSnapshot);
         await stopCurrent();

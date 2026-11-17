@@ -67,6 +67,26 @@ export function assertHostedExpiredAssertion(response: HostedAuthResponse) {
     .parse(response.body);
 }
 
+/** Provider RUNNING/instance identity alone cannot distinguish a stale process. */
+export function isFreshHostedHttpFixture(result: unknown, generationId: string) {
+  if (result === null) return false;
+  const value = z.object({ generationId: z.string(), snapshot: z.string() }).parse(result);
+  check(value.generationId === generationId, "Restart fixture generation changed");
+  const snapshot = parseHostedHttpSnapshot(value.snapshot);
+  if (snapshot.state === "sealed") return false;
+  check(
+    snapshot.state === "waiting" &&
+      snapshot.initializedFrom === null &&
+      snapshot.initialEffects === 0 &&
+      snapshot.checkpoint.effects.length === 0 &&
+      snapshot.domain.calls === 0 &&
+      snapshot.model.totalRequests === 0 &&
+      snapshot.model.generation === 0,
+    "Restart fixture is not a fresh waiting process",
+  );
+  return true;
+}
+
 /** Every fresh process needs its downstream checkpoint before probing and sealing. */
 export async function observeHostedHttpHold(options: {
   control: (input: HostedHttpControl) => Promise<unknown>;

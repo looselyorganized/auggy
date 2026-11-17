@@ -231,5 +231,24 @@ fresh process: observe the fixture reset from its sealed state to waiting, then
 successfully initialize it and observe the hold. Keep exact deployment/image,
 singleton, deadline and quiescence checks. Do not accept an unchanged RUNNING API
 readback alone, extend the timeout, or add a product endpoint/boot-ID interface.
-This readiness correction remains unimplemented. All 28 CI checks passed on
+All 28 CI checks passed on
 the test-only follow-up `32cdb854`; that does not close hosted recovery acceptance.
+
+### Fresh-process readiness correction
+
+The authorized correction keeps one 60-second deadline across the restart request,
+provider reads and controller observations. Stable or changed instance IDs may
+bind the same deployment/image, but RUNNING alone cannot pass. The controller
+must report the expected generation in an empty, uninitialized `waiting` state
+after the previously sealed process. A sealed snapshot remains pending; wrong
+generation, malformed evidence and unexpected active state fail. Only bounded,
+fully reaped SSH exit255 with empty stdout may be pending for a read-only snapshot;
+mutating commands are never repeated. Reinitialization and the actual hold probe
+must then pass. The old observed quiescence timestamp is excluded from the later
+stop proof if the provider retains its instance ID; a new quiescence event and
+sealed receipt are still required.
+
+Focused local verification passed 36 tests / 542 assertions, typecheck and lint.
+No runtime source, volume behavior, authentication timing or fixture schema
+changed. Require corrective-source CI, then one isolated `recovery-http` attempt
+with verified cleanup; retain the result without an automatic retry.

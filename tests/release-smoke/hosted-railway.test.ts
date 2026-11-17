@@ -31,7 +31,7 @@ test("generated resource names fit Railway's project-name limit before allocatio
   expect(hostedResourceName(id(1)).length).toBeLessThanOrEqual(32);
   expect(() => hostedResourceName("unvalidated-project-name")).toThrow();
 });
-function fixture(fail?: "unknown-service" | "foreign-volume") {
+function fixture(fail?: "unknown-service" | "foreign-volume", stableInstance = false) {
   const base = mkdtempSync(join(realpathSync(tmpdir()), "m5-provider-test-"));
   roots.push(base);
   const env = join(base, "fixture.env");
@@ -72,10 +72,12 @@ function fixture(fail?: "unknown-service" | "foreign-volume") {
       if (!currentDeployment) throw Error("No restart source");
       currentDeployment = {
         ...currentDeployment,
-        instances: [
-          { id: id(41), status: "STOPPED" },
-          { id: id(42), status: "RUNNING" },
-        ],
+        instances: stableInstance
+          ? [{ id: id(41), status: "RUNNING" }]
+          : [
+              { id: id(41), status: "STOPPED" },
+              { id: id(42), status: "RUNNING" },
+            ],
       };
       return { exitCode: 0, stdout: JSON.stringify({ id: currentDeployment.id }) } as Awaited<
         ReturnType<HostedContext["command"]>
@@ -331,30 +333,56 @@ test("foreign attachment blocks destructive cleanup and does not bypass through 
   expect(calls).not.toContain("HostedProjectDelete");
 });
 
-test("restart uses exact service/environment and verifies a new instance of the same image", async () => {
-  const f = fixture();
+test.each([false, true])(
+  "restart requires fresh-process evidence with stable instance ID: %s",
+  async (stable) => {
+    const f = fixture(undefined, stable);
+    await f.provider.allocate(false);
+    const previous = f.running();
+    let observed = 0;
+    const result = await f.provider.restart(
+      f.provider.service(),
+      previous,
+      async (bound, deadline) => {
+        expect(bound.imageDigest).toBe(previous.imageDigest);
+        expect(deadline).toBeGreaterThan(performance.now());
+        observed++;
+        return !stable || observed > 1;
+      },
+    );
+    expect(observed).toBe(stable ? 2 : 1);
+    expect(result.instanceId).toBe(id(stable ? 41 : 42));
+    expect(result.imageDigest).toBe(previous.imageDigest);
+    expect(f.restartCommands).toEqual([
+      [
+        "/mock/railway",
+        "restart",
+        "--project",
+        id(2),
+        "--environment",
+        id(3),
+        "--service",
+        id(10),
+        "--yes",
+        "--json",
+      ],
+    ]);
+  },
+  10000,
+);
+
+test("failed fresh-process evidence cannot pass or repeat the restart mutation", async () => {
+  const f = fixture(undefined, true);
   await f.provider.allocate(false);
-  const previous = f.running();
-  const result = await f.provider.restart(f.provider.service(), previous);
-  expect(result.instanceId).toBe(id(42));
-  expect(result.imageDigest).toBe(previous.imageDigest);
-  expect(f.restartCommands).toEqual([
-    [
-      "/mock/railway",
-      "restart",
-      "--project",
-      id(2),
-      "--environment",
-      id(3),
-      "--service",
-      id(10),
-      "--yes",
-      "--json",
-    ],
-  ]);
+  await expect(
+    f.provider.restart(f.provider.service(), f.running(), async () => {
+      throw Error("Invalid fresh-process evidence");
+    }),
+  ).rejects.toThrow("Invalid fresh-process evidence");
+  expect(f.restartCommands).toHaveLength(1);
 });
 
-test("restart readback cannot accept a rebuild, foreign target or the unchanged instance", () => {
+test("restart API binding permits stable IDs but refuses rebuilds and foreign targets", () => {
   const previous: ScenarioDeployment = {
     id: id(40),
     projectId: id(2),
@@ -379,8 +407,9 @@ test("restart readback cannot accept a rebuild, foreign target or the unchanged 
   };
   expect(bindScenarioRestart(previous, next)?.instanceId).toBe(id(42));
   expect(
-    bindScenarioRestart(previous, { ...next, instances: [{ id: id(41), status: "RUNNING" }] }),
-  ).toBeNull();
+    bindScenarioRestart(previous, { ...next, instances: [{ id: id(41), status: "RUNNING" }] })
+      ?.instanceId,
+  ).toBe(id(41));
   expect(() =>
     bindScenarioRestart(previous, { ...next, meta: { imageDigest: `sha256:${"b".repeat(64)}` } }),
   ).toThrow("image");

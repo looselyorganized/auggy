@@ -84,8 +84,22 @@ export function createScenarioControl(
   };
   let count = 0,
     failed = false;
-  return async (commandId: string, payload: Record<string, unknown>) => {
+  return async (
+    commandId: string,
+    payload: Record<string, unknown>,
+    options: { snapshotDeadline?: number } = {},
+  ) => {
     check(!failed && count < 32, "Remote phase consumed or exceeded its command limit");
+    const deadline = options.snapshotDeadline;
+    if (deadline !== undefined)
+      check(
+        commandId === "http-control" &&
+          payload.operation === "snapshot" &&
+          Object.keys(payload).length === 1 &&
+          Number.isFinite(deadline) &&
+          deadline > performance.now() + 5000,
+        "Bounded readiness requires a read-only snapshot and remaining time",
+      );
     const def = registry.commands.find((c) => c.commandId === commandId);
     check(def, "Unknown fixture command");
     const requestId = `scenario-${++count}-${randomUUID()}`;
@@ -102,9 +116,14 @@ export function createScenarioControl(
     try {
       const result = await ctx.command(`remote-${commandId}`, prepared.command, {
         input,
-        timeoutMs: 60000,
+        timeoutMs:
+          deadline === undefined ? 60000 : Math.min(15000, deadline - performance.now() - 5000),
         allowFailure: true,
       });
+      // A fully reaped SSH disconnect during restart is pending only for this read.
+      // Commands, malformed receipts and remote operation failures remain fatal.
+      if (deadline !== undefined && result.exitCode === 255 && result.stdout.trim() === "")
+        return null;
       const receipt = receiptSchema.parse(JSON.parse(result.stdout));
       // Validate decoded content before allowing it to influence assertions or returned evidence.
       const decoded = JSON.stringify(receipt);

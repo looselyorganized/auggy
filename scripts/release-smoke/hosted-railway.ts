@@ -58,8 +58,7 @@ export function bindScenarioRestart(
     next.deploymentStopped ||
     next.status !== "SUCCESS" ||
     active.length !== 1 ||
-    active[0]!.status !== "RUNNING" ||
-    active[0]!.id === previous.instanceId
+    active[0]!.status !== "RUNNING"
   )
     return null;
   check(next.meta?.imageDigest === previous.imageDigest, "Restart image identity is unavailable");
@@ -488,6 +487,7 @@ export function createScenarioRailway(
     async restart(
       s: ScenarioService,
       previous: ScenarioDeployment,
+      observeFreshProcess: (deployment: ScenarioDeployment, deadline: number) => Promise<boolean>,
       maximumMs = 60000,
     ): Promise<ScenarioDeployment> {
       assertService(s);
@@ -501,6 +501,7 @@ export function createScenarioRailway(
         Number.isFinite(maximumMs) && maximumMs >= 15000 && maximumMs <= 60000,
         "Insufficient bounded time for a no-rebuild restart",
       );
+      const until = performance.now() + maximumMs;
       const before = await deployment(s);
       check(
         before?.id === previous.id &&
@@ -508,7 +509,6 @@ export function createScenarioRailway(
           before.instances.some((i) => i.id === previous.instanceId && i.status === "RUNNING"),
         "Restart source is no longer the observed running instance",
       );
-      const until = performance.now() + maximumMs;
       const requested = await ctx.command(
         "deployment-restart",
         [
@@ -523,7 +523,7 @@ export function createScenarioRailway(
           "--yes",
           "--json",
         ],
-        { timeoutMs: maximumMs },
+        { timeoutMs: Math.max(1, until - performance.now()) },
       );
       check(
         z.object({ id: z.string().uuid() }).parse(JSON.parse(requested.stdout)).id === previous.id,
@@ -534,13 +534,23 @@ export function createScenarioRailway(
         async () => {
           const next = await deployment(s);
           check(next, "Restart deployment missing");
-          return bindScenarioRestart(previous, next);
+          const bound = bindScenarioRestart(previous, next);
+          return bound &&
+            performance.now() + 5000 < until &&
+            (await observeFreshProcess(bound, until))
+            ? bound
+            : null;
         },
         (value) => value !== null,
         Math.max(1, until - performance.now()),
       );
-      check(observed, "Restart did not produce a new running instance");
-      ctx.save(`restart-${++sequence}.json`, { previous, observed, rebuild: false });
+      check(observed, "Restart did not produce a fresh running process");
+      ctx.save(`restart-${++sequence}.json`, {
+        previous,
+        observed,
+        rebuild: false,
+        freshProcess: true,
+      });
       return observed;
     },
     async stop(s: ScenarioService) {
