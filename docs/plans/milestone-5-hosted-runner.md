@@ -1,0 +1,126 @@
+# M5 hosted scenario runner
+
+User decision: replace the private monolithic rehearsal with a smaller tracked
+runner while preserving the required assertions. This supersedes the private
+executor/controller/generated-CLI-guard implementation, not M5's acceptance scope.
+
+## Execution
+
+```sh
+# Local package verification and export only; no Railway calls or login required.
+bun scripts/release-smoke/hosted-runner.ts \
+  --scenario polling --input /absolute/fixture-input.json --out /private/tmp/new-preflight
+
+# One authorized isolated hosted scenario; always attempts owned-resource cleanup.
+bun scripts/release-smoke/hosted-runner.ts \
+  --scenario polling --input /absolute/fixture-input.json --out /private/tmp/new-run --execute
+```
+
+Select `http`, `polling`, `recovery-http` or `recovery-polling`. There is no coupled
+`all` scenario. A consumed output directory is never reused. Results from separate
+scenarios remain independent and identify their selected runtime package digests.
+Provider effects require `--execute` and the operator's authorized task context;
+credentials alone are not approval. Existing one-hour execution ceiling, ten-minute
+cleanup reserve, owned resource caps and $5 monitored target remain ceilings.
+For a batch, keep the sum of actual execution time/spend inside the authorized
+batch allowance; a new scenario is not permission to reset exhausted budgets.
+
+Inputs describe existing test-only consumers prepared by the installed-CLI
+integration fixtures, not an ordinary customer's project:
+
+```json
+{
+  "version": 1,
+  "workspaceId": "00000000-0000-4000-8000-000000000001",
+  "revision": "0000000000000000000000000000000000000000",
+  "baselineConsumer": "/absolute/http-baseline/consumer",
+  "editedConsumer": "/absolute/http-edited/consumer",
+  "maintenanceConsumer": "/absolute/http-maintenance/consumer",
+  "environmentFile": "/private/fixture.env",
+  "knownHostsFile": "/private/known_hosts",
+  "packages": [
+    { "name": "auggy", "path": "/absolute/core.tgz", "sha256": "0000000000000000000000000000000000000000000000000000000000000000" },
+    { "name": "@auggy/anthropic", "path": "/absolute/provider.tgz", "sha256": "0000000000000000000000000000000000000000000000000000000000000000" }
+  ],
+  "maxSeconds": 1200
+}
+```
+
+The revision identifies the selected unpublished runtime candidate. The runner
+checks package hashes and installed package source against those archives once
+during preparation. It copies consumers into its own private work directory and
+uses the actual installed CLI's exporter. It does not recursively re-attest every
+transitive dependency, rewrite locks, build approval closures or synthesize the
+managed deployment manifest. Baseline/edited/restored variants retain agent ID.
+Only the known loopback provider fixture model is admitted.
+
+The fixture environment and SSH trust pin stay private. Hosted execution copies
+the existing native Railway identity into a private HOME with no project links,
+registers a fresh workspace SSH key, creates a new private project and never
+selects an existing application project. Native key files and copied dependency
+trees are removed when remote cleanup succeeds. Failed cleanup retains the private
+recovery inputs and reports it explicitly. Readable redacted evidence remains.
+
+## Ownership and failure policy
+
+- Lifecycle rows allocate one service/volume; recovery allocates original and
+  recovery services/volumes for one channel. Workloads run sequentially.
+- Existing provider schemas validate responses. Placement, one replica, `NEVER`
+  restart policy, disabled sleep, 4 vCPU/4 GB and the observed 50000 MB volume
+  default are checked. The default is capacity, not proof of used disk space.
+- Volume creation is observed to strict attachment within a bounded wait. Pending
+  state is never permission to deploy. Failed creation is not repeated or adopted
+  by name. Uncertain mutations remain visible even if parent cleanup succeeds.
+- Deletion requires the exact created project/service/volume IDs and a fresh
+  complete inventory; foreign attachments block destructive parent cleanup.
+- Installed `auggy deploy` is invoked directly. Its platform/HTTP readiness must
+  be ready/not-applicable as appropriate. Saved target and actual provider domain
+  readbacks must agree; polling must have no public domains.
+- Exact-instance SSH uses the existing pinned-host arguments and bounded remote
+  command envelope. Receipts bind request/input/source identity. Failed commands
+  retain their bounded redacted output before being rejected; they are not retried.
+- Every scenario stops and checks fixture quiescence and exact stopped instance.
+  Railway does not provide an application exit code; the runner does not invent one.
+- `finally` runs cleanup after partial allocation or assertion failure. Execution
+  and cleanup outcomes are separate. Logs are captured before deletion where
+  available; log capture failure is recorded without preventing resource cleanup.
+
+## Coverage
+
+HTTP: authenticated streaming/tool operation, zero duplicate/unauthorized effects,
+owned-source change, state continuity and completed response replay after replacement.
+Polling: actual fixture adapter/model/tool/reply, identity denial, no ingress,
+source change, duplicate protection after replacement and quiescent stop.
+
+HTTP recovery backs up before the newer downstream effect, restores onto a fresh
+owned destination and reconciles that newer effect without replaying it. It checks
+the auth hold across restart, no work during hold, real expiry while stopped,
+expired assertion rejection and completed replay/new work after the hold.
+Polling recovery backs up after confirmed updates 1/2/3, restores the exact replay
+namespace and verifies duplicate 1 produces no work while new update 4 does.
+
+The recovery fixture accepts `+` in ordinary contained bundle paths. Its explicit
+fresh-destination operation may remove only a sole empty owned `lost+found`
+directory; nonempty content, links and unrelated entries are refused. This is
+offline test preparation. Runtime startup preserves populated volumes, and the
+public restore command still requires an empty destination. No product command
+or storage layout has been added by this harness replacement.
+
+## Implementation and verification gates
+
+1. `hosted-runner.ts`: argument handling, local-only default and final result.
+2. `hosted-scenarios.ts`: readable lifecycle ordering and unconditional cleanup.
+3. `hosted-context.ts`: deadlines, bounded processes, private/redacted evidence.
+4. `hosted-railway.ts`: existing wire contracts plus owned allocation/readback/cleanup.
+5. `hosted-channels.ts` and `hosted-driver.ts`: reuse existing channel/recovery assertions.
+
+Before hosted use, require typecheck/lint, scenario-order/failure tests, actual
+failed-child redaction, stubbed provisioning/deletion/unknown-outcome/foreign-volume
+tests and real local exports. The Linux before/after reproduction additionally
+verifies the narrow backup and fresh-destination restore correction.
+
+First hosted use is the outstanding polling lifecycle, not another four-service
+experiment. Record its failure or success and cleanup once. A failure stops that
+row and gets a specific diagnosis before further hosted work. HTTP replacement
+and both recovery rows remain distinct required acceptance work. M5 closes only
+after those rows, integrated review, final CI and CodeQL findings disposition.

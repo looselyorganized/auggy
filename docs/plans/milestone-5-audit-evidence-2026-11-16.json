@@ -1,0 +1,254 @@
+{
+  "version": 1,
+  "recordedAt": "2026-11-17T03:25:24.628Z",
+  "scope": "Source-change and retained-evidence audit; no new hosted execution or runtime change",
+  "baseline": "c39b746b4b743e5c29dab61a677026c10626d8b8",
+  "candidate": "13bf80df4ead1bbf0b53ee0cc1b221df10868999",
+  "changedProductPaths": [
+    "src/application/host.ts",
+    "src/application/runtime-ownership.ts",
+    "src/auth/external-auth-replay-contracts.ts",
+    "src/auth/external-auth-replay-guard.ts",
+    "src/auth/external-auth-replay-path.ts",
+    "src/auth/external-auth-replay-store.ts",
+    "src/auth/index.ts",
+    "src/cli/agent-index.ts",
+    "src/cli/augment-resolver.ts",
+    "src/cli/cli-program.ts",
+    "src/cli/commands/console.ts",
+    "src/cli/commands/create.ts",
+    "src/cli/commands/deploy.ts",
+    "src/cli/commands/dev.ts",
+    "src/cli/commands/export.ts",
+    "src/cli/commands/jobs.ts",
+    "src/cli/commands/logs.ts",
+    "src/cli/commands/restart.ts",
+    "src/cli/commands/start.ts",
+    "src/cli/commands/state.ts",
+    "src/cli/config-parser.ts",
+    "src/cli/deploy/bundle.ts",
+    "src/cli/deploy/cloud-record.ts",
+    "src/cli/deploy/contracts.ts",
+    "src/cli/deploy/dockerfile.ts",
+    "src/cli/deploy/health.ts",
+    "src/cli/deploy/manifest.ts",
+    "src/cli/deploy/portable-dependencies.ts",
+    "src/cli/deploy/portable-export.ts",
+    "src/cli/deploy/profile.ts",
+    "src/cli/deploy/railway-cli.ts",
+    "src/cli/export-bootstrap.ts",
+    "src/cli/index.ts",
+    "src/cli/launch-command-options.ts",
+    "src/cli/pid-registry.ts",
+    "src/cli/plist-generator.ts",
+    "src/cli/runtime-state-bundle.ts",
+    "src/cli/runtime-state-inventory.ts",
+    "src/cli/runtime-state-sqlite-identities.ts",
+    "src/cli/runtime-volume.ts",
+    "src/cli/types.ts",
+    "src/lib/posix-at.ts",
+    "src/runtime-data-admission.ts",
+    "src/runtime-data-contracts.ts",
+    "src/scaffold-starter-skills/auggy/SKILL.md",
+    "src/scaffold-starter-skills/auggy/references/cli-workflows.md",
+    "src/scaffold-starter-skills/auggy/scripts/summarize-auggy-project.sh",
+    "src/scaffold-templates/application/README.md.template",
+    "src/transports/web-transport.ts"
+  ],
+  "ci": {
+    "checks": 28,
+    "allReportedChecksSuccessful": true,
+    "dirtyEditsCovered": false,
+    "findingsDatabaseReaudited": false
+  },
+  "hosted": {
+    "http": {
+      "deploymentId": "77f726ca-dfea-49d3-a893-b365c2bd0d95",
+      "imageDigest": "sha256:7de0798952a0228218c2950b77bc349ea46a0b7c2b5fbb9b3ef64cea291869c7",
+      "cliExitCode": 0,
+      "cliDurationMs": 80186,
+      "readiness": {
+        "source": "cli-summary",
+        "platform": "ready",
+        "http": "ready",
+        "reason": "reported"
+      },
+      "stream": {
+        "events": 9,
+        "bytes": 1459,
+        "terminal": "RUN_FINISHED",
+        "contentSHA256": "4b55d878d005ef3907f815b633c76bc80e05a90af29b7c6ca7ef58b18ba847b0",
+        "firstChunkBeforeTerminal": true,
+        "containsExpectedMarker": true
+      },
+      "replay": {
+        "events": 9,
+        "bytes": 1459,
+        "terminal": "RUN_FINISHED",
+        "contentSHA256": "4b55d878d005ef3907f815b633c76bc80e05a90af29b7c6ca7ef58b18ba847b0",
+        "firstChunkBeforeTerminal": false,
+        "containsExpectedMarker": true
+      },
+      "effects": 1,
+      "duplicateEffects": 0,
+      "unauthorizedEffects": 0,
+      "stopped": {
+        "provider": "railway",
+        "projectId": "f33c8313-8e03-43b6-b2b6-3e7c34934492",
+        "environmentId": "3935de20-b560-416f-bb8d-74b8d426022b",
+        "serviceId": "170d76ec-d5f1-41de-9085-88223a623d99",
+        "deploymentId": "77f726ca-dfea-49d3-a893-b365c2bd0d95",
+        "imageDigest": "sha256:7de0798952a0228218c2950b77bc349ea46a0b7c2b5fbb9b3ef64cea291869c7",
+        "volumeId": "52468dd7-13b3-4419-8ace-9194434097f4",
+        "deploymentStopped": true,
+        "instances": [
+          {
+            "id": "25089263-25e2-4b79-a599-43d3d5b18aa3",
+            "status": "STOPPED"
+          }
+        ],
+        "sealedGenerationReceiptSHA256": "e607951b7f79ad8ede5db9679ff492cd93770b76427a2c7f387665b315f4671d",
+        "quiescenceReceiptSHA256": "ed9592076fb4b5f8b42dccefce45c10b605d55f7f76cd4d6b5b66f3c182b3dbe",
+        "observedAtMs": 1794884119048,
+        "controllerReceiptSHA256": "95d22a6ad7d7a337c26684a937fa5ecac78d9ac63a289b642709b57deeb23839"
+      },
+      "quiescence": {
+        "markerCount": 1,
+        "expiryAbsentInReturnedWindow": true,
+        "backendCompleteness": "not-attested"
+      }
+    },
+    "priorResult": {
+      "status": "incomplete",
+      "preparation": "passed",
+      "execution": "failed",
+      "planSHA256": "9e65b69f1ccc5b505a523057608bda631555c3a286eeee92a17e3486d93c8b00",
+      "completedRootActions": 0,
+      "cleanup": {
+        "complete": true,
+        "failures": [],
+        "projectAbsent": true,
+        "keyAbsent": true,
+        "unknownAllocations": []
+      }
+    },
+    "latestResult": {
+      "status": "incomplete",
+      "preparation": "passed",
+      "execution": "failed",
+      "planSHA256": "f6e29e83d02abba79b92c8b399ec2ff10ce90cb1e3b65a79b96c0277dbfd4e27",
+      "completedRootActions": 4,
+      "cleanup": {
+        "complete": true,
+        "failures": [],
+        "projectAbsent": true,
+        "keyAbsent": true,
+        "unknownAllocations": []
+      }
+    },
+    "fullRecoveryAccepted": false,
+    "pollingAcceptedOnThisCandidate": false
+  },
+  "verification": {
+    "focusedTests": 67,
+    "assertions": 261,
+    "typecheck": "passed",
+    "lint": "passed; existing schema-version informational notice",
+    "fullSuiteRerun": false,
+    "newHostedExecutions": 0
+  },
+  "inheritedDrafts": [
+    {
+      "path": "/Users/bigviking/Documents/github/projects/lo/augment-1/.worktrees/portable-agent-integration/scripts/release-smoke/integration-fixtures/hosted/maintenance-command.ts",
+      "bytes": 23578,
+      "sha256": "e98849b4a4fcfd6b47116263598ec0d9c92d2737c299c79e76da8aa915beefd2"
+    },
+    {
+      "path": "/Users/bigviking/Documents/github/projects/lo/augment-1/.worktrees/portable-agent-integration/tests/release-smoke/integration-hosted-maintenance.test.ts",
+      "bytes": 18711,
+      "sha256": "5ac1be29d6df626d0ce52f069bdc08b6aaa81516c7bcd06a2ad60af1ffff3975"
+    }
+  ],
+  "receipts": [
+    {
+      "path": "/private/tmp/auggy-m5-hosted-13bf80df-EP37Hh/evidence/root-result.json",
+      "bytes": 277,
+      "sha256": "1ce5959c6d546d49d164a5a74d987d9501a0939901bff4c7cc3d5ba456c0578d"
+    },
+    {
+      "path": "/private/tmp/auggy-m5-hosted-13bf80df-EP37Hh/local-preparation/managed-context-diagnostic.json",
+      "bytes": 206,
+      "sha256": "746cde55f3a92d7476385baa219e7436514ad45440e25718095ad6d77221bd0c"
+    },
+    {
+      "path": "/private/tmp/auggy-m5-hosted-13bf80df-E3abkD/evidence/root-result.json",
+      "bytes": 277,
+      "sha256": "e3fe6979a97af8b8e84c1b22e3a822a2156b8a5068d8e6121895470e20903372"
+    },
+    {
+      "path": "/private/tmp/auggy-m5-hosted-13bf80df-E3abkD/actions/http-base-deploy/evidence/http-base-deploy-result.json",
+      "bytes": 4228,
+      "sha256": "727d47798f0e89d57796ab3504da75fd250900f9b5b236df2c1da43722fd0133"
+    },
+    {
+      "path": "/private/tmp/auggy-m5-hosted-13bf80df-E3abkD/actions/http-base-channel/evidence/http-base-channel-result.json",
+      "bytes": 13809,
+      "sha256": "9671165bcd2d86297464caff620b22553e635511e41cf42d17214a2ae0512b81"
+    },
+    {
+      "path": "/private/tmp/auggy-m5-hosted-13bf80df-E3abkD/actions/http-base-stop/evidence/http-base-stop-result.json",
+      "bytes": 1863,
+      "sha256": "9b292bc7ea88fa1ba05cd1439e9105edf878b7b8e794896424d17ba614a0396d"
+    },
+    {
+      "path": "/private/tmp/auggy-m5-hosted-13bf80df-E3abkD/actions/http-base-stop/evidence/platform-04-quiescence.json",
+      "bytes": 7897,
+      "sha256": "ed9592076fb4b5f8b42dccefce45c10b605d55f7f76cd4d6b5b66f3c182b3dbe"
+    },
+    {
+      "path": "/private/tmp/auggy-m5-hosted-13bf80df-E3abkD/actions/http-backup-export/evidence/http-backup-export-1-unknown.json",
+      "bytes": 1042,
+      "sha256": "fc59cb0161dad3a69ec9c56248886bd4c001a9879613aeb45352b53c3cc730d4"
+    },
+    {
+      "path": "/private/tmp/auggy-m5-hosted-13bf80df-E3abkD/local-preparation/backup-receipt-reconstruction.json",
+      "bytes": 1159,
+      "sha256": "512e68d83f0b13a9274b5ff78a6af865a0fdf6bc3093a2de0cde4698aa060862"
+    },
+    {
+      "path": "/private/tmp/m5-backup-local-1iYuMx/result.json",
+      "bytes": 820,
+      "sha256": "82334b7777a6834d7858357647df16616cf15a9eb3eca4b9891472d938b89ce8"
+    },
+    {
+      "path": "/private/tmp/m5-backup-linux-13bf/result.log",
+      "bytes": 1239,
+      "sha256": "9139545f04f8ad2dafd1bed5d65276de59e2e42797d3f83236e555bd1af191f1"
+    },
+    {
+      "path": "/private/tmp/m5-backup-linux-13bf/fixed-result.log",
+      "bytes": 464,
+      "sha256": "9e12d4653fae4003087dc334252604812f9701905c48a2649216eff615bea7e9"
+    },
+    {
+      "path": "/private/tmp/m5-ci-13bf80df.json",
+      "bytes": 8325,
+      "sha256": "2a2c0d32b3c4a5eded2c266300826dd722cd9e4be360b27b0d3439798e65a2d3"
+    },
+    {
+      "path": "/private/tmp/m5-audit-focused-tests.log",
+      "bytes": 6999,
+      "sha256": "cd0fbf09e882930204292e41ecd74ddb7b0c4b0010acfb10a7ac48bbdad5a3a5"
+    },
+    {
+      "path": "/private/tmp/m5-audit-typecheck.log",
+      "bytes": 15,
+      "sha256": "8366207267355d3e3d5bf3bf6e8c94c5f93f6078c34f08973fa2b38cdda6cc92"
+    },
+    {
+      "path": "/private/tmp/m5-audit-lint.log",
+      "bytes": 811,
+      "sha256": "f34872b49a6b7f5c94c1b69c7d2d58b1cacb02b1e022318780c575821db75ef6"
+    }
+  ]
+}

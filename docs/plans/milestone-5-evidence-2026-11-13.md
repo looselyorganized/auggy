@@ -1,11 +1,37 @@
 # Milestone 5 execution evidence
 
 Current status: G0/G1/G3 and M5-00/01/02/03/04/05/06/08 are accepted for their
-recorded scopes. The latest full hosted rehearsal, r9 on 2026-11-16 UTC,
-remains incomplete. A subsequent single-service startup check verified hosted
-startup and CLI HTTP readiness with the volume rollback; its supplemental Python
-probe failed locally on certificate verification. M5-07, M5-09 and M5-10 remain
-open. Earlier entries record historical gate states.
+recorded scopes. Candidate `13bf80df` passed all 28 reported PR checks. The latest
+hosted attempt on November 16 Vancouver / November 17 UTC passed HTTP deployment,
+health, authenticated channel/tool operation, safe replay and stopped-instance
+confirmation, then failed in the recovery test's backup-transfer validator. Both
+latest attempts completed cleanup. M5-07, M5-09 and M5-10 remain open: hosted
+replacement, polling and recovery are not fully accepted. The
+[change and validation audit](./milestone-5-audit-2026-11-16.md) records exact
+scope, defects and the proposed smaller harness. Earlier entries record
+historical gate states; their incomplete full-run outcomes remain unchanged.
+
+## Tracked scenario runner replacement
+
+The user authorized the smaller runner proposed in the audit. Its implementation
+and execution policy are in [the runner plan](./milestone-5-hosted-runner.md).
+One explicit scenario replaces the private executor/controller/generated guard
+combination; existing bounded process, provider schema and channel assertions are
+reused. Lifecycle allocates one service/volume, selected-channel recovery two.
+Execution and cleanup failures are retained separately with readable redacted
+receipts. Source/input packages identify the candidate; every transitive installed
+dependency and executor closure is no longer recursively re-attested.
+
+Local verification passed 56 tests / 473 assertions, repository typecheck and
+lint. Tests cover independent scenarios, forced child/assertion failures,
+redaction, partial allocation, unknown mutation outcomes, strict foreign-volume
+cleanup refusal and one/two-resource provisioning. Both polling and HTTP recovery
+fixture preflights passed through the actual installed exporter without cloud
+access. A network-isolated Linux reproduction passed backup, explicit fresh
+destination preparation and restore with a replay guard; it preserved the backed
+up `lost+found` directory. These are local results; the replacement runner's first
+hosted polling lifecycle remains to be recorded. No runtime API, kernel or
+production volume layout changed in this replacement.
 
 ## Test execution simplification
 

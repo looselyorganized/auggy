@@ -86,6 +86,36 @@ test("fresh volume preparation changes only an empty owned real directory throug
   ).toThrow();
 });
 
+test("fresh restore fixture removes only a sole empty real lost+found directory", () => {
+  const fresh = join(workspace, "fresh");
+  mkdirSync(fresh, { mode: 0o755 });
+  mkdirSync(join(fresh, "lost+found"), { mode: 0o700 });
+  const original = statSync(fresh);
+  const result = prepareEmptyMaintenanceVolume(fresh);
+  expect(result.removedEmptyLostFound).toBe(true);
+  expect(result.directoryIdentity).toEqual({ dev: original.dev, ino: original.ino });
+  expect(statSync(fresh).mode & 0o777).toBe(0o700);
+  expect(() => statSync(join(fresh, "lost+found"))).toThrow();
+
+  for (const kind of ["recovered", "other-entry", "file", "symlink"] as const) {
+    const target = join(workspace, kind);
+    mkdirSync(target, { mode: 0o755 });
+    const lost = join(target, "lost+found");
+    if (kind === "file") writeFileSync(lost, data);
+    else if (kind === "symlink") symlinkSync(fresh, lost);
+    else {
+      mkdirSync(lost, { mode: 0o700 });
+      writeFileSync(join(kind === "recovered" ? lost : target, "preserved"), data);
+    }
+    expect(() => prepareEmptyMaintenanceVolume(target)).toThrow();
+    expect(statSync(target).mode & 0o777).toBe(0o755);
+    if (kind === "recovered" || kind === "other-entry")
+      expect(readFileSync(join(kind === "recovered" ? lost : target, "preserved"))).toEqual(data);
+    if (kind === "file") expect(readFileSync(lost)).toEqual(data);
+    if (kind === "symlink") expect(statSync(fresh).ino).toBe(original.ino);
+  }
+});
+
 test("finite operations reject arbitrary CLI args, paths and incomplete stopped claims", () => {
   expect(() =>
     parseHostedMaintenanceOperation({ operation: "backup", stopped, argv: ["run"] }),
@@ -262,6 +292,32 @@ test("bundle transfer rejects path traversal, duplicate records, replay guard an
       }),
     ),
   ).toThrow();
+});
+
+test("bundle transfer preserves lost+found without admitting traversal", () => {
+  const value = {
+    ...manifest(),
+    directories: [{ path: "lost+found", mode: "0700" }],
+    files: [
+      { path: "lost+found/recovered+state", bytes: data.length, sha256: hash(data), mode: "0600" },
+    ],
+  };
+  const index = indexMaintenanceBundle(bytes(value));
+  expect(index.directories).toEqual([{ path: "lost+found" }]);
+  expect(index.files[0]?.path).toBe("lost+found/recovered+state");
+  writeMaintenanceBundleFile(workspace, index.files[0]!.path, data);
+  expect(readMaintenanceBundleFile(workspace, index.files[0]!.path, 100)).toEqual(data);
+  for (const path of [
+    "lost+found/../escape",
+    "lost+found/./state",
+    "/lost+found",
+    "lost+found//state",
+  ]) {
+    expect(() =>
+      indexMaintenanceBundle(bytes({ ...value, directories: [{ path, mode: "0700" }] })),
+    ).toThrow();
+    expect(() => writeMaintenanceBundleFile(workspace, path, data)).toThrow();
+  }
 });
 
 test("transfer accepts exact bytes only and never overwrites or follows a linked file", () => {

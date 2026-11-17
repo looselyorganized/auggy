@@ -75,9 +75,9 @@
         "concrete hosted execution approval"
       ],
       "pending": [
-        "Build a fresh reviewed candidate after the accepted volume rollback and harness simplification; consumed frozen runs cannot be replayed",
-        "Complete hosted HTTP and polling operations, replacement and recovery; narrow startup and CLI health are verified separately",
-        "Verify final candidate CI and final M5 review before merge"
+        "Tracked scenario runner locally verified; perform bounded outstanding rows independently without replaying consumed journals",
+        "Complete outstanding hosted HTTP replacement, polling lifecycle, and separate HTTP/polling recovery; preserve candidate13bf80df HTTP startup/channel/stop evidence",
+        "Complete integrated review, final changed-revision CI and CodeQL findings disposition before PR handoff"
       ],
       "discovery": {
         "status": "authenticated_read_only",
@@ -254,7 +254,19 @@
           },
           "automaticRetriesRemaining": 0
         }
-      ]
+      ],
+      "audit20261116": {
+        "document": "milestone-5-audit-2026-11-16.md",
+        "evidence": "milestone-5-audit-evidence-2026-11-16.json",
+        "candidate": "13bf80df4ead1bbf0b53ee0cc1b221df10868999",
+        "committedCandidateCI": "28 checks successful",
+        "httpHosting": "passed scoped deployment/health/channel/replay/quiescence/stopped-instance",
+        "fullHostedAcceptance": false,
+        "cleanup": "both latest attempts complete; projects and temporary keys absent",
+        "recoveryBlocker": "test transfer path allowlist rejects lost+found; reproduced locally; one-character correction passes Linux backup",
+        "freshVolumePreparationDraft": "provisional; full Linux restore not executed",
+        "newHostedExecutionsDuringAudit": 0
+      }
     },
     "G1": {
       "status": "accepted",
@@ -749,6 +761,31 @@
       "hostedExecutionPerformed": false,
       "productionArchitectureChanged": false,
       "fullHostedAcceptance": "outstanding"
+    },
+    "hostedRunnerReplacement": {
+      "status": "locally_verified",
+      "plan": "milestone-5-hosted-runner.md",
+      "entrypoint": "scripts/release-smoke/hosted-runner.ts",
+      "supersedes": "private executor/controller/generated CLI guards",
+      "scenarios": [
+        "http",
+        "polling",
+        "recovery-http",
+        "recovery-polling"
+      ],
+      "lifecycleServices": 1,
+      "recoveryServices": 2,
+      "verification": {
+        "tests": 56,
+        "assertions": 473,
+        "typecheck": "passed",
+        "lint": "passed",
+        "pollingLocalPreflight": "passed",
+        "httpRecoveryLocalPreflight": "passed",
+        "linuxBackupRestore": "passed"
+      },
+      "productRuntimeChanges": false,
+      "hostedExecution": "next: one polling lifecycle; no new hosted run yet"
     }
   }
 }

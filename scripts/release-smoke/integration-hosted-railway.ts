@@ -290,6 +290,14 @@ const OPERATIONS = {
   },
 } as const;
 export type HostedRailwayOperation = keyof typeof OPERATIONS;
+
+/** Shared wire contract. Scenario runners supply their own bounded ownership/lifetime policy. */
+export function hostedRailwayProtocol<K extends HostedRailwayOperation>(
+  operation: K,
+): (typeof OPERATIONS)[K] {
+  check(Object.hasOwn(OPERATIONS, operation), "Unknown hosted Railway operation");
+  return OPERATIONS[operation];
+}
 /** Unbound creation replies are checked against the approved parent/name before cap/readback calls. */
 export type HostedCreatedService = {
   project: HostedProjectBinding;

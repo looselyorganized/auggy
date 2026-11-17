@@ -19,7 +19,12 @@ import {
   pinDirectory,
   readPinnedFile,
 } from "../../../../src/lib/anchored-files";
-import { listDirectoryFd, tryLockFileExclusive, tryOpenAt } from "../../../../src/lib/posix-at";
+import {
+  listDirectoryFd,
+  tryLockFileExclusive,
+  tryOpenAt,
+  unlinkAt,
+} from "../../../../src/lib/posix-at";
 import { TELEGRAM_FIXTURE_TOKEN } from "../telegram/telegram-network";
 
 export const MAINTENANCE_LIMITS = Object.freeze({
@@ -149,13 +154,42 @@ export function prepareEmptyMaintenanceVolume(directory: string) {
   const pinned = pinDirectory(directory, "Fresh maintenance volume");
   try {
     const before = fstatSync(pinned.fd);
-    const entries = listDirectoryFd(pinned.fd, 1);
-    check(entries.names.length === 0 && !entries.truncated, "Fresh volume must be empty");
     const namedBefore = lstatSync(directory);
     check(
       namedBefore.isDirectory() && namedBefore.dev === before.dev && namedBefore.ino === before.ino,
       "Fresh volume identity changed",
     );
+    let entries = listDirectoryFd(pinned.fd, 2);
+    let removedEmptyLostFound = false;
+    // Explicit fixture preparation of a fresh owned destination, never runtime startup.
+    // rmdir semantics preserve recovered files and refuse links or other volume contents.
+    if (!entries.truncated && entries.names.length === 1 && entries.names[0] === "lost+found") {
+      const opened = tryOpenAt(
+        pinned.fd,
+        "lost+found",
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      check("fd" in opened, "Fresh volume lost+found must be a real directory");
+      try {
+        const stat = fstatSync(opened.fd);
+        const contents = listDirectoryFd(opened.fd, 1);
+        check(
+          stat.isDirectory() &&
+            stat.uid === process.getuid!() &&
+            stat.dev === before.dev &&
+            contents.names.length === 0 &&
+            !contents.truncated,
+          "Fresh volume lost+found must be empty and owned",
+        );
+        check(unlinkAt(pinned.fd, "lost+found", true), "Fresh volume lost+found changed");
+        fsyncSync(pinned.fd);
+        removedEmptyLostFound = true;
+      } finally {
+        closeSync(opened.fd);
+      }
+      entries = listDirectoryFd(pinned.fd, 1);
+    }
+    check(entries.names.length === 0 && !entries.truncated, "Fresh volume must be empty");
     fchmodSync(pinned.fd, 0o700);
     fsyncSync(pinned.fd);
     const after = fstatSync(pinned.fd);
@@ -177,6 +211,7 @@ export function prepareEmptyMaintenanceVolume(directory: string) {
       empty: true,
       beforeMode: (before.mode & 0o7777).toString(8),
       mode: "700",
+      removedEmptyLostFound,
       directoryIdentity: { dev: after.dev, ino: after.ino },
     };
   } finally {
@@ -242,7 +277,7 @@ function safePath(value: unknown): asserts value is string {
   check(
     typeof value === "string" &&
       value.length <= 256 &&
-      /^[a-zA-Z0-9._-]+(?:\/[a-zA-Z0-9._-]+){0,3}$/.test(value) &&
+      /^[a-zA-Z0-9._+-]+(?:\/[a-zA-Z0-9._+-]+){0,3}$/.test(value) &&
       value.split("/").every((part) => part !== "." && part !== ".."),
   );
 }

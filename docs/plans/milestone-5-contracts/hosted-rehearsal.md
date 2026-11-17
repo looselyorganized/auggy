@@ -6,6 +6,17 @@ for a consumed attempt does not authorize replaying its mutation journal.
 This record amends the internal C4 preparation contract; it is not a product API
 or a claim that M5 is complete.
 
+## Superseding execution decision — November 16
+
+The user authorized the [tracked scenario runner](../milestone-5-hosted-runner.md)
+to replace the private executor/controller/generated guards. Execute one HTTP,
+polling or selected-channel recovery row per invocation. Lifecycle rows own one
+service/volume; recovery rows own two. The historical four-service allocation and
+90-action closure below describe the retired implementation, not an allocation
+requirement for the replacement. Preserve resource ownership, bounded lifetimes,
+unknown-outcome handling, secret handling, cleanup and all required assertions.
+One row's failure does not erase another row's accepted evidence.
+
 ## Focused validation and preflight
 
 Use the existing TypeScript executor, Railway adapter and bounded child helper.

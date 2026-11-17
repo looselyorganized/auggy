@@ -1,5 +1,11 @@
 # Milestone 5 — portable, independently deployed agents
 
+November 16 execution amendment: the user authorized replacing the private hosted
+orchestrator with the [tracked per-scenario runner](./milestone-5-hosted-runner.md).
+The acceptance matrix remains required; execution, recovery and cleanup results
+are recorded independently. See the [audit](./milestone-5-audit-2026-11-16.md) for
+the accepted hosting evidence and demonstrated harness defects.
+
 Status: implementation in progress. M4 PR #229 was separately authorized and
 merged at `c39b746b4b743e5c29dab61a677026c10626d8b8`; G0 is accepted. Contracts,
 storage, packaging, deployment, durable replay, optional application integration,
