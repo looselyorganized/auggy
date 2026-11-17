@@ -29,10 +29,10 @@ auggy doctor
 auggy run
 ```
 
-The generated application owns `src/index.ts`, `src/agent.ts`, `src/http.ts`
-and `src/turn.ts`. Startup explicitly prepares configuration, creates the model
+The generated application owns `src/main.ts`, `src/http.ts` and `src/turn.ts`. Startup explicitly prepares configuration, creates the model
 and augments, creates the agent, binds transports, configures HTTP, then starts.
-`agent.ts` supplies execution options, and `http.ts` owns an editable mount path.
+`main.ts` binds `turnProgram` and an optional `onTurnFinalized` callback at
+`createAgent`; `http.ts` owns an editable mount path.
 `agent.yaml` is the sole enabled graph. Existing contract-1 applications stay
 compatible and keep their owned source. The global CLI is a
 convenience; execution selects the project-local Auggy dependency. Pin matching

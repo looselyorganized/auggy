@@ -19,24 +19,26 @@ also execute your declared application with the selected project-local runtime.
 
 Follow a request through your source:
 
-1. `src/index.ts` exports `main`, prepares configuration, creates the model and
+1. `src/main.ts` exports `main`, prepares configuration, creates the model and
    augments, creates the agent, binds each transport, then starts the managed host.
    Every call performs its named stage; the runner owns cleanup across failures.
-2. `src/agent.ts` selects your local turn recipe and optional finalization observer.
-   `{{CONFIG_FILE}}` is the single enabled-capability graph.
-3. `src/http.ts` mounts `POST /agent/run` and passes the original request to the
+   Its `createAgent` call binds `turnProgram`; add an optional `onTurnFinalized`
+   callback there. `{{CONFIG_FILE}}` is the single enabled-capability graph.
+2. `src/http.ts` mounts `POST /agent/run` and passes the original request to the
    maintained adapter, which owns authentication, validation and durable delivery.
    Edit the literal mount path here to change the endpoint; the console and
    metadata use the selected mount. Keep the original request and fallback.
-4. `src/turn.ts` dispatches internal work, prepares the prompt, runs inference and
+3. `src/turn.ts` dispatches internal work, prepares the prompt, runs inference and
    tools, handles required final answers, and finishes when the limit is exhausted.
-5. Each guarded tool invocation reaches an installed built-in or your own narrow
+4. Each guarded tool invocation reaches an installed built-in or your own narrow
    augment adapter. The runtime authorizes execution and settles history/accounting.
 
 Edit these files to change application behavior. `tests/application.test.ts`
 exercises recipe decisions without provider calls; run typecheck and tests after
-edits. Configured inference limits remain effective. The omitted application
-timeout currently means a 15-minute managed deadline. Dependency upgrades do not
+edits. By default, the model loop uses `settings.maxInferenceLoops` from
+`agent.yaml`, and Auggy cancels the turn program after 15 minutes. The agent
+service stays running. Set `maxInferences` or `timeoutMs` in `src/turn.ts` to use
+lower limits. Dependency upgrades do not
 regenerate these owned files. TypeScript is trusted application code; deterministic
 authorization remains in guarded runtime operations and augment interfaces.
 

@@ -19,7 +19,7 @@ The core product idea:
 | Primitive | What it is | Use it for |
 | --- | --- | --- |
 | Agent | Portable configured project | identity, engine, skills, enabled augments |
-| Application | Owned `src/index.ts`, `agent.ts`, `http.ts`, `turn.ts` | visible startup, request wiring and turn recipe |
+| Application | Owned `src/main.ts`, `http.ts`, `turn.ts` | visible startup, request wiring and turn recipe |
 | Kernel | Guarded turn runtime | identity, context, authorization, accounting, cancellation and settlement |
 | Augment | Runtime module mounted at boot | tools, context, memory, transports, lifecycle, policy |
 | Tool | Typed model-callable function | lookup, drafting, communication, action |
@@ -32,9 +32,9 @@ Augments are infrastructure. Tools are mechanism. Skills are teaching.
 ## A Turn
 
 ```text
-src/index.ts prepares config, creates model and augments, creates agent,
-binds transports, configures HTTP, then starts under managed cleanup
-  -> src/agent.ts supplies src/turn.ts and optional finalization observer
+src/main.ts prepares config, creates model and augments, calls createAgent
+with turnProgram and optional onTurnFinalized, binds transports, configures HTTP,
+then starts under managed cleanup
   -> src/http.ts handles POST /agent/run through web.agentRun(originalRequest)
   -> maintained transport authenticates, validates and schedules the request
   -> src/turn.ts calls prompt, inference, tool and completion operations

@@ -19,9 +19,9 @@ limits, cancellation, settlement and history ownership.
 the execution facade. `turn-session.ts` implements the managed phases and shared
 settlement path. `turn-program.ts` is the default inference/tool loop used by
 legacy projects. New generated applications expose their own real recipe at
-`src/turn.ts`, using that same session. Start at the project's `src/index.ts`,
-follow `src/agent.ts` and `src/http.ts`, then open the recipe. The
-[separate reference](../examples/inspectable-agent/src/turn.ts) demonstrates
+`src/turn.ts`, using that same session. Start at the project's `src/main.ts`,
+follow its `createAgent({ turnProgram })` call and `src/http.ts`, then open the
+recipe. The [separate reference](../examples/inspectable-agent/src/turn.ts) demonstrates
 additional application customization. `auggy inspect` locates the selected
 installed package; this guide's kernel paths are relative to that package.
 

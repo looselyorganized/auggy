@@ -109,7 +109,13 @@ describe("passive inspection reports", () => {
   });
 
   test("contract 2 uses the declared runtime capability without executing mount code", () => {
-    config("name: sample\napplication: { entrypoint: ./src/index.ts, contractVersion: 2 }\n");
+    config("name: sample\napplication: { entrypoint: ./src/main.ts, contractVersion: 2 }\n");
+    writeFixture(
+      join(fixture.project, "src/main.ts"),
+      'throw new Error("INSPECTION_EXECUTED_CODE");',
+    );
+    rmSync(join(fixture.project, "src/index.ts"));
+    rmSync(join(fixture.project, "src/agent.ts"));
     writeFixture(
       join(fixture.project, "src/http.ts"),
       'throw new Error("INSPECTION_EXECUTED_CODE"); const path = "/private-custom-mount";',
@@ -126,6 +132,8 @@ describe("passive inspection reports", () => {
     expect(report.status).toBe("complete");
     expect(report.application.contractVersion).toBe(2);
     expect(report.runtime.applicationSupported).toBe(true);
+    expect(report.execution.startup?.path).toBe(join(fixture.project, "src/main.ts"));
+    expect(report.execution.composition?.path).toBe(join(fixture.project, "src/main.ts"));
     expect(report.execution.http?.path).toBe(join(fixture.project, "src/http.ts"));
     expect(JSON.stringify(report)).not.toContain("private-custom-mount");
     expect(renderInspectionReport(report)).toContain(

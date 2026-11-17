@@ -94,15 +94,15 @@ describe("authoring helper preparation, not installed CLI acceptance", () => {
   test("fresh-tree inventory rejects parallel legacy registries and hashes no private bytes", () => {
     const consumer = join(root, "consumer");
     const config = {
-      application: { entrypoint: "./src/index.ts", contractVersion: 2 },
+      application: { entrypoint: "./src/main.ts", contractVersion: 2 },
       augments: [{ name: "web", type: "webTransport", options: {} }],
     };
     write(join(consumer, "agent.yaml"), JSON.stringify(config));
     write(join(consumer, ".env"), "SECRET=private-canary-value");
     write(join(consumer, ".auggy/operations/receipt.json"), "private-canary-value");
     const inventory = inspectGeneratedAuthoringTree(consumer);
-    expect(inventory.find((item) => item.path === "src/index.ts")?.sha256).toBe(
-      applicationHash(readFileSync(join(consumer, "src/index.ts"))),
+    expect(inventory.find((item) => item.path === "src/main.ts")?.sha256).toBe(
+      applicationHash(readFileSync(join(consumer, "src/main.ts"))),
     );
     expect(inventory.find((item) => item.path === ".env")).toEqual({
       path: ".env",
@@ -113,6 +113,11 @@ describe("authoring helper preparation, not installed CLI acceptance", () => {
       inventory.find((item) => item.path === ".auggy/operations/receipt.json")?.sha256,
     ).toBeUndefined();
     expect(JSON.stringify(inventory)).not.toContain("private-canary-value");
+    for (const obsolete of ["src/index.ts", "src/agent.ts"]) {
+      write(join(consumer, obsolete), "obsolete generated execution source");
+      expect(() => inspectGeneratedAuthoringTree(consumer)).toThrow("unexpected executable source");
+      rmSync(join(consumer, obsolete));
+    }
     write(join(consumer, "augments/layeredMemory/augment.yaml"), "type: layeredMemory\n");
     expect(() => inspectGeneratedAuthoringTree(consumer)).toThrow("legacy");
     rmSync(join(consumer, "augments"), { recursive: true });
@@ -131,7 +136,7 @@ describe("authoring helper preparation, not installed CLI acceptance", () => {
     write(
       join(consumer, "agent.yaml"),
       JSON.stringify({
-        application: { entrypoint: "./src/index.ts", contractVersion: 2 },
+        application: { entrypoint: "./src/main.ts", contractVersion: 2 },
         augments: [{ name: "web", type: "webTransport" }],
       }),
     );

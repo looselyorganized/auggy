@@ -16,7 +16,7 @@ import {
   type PackedArtifactInput,
 } from "./application-consumer";
 import { readBoundedRegularFile } from "./bounded-file";
-import { INSPECTABLE_APPLICATION_RECIPE } from "./application-recipe";
+import { HISTORICAL_APPLICATION_RECIPE } from "./application-recipe";
 
 // First reviewed application-capable runtime. This is an artifact experiment,
 // never a claim that two different 0.5.0 artifacts were published releases.
@@ -106,7 +106,7 @@ export function preserveApplicationBaselineReference(
   outputDirectory: string,
   verifiedFiles: Readonly<Record<string, string>>,
 ) {
-  const selected = INSPECTABLE_APPLICATION_RECIPE.sourceFiles.map((file) => {
+  const selected = HISTORICAL_APPLICATION_RECIPE.sourceFiles.map((file) => {
     const archivedPath = `examples/inspectable-agent/${file}`;
     const expected = verifiedFiles[archivedPath];
     if (!expected)

@@ -1,8 +1,8 @@
 import { resolve } from "node:path";
 import { runApplication, type ApplicationMain } from "auggy/application";
-import { agentExecution } from "./agent";
 import { configureHttp } from "./http";
-import { observeStartup } from "./observability";
+import { observeFinalization, observeStartup } from "./observability";
+import { turnProgram } from "./turn";
 
 const startupLabel = "inspectable-agent";
 
@@ -12,7 +12,13 @@ export const main: ApplicationMain = async (launch) => {
   const config = await runtime.prepareConfiguration();
   const model = await runtime.createModel(config);
   const augments = await runtime.createAugments(config);
-  const agent = runtime.createAgent({ config, model, augments, ...agentExecution });
+  const agent = runtime.createAgent({
+    config,
+    model,
+    augments,
+    turnProgram,
+    onTurnFinalized: observeFinalization,
+  });
   for (const transport of runtime.transportsFrom(augments)) {
     runtime.bindTransport(transport, agent);
   }

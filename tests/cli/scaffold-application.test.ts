@@ -34,10 +34,9 @@ describe("owned application templates", () => {
   test("planning exposes the frozen consumer interface and conventional files", () => {
     const plan = planApplicationScaffold({ configFileName: "agent.yaml" });
     expect(Object.isFrozen(plan)).toBe(true);
-    expect(plan.application).toEqual({ entrypoint: "./src/index.ts", contractVersion: 2 });
+    expect(plan.application).toEqual({ entrypoint: "./src/main.ts", contractVersion: 2 });
     expect(plan.files.map((file) => file.relativePath)).toEqual([
-      "src/index.ts",
-      "src/agent.ts",
+      "src/main.ts",
       "src/http.ts",
       "src/turn.ts",
       "src/augments/README.md",
@@ -58,12 +57,17 @@ describe("owned application templates", () => {
     expect(source).toContain("const config = await runtime.prepareConfiguration();");
     expect(source).toContain("const model = await runtime.createModel(config);");
     expect(source).toContain("const augments = await runtime.createAugments(config);");
-    expect(source).toContain("runtime.createAgent({ config, model, augments, ...agentExecution })");
+    expect(source).toContain(
+      "runtime.createAgent({\n    config,\n    model,\n    augments,\n    turnProgram,",
+    );
     expect(source).toContain("runtime.transportsFrom(augments)");
     expect(source).toContain("runtime.bindTransport(transport, agent)");
     expect(source).toContain("runtime.httpBindings(agent).map(configureHttp)");
     expect(source).toContain("await runtime.start({ agent, http })");
-    expect(source).toContain("export const agentExecution: AgentExecutionOptions");
+    expect(source).not.toContain("agentExecution");
+    expect(source).toContain(
+      "// onTurnFinalized: (result) => console.log(result.status, result.trace),",
+    );
     expect(source).not.toContain("composeAgent");
     expect(source).toContain("turn.finishAtLimit()");
     expect(source).toContain("if (import.meta.main)");
@@ -72,7 +76,7 @@ describe("owned application templates", () => {
   test("selected configuration is consistently encoded in direct startup and local CLI script", () => {
     const plan = planApplicationScaffold({ configFileName: "custom agent.yaml" });
     const index = Buffer.from(
-      plan.files.find((file) => file.relativePath === "src/index.ts")!.bytes,
+      plan.files.find((file) => file.relativePath === "src/main.ts")!.bytes,
     ).toString();
     expect(index).toContain('new URL("../custom%20agent.yaml", import.meta.url)');
     expect(plan.packageFields.scripts.cli).toBe("auggy dev --config 'custom agent.yaml'");
@@ -97,7 +101,7 @@ describe("owned application templates", () => {
   test("all source sensitivity anchors occur exactly once", () => {
     const plan = planApplicationScaffold({ configFileName: "agent.yaml" });
     for (const [path, anchor] of [
-      ["src/index.ts", "  const runtime = launch.createHost();"],
+      ["src/main.ts", "  const runtime = launch.createHost();"],
       [
         "src/http.ts",
         "          const response = await web.agentRun(request);\n          return response;",
@@ -130,7 +134,7 @@ describe("owned application templates", () => {
     const { directory } = generate();
     mkdirSync(join(directory, "node_modules"), { recursive: true });
     symlinkSync(resolve(import.meta.dir, "../.."), join(directory, "node_modules", "auggy"), "dir");
-    const { main } = (await import(pathToFileURL(join(directory, "src/index.ts")).href)) as {
+    const { main } = (await import(pathToFileURL(join(directory, "src/main.ts")).href)) as {
       main: ApplicationMain;
     };
     const calls: string[] = [];

@@ -1,7 +1,0 @@
-import type { AgentExecutionOptions, TurnProgramBinding } from "auggy/application";
-import { turnProgram } from "./turn";
-
-// YAML owns the provider, settings and enabled augments; this selects execution.
-export const agentExecution: AgentExecutionOptions & { turnProgram: TurnProgramBinding } = {
-  turnProgram,
-};

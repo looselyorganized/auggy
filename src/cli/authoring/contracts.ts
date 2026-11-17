@@ -266,7 +266,7 @@ export interface GeneratedApplicationFile {
 
 export interface ApplicationScaffoldPlan {
   readonly application: {
-    readonly entrypoint: "./src/index.ts";
+    readonly entrypoint: "./src/main.ts";
     readonly contractVersion: 2;
   };
   readonly files: readonly GeneratedApplicationFile[];

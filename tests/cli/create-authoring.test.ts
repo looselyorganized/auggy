@@ -79,7 +79,7 @@ describe("automated creation", () => {
       const project = join(directory, "demo");
       const config = parse(readFileSync(join(project, "agent.yaml"), "utf8"));
       expect(config.engine).toMatchObject({ provider, model });
-      expect(config.application).toEqual({ entrypoint: "./src/index.ts", contractVersion: 2 });
+      expect(config.application).toEqual({ entrypoint: "./src/main.ts", contractVersion: 2 });
       expect(config.augments.map((entry: { type: string }) => entry.type)).toEqual([
         "fileMemory",
         "filesystem",
@@ -459,7 +459,7 @@ describe("installation readiness", () => {
         expect(logs.join("\n")).not.toContain("application runtime verified");
         expect(logs.join("\n")).toContain("application contract 2");
       }
-      expect(existsSync(join(directory, "installed/src/index.ts"))).toBe(true);
+      expect(existsSync(join(directory, "installed/src/main.ts"))).toBe(true);
     });
   }
 });

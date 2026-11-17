@@ -1177,7 +1177,7 @@ function buildAgentYaml(
         maxCausalDepth: 8,
       },
     },
-    application: { entrypoint: "./src/index.ts", contractVersion: 2 },
+    application: { entrypoint: "./src/main.ts", contractVersion: 2 },
     augments: augments.map((entry) => ({
       name: entry.defaultName,
       type: entry.type,

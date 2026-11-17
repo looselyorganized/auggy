@@ -254,18 +254,18 @@ describe("explicit application adoption", () => {
     expect(treeSnapshot(project)).toEqual(before);
     expect(plan.report.manualActions.join("\n")).toContain("900000");
     expect(plan.report.manualActions.join("\n")).toContain("bun install explicitly");
-    expect(plan.report.changes).toHaveLength(11);
+    expect(plan.report.changes).toHaveLength(10);
     const result = await applyMigration(plan);
     expect(result.status).toBe("complete");
     const manifest = JSON.parse(readFileSync(join(project, "package.json"), "utf8"));
     expect(manifest.dependencies).toEqual(originalManifest.dependencies);
     expect(manifest.scripts.unrelated).toBe("echo owned");
     expect(manifest.type).toBe("module");
-    expect(manifest.scripts.start).toBe("bun src/index.ts");
+    expect(manifest.scripts.start).toBe("bun src/main.ts");
     expect(manifest.devDependencies.typescript).toBe("5.9.3");
     expect(readFileSync(join(project, "bun.lock"), "utf8")).toBe("untouched lock fixture");
     expect(parseYaml(readFileSync(config, "utf8")).application).toEqual({
-      entrypoint: "./src/index.ts",
+      entrypoint: "./src/main.ts",
       contractVersion: 2,
     });
     for (const file of planApplicationScaffold({ configFileName: "agent.yaml" }).files)
@@ -281,7 +281,7 @@ describe("explicit application adoption", () => {
       planMigration(readAuthoringDocument(custom), { application: true }),
     );
     expect(result.status).toBe("complete");
-    expect(readFileSync(join(project, "src/index.ts"), "utf8")).toContain("../custom%20agent.yaml");
+    expect(readFileSync(join(project, "src/main.ts"), "utf8")).toContain("../custom%20agent.yaml");
     expect(JSON.parse(readFileSync(join(project, "package.json"), "utf8")).scripts.cli).toBe(
       "auggy dev --config 'custom agent.yaml'",
     );
@@ -377,7 +377,7 @@ describe("explicit application adoption", () => {
     const { root, project, config } = fixture();
     installRuntime(project);
     const paths = {
-      source: "src/index.ts",
+      source: "src/main.ts",
       readme: "README.md",
       typescript: "tsconfig.json",
       test: "tests/application.test.ts",
@@ -400,7 +400,7 @@ describe("explicit application adoption", () => {
       mkdirSync(join(root, "outside"));
       symlinkSync(join(root, "outside"), join(project, "src"));
     }
-    if (mode === "case-collision") put(join(project, "SRC/index.ts"), "owned-private-canary\n");
+    if (mode === "case-collision") put(join(project, "SRC/main.ts"), "owned-private-canary\n");
     if (mode === "existing-application")
       put(
         config,

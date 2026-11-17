@@ -66,7 +66,7 @@ test("startup fault evidence requires the anchored thrown error, not a source co
 
 test("startup fault edits target the actual staged reference before boot and after start", () => {
   const source = readFileSync(
-    join(import.meta.dir, "../../examples/inspectable-agent/src/index.ts"),
+    join(import.meta.dir, "../../examples/inspectable-agent/src/main.ts"),
     "utf8",
   );
   const prepared = applicationLifecycleFaultSource(source, "prepare");

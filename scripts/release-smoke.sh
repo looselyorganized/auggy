@@ -462,11 +462,14 @@ for (const type of types) {
   if (!config.augments.some((item) => item.type === type))
     throw new Error(`Generated configuration missing augment: ${type}`);
 }
-if (config.application?.entrypoint !== "./src/index.ts" || config.application.contractVersion !== 2)
+if (config.application?.entrypoint !== "./src/main.ts" || config.application.contractVersion !== 2)
   throw new Error("Generated configuration missing owned application entrypoint");
-for (const fileName of ["index.ts", "agent.ts", "http.ts", "turn.ts"])
+for (const fileName of ["main.ts", "http.ts", "turn.ts"])
   if (!existsSync(join(dirname(file), "src", fileName)))
     throw new Error(`Generated application missing ${fileName}`);
+for (const obsolete of ["index.ts", "agent.ts"])
+  if (existsSync(join(dirname(file), "src", obsolete)))
+    throw new Error(`Generated application contains obsolete ${obsolete}`);
 TS
   ) || fail "generated inline application verification failed"
 }

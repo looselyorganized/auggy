@@ -85,12 +85,12 @@ unreleased authoring implementation.
 ## Follow the execution
 
 New projects created by this checkout expose their execution code. Open
-`src/index.ts` first:
+`src/main.ts` first:
 
 ```text
 Startup wiring:
-src/index.ts → configuration → model → augments → agent → transport bindings → start
-src/agent.ts → local turn program + optional finalization observer
+src/main.ts → configuration → model → augments → createAgent({ turnProgram })
+            → transport bindings → HTTP → start
 src/http.ts → selected HTTP mount and guarded adapter
 
 Request execution:
@@ -105,16 +105,17 @@ tree is below in [What Gets Created](#what-gets-created).
 
 Startup visibly prepares configuration, creates the model and augments, creates
 the agent, binds transports, configures HTTP and starts the host. Every stage
-runs under managed cleanup. `agent.ts` supplies the local turn program and
-optional finalization observer. The endpoint's literal mount path is editable in
-`src/http.ts`; console chat and metadata follow that selected path. Its maintained adapter owns
+runs under managed cleanup. `main.ts` passes `turnProgram` to `createAgent`;
+add an optional `onTurnFinalized` callback at that same assembly call. The
+endpoint's literal mount path is editable in `src/http.ts`; console chat and
+metadata follow that selected path. Its maintained adapter owns
 caller authentication, request validation and durable delivery. Your turn
 program calls guarded operations; the runtime still enforces tool authorization,
 cancellation, limits, accounting and settlement. Application TypeScript is trusted
 code, so keep authorization explicit in each augment's tool and route interfaces.
 
 `agent.yaml` is the single enabled-augment graph and declares
-`application: { entrypoint: ./src/index.ts, contractVersion: 2 }`. The generated
+`application: { entrypoint: ./src/main.ts, contractVersion: 2 }`. The generated
 application source and custom augments belong to you. The local `auggy`
 dependency owns built-ins and guarded operations; upgrading it does not rewrite
 your source or skills. Existing contract-1 applications remain supported with
@@ -163,8 +164,8 @@ production session adapter deliberately requires your implementation.
 
 Updating the project's local `auggy` dependency updates the runtime and bundled
 built-ins. Separately installed capabilities such as `@auggy/link`, and provider
-packages, follow their own manifest and lockfile selections. Your `src/index.ts`,
-`src/agent.ts`, `src/http.ts`, `src/turn.ts`, custom augments and
+packages, follow their own manifest and lockfile selections. Your `src/main.ts`,
+`src/http.ts`, `src/turn.ts`, custom augments and
 copied skills remain yours to review and adapt to compatibility changes. A global
 CLI update alone does not replace the agent's selected local runtime.
 
@@ -227,8 +228,7 @@ my-agent/
   identity.md
   learned-behaviors.md
   src/
-    index.ts                  # actual startup
-    agent.ts                  # local turn program and optional observer
+    main.ts                   # startup, turn-program binding and optional observer
     http.ts                   # editable POST /agent/run mount
     turn.ts                   # actual turn orchestration
     augments/README.md        # custom capability authoring guide
@@ -248,7 +248,7 @@ Built-in options live directly in those declarations:
 ```yaml
 # Fragment of agent.yaml; retain the other generated fields.
 application:
-  entrypoint: ./src/index.ts
+  entrypoint: ./src/main.ts
   contractVersion: 2
 augments:
   - name: layeredMemory

@@ -19,17 +19,17 @@ calls perform the named work; they are not an illustrative copy of a hidden
 startup function. The managed runner registers cleanup before any stage begins.
 
 ```text
-index.ts: prepareConfiguration → createModel → createAugments → createAgent
-          → transportsFrom / bindTransport → httpBindings → start
-agent.ts: selected turn program + optional finalization observer
+main.ts: prepareConfiguration → createModel → createAugments
+         → createAgent({ turnProgram, onTurnFinalized? })
+         → transportsFrom / bindTransport → httpBindings → start
 http.ts:  selected POST mount → original guarded request delegate
 turn.ts:  internal work or prompt → inference → tools → repeat / finish
 ```
 
 | Supported edit | Executed source | Maintained boundary |
 | --- | --- | --- |
-| Add startup observations around real stages | [index.ts](../../examples/inspectable-agent/src/index.ts) | Stage ordering, host-owned handles, cleanup and admission remain enforced. |
-| Select the turn recipe, lower inference limits, attach an observer | [agent.ts](../../examples/inspectable-agent/src/agent.ts), [turn.ts](../../examples/inspectable-agent/src/turn.ts) | Guarded operations retain authorization, budgets, cancellation and settlement. |
+| Add startup observations around real stages | [main.ts](../../examples/inspectable-agent/src/main.ts) | Stage ordering, host-owned handles, cleanup and admission remain enforced. |
+| Select the turn recipe, lower inference limits, attach an observer | [main.ts](../../examples/inspectable-agent/src/main.ts), [turn.ts](../../examples/inspectable-agent/src/turn.ts) | Guarded operations retain authorization, budgets, cancellation and settlement. |
 | Change the literal conversation mount | [http.ts](../../examples/inspectable-agent/src/http.ts) | Authentication, replay and streaming use the existing adapter. Console and endpoint guidance follow the selected mount; the old path is not an alias. |
 | Configure capabilities or add domain implementations | `agent.yaml`, project `src/augments/` | YAML is the sole provider/augment graph. Business authorization and lifecycle belong to each augment. |
 
@@ -44,9 +44,9 @@ collisions before transport registration. No turn-kernel, storage-root, volume,
 coordination or deployment architecture change is included.
 
 Review is split across runtime lifecycle, HTTP/authentication, and scaffold/CLI
-ownership. Existing installed-authoring scenarios verify a renamed endpoint and
-an actual edit to `agent.ts`, including inference count, observer correlation,
-authentication, SSE and durable replay. No new test harness or hosted rehearsal
+ownership. The recorded installed-authoring scenarios verified a renamed endpoint and
+an actual edit to the then-generated `agent.ts`, including inference count,
+observer correlation, authentication, SSE and durable replay. No new test harness or hosted rehearsal
 is introduced.
 
 Verification completed on 2026-11-17:
@@ -80,6 +80,38 @@ local installed execution and generated deployment files; they do not claim a
 new hosted Railway rehearsal. Contract-2 projects require a contract-2-capable
 global CLI when launched globally; historical contract-1 application coverage
 uses its matching pinned source.
+
+### Generated entrypoint follow-up
+
+The current scaffold has three execution files: `src/main.ts`, `src/http.ts`
+and `src/turn.ts`. `main.ts` exports the named `main`, performs assembly, and
+passes `turnProgram` directly to `createAgent`. An optional `onTurnFinalized`
+callback belongs at that same call; a separate generated `src/agent.ts` wrapper
+is no longer needed. `agent.yaml` declares `./src/main.ts` and remains the sole
+enabled-augment graph. Direct start/dev scripts execute that entrypoint.
+
+The baseline sections below retain their historical `index.ts` and `agent.ts`
+names. Existing owned applications keep their declared entrypoints until their
+engineer changes them; package `src/index.ts` and `src/agent.ts` remain runtime
+files and are unaffected by this scaffold naming change. The installed acceptance
+record above predates this follow-up.
+
+Follow-up verification on 2026-11-17:
+
+- Focused scaffold, creation, inspection, adoption/recovery and self-authoring
+  tests passed (136 tests), alongside the affected release-fixture and builder
+  skill checks. Strict typecheck and repository lint passed.
+- The installed authoring suite passed against the consolidated scaffold for
+  all four provider selections. Direct, local and global launches exercised
+  edits to `main.ts`, including an inference limit and finalization observer.
+  Inspection, adoption, service lifecycle, owned-file preservation and generated
+  deployment-file checks passed; temporary-consumer cleanup was confirmed.
+- Evidence: `/private/tmp/auggy-main-authoring.nQ7GFh/authoring-suite.json`.
+  Candidate: `/private/tmp/auggy-main-final.4BtS5q/auggy-0.5.0.tgz`.
+- The local review demo now opens at `src/main.ts`, passes its generated
+  typecheck and recipe tests, and returns a healthy HTTP response. Runtime,
+  storage and hosting architecture are unchanged; no hosted rehearsal was run
+  for this scaffold consolidation.
 
 ## Original baseline and scope
 
@@ -151,15 +183,15 @@ agent-project/
     └── augments/                Packaged capabilities, including Telegram
 ```
 
-This is an abbreviated current tree. A fresh default project does not contain
+This is an abbreviated baseline tree. A fresh default project did not contain
 every optional augment. A custom augment's files appear when it is created.
 There is no automatically loaded project `SOUL.md` or `AGENTS.md` in this
 scaffold. Their earlier proposed names must not be presented as delivered.
 File naming changes require an explicit purpose/loading decision; this mapping
 does not rename files or add duplicate instruction sources.
 
-Project `src/agent.ts` and installed `auggy/src/agent.ts` are different files.
-The former binds execution options; the latter implements the agent. The
+At baseline, project `src/agent.ts` and installed `auggy/src/agent.ts` were
+different files. The former bound execution options; the latter implements the agent. The
 package implementation remains inside `node_modules`; it is not copied into
 project `src/`.
 
@@ -170,9 +202,9 @@ project `src/`.
 | Step | What happens now | Project visibility and package owner |
 | --- | --- | --- |
 | 1. Select runtime | A direct launch validates its declared entrypoint and project-installed runtime. Compatible CLI launch commands select/delegate to that runtime before executing the application. | `package.json`, lockfile and `agent.yaml`; [runner](../../src/application/runner.ts), [CLI bootstrap](../../src/cli/command-bootstrap.ts), [runtime selection](../../src/cli/project-runtime.ts). |
-| 2. Enter application | Direct execution calls `runApplication(main, ...)`; the selected CLI imports the named `main` and calls `runManagedApplication`. The managed runner registers signals before calling `main`. | [Generated index](../../src/scaffold-templates/application/src/index.ts.template); [CLI dev launch](../../src/cli/commands/dev.ts). Top-level imports happen before this managed call. |
+| 2. Enter application | Direct execution calls `runApplication(main, ...)`; the selected CLI imports the named `main` and calls `runManagedApplication`. The managed runner registers signals before calling `main`. | Historical generated `src/index.ts`; [CLI dev launch](../../src/cli/commands/dev.ts). Top-level imports happen before this managed call. |
 | 3. Prepare host | `launch.createHost` registers one host for cleanup. `host.prepare()` parses YAML, checks deployment/storage ownership, resolves the provider and augments, invokes composition, and constructs the hosted agent and optional jobs. | Visible `createHost` / `prepare` calls; implementation in [host](../../src/application/host.ts). The provider and augment graph have been resolved before the project composition callback. |
-| 4. Bind recipe | `composeAgent` binds `turnProgram` and may bind `onTurnFinalized`. It receives no provider, augment instances or agent handle through the current public interface. | [Generated agent](../../src/scaffold-templates/application/src/agent.ts.template); `ConfiguredAgentComposition` in [types](../../src/types.ts). Calling this explicit project-owned assembly overstates current control. |
+| 4. Bind recipe | `composeAgent` binds `turnProgram` and may bind `onTurnFinalized`. It receives no provider, augment instances or agent handle through the current public interface. | Historical generated `src/agent.ts`; `ConfiguredAgentComposition` in [types](../../src/types.ts). Calling this explicit project-owned assembly overstates current control. |
 | 5. Bind HTTP | `prepared.http.map(configureHttp)` supplies exactly one listener for each configured web transport. There are no HTTP listeners when no web transport is enabled. | [Generated HTTP](../../src/scaffold-templates/application/src/http.ts.template); [managed router](../../src/transports/managed-http-router.ts). Other transports are configured augments. |
 | 6. Become ready | The host starts the agent. Augment boot, route validation, transport registration and ready hooks precede admission. Jobs start if configured; the host then opens admission and reports ready. | `host.start(...)`; [host](../../src/application/host.ts), `start` in [package agent](../../src/agent.ts), [lifecycle manager](../../src/kernel/lifecycle-manager.ts). A bound port alone does not establish readiness. |
 

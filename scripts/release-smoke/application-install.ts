@@ -7,6 +7,7 @@ import {
   inspectApplicationArtifact,
   prepareApplicationConsumer,
   type PackedArtifactInput,
+  type ApplicationRecipe,
 } from "./application-consumer";
 import { INSPECTABLE_APPLICATION_RECIPE } from "./application-recipe";
 
@@ -19,6 +20,7 @@ export interface ApplicationInstallOptions {
   provider: PackedArtifactInput;
   legacy?: boolean;
   referenceDir?: string;
+  recipe?: ApplicationRecipe;
 }
 
 export async function installApplicationConsumer(options: ApplicationInstallOptions) {
@@ -62,7 +64,7 @@ export async function installApplicationConsumer(options: ApplicationInstallOpti
       repoRoot: options.repoRoot,
       referenceDir,
       destination: consumer,
-      recipe: INSPECTABLE_APPLICATION_RECIPE,
+      recipe: options.recipe ?? INSPECTABLE_APPLICATION_RECIPE,
       core: options.core,
       provider: options.provider,
     });

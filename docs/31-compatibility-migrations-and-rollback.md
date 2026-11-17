@@ -12,7 +12,7 @@ An agent selects its own local `auggy` dependency. Updating that package updates
 guarded runtime operations and bundled built-in implementations; updating a global
 CLI alone does not replace it. Separately installed capabilities such as
 `@auggy/link`, and provider packages, follow their own manifest and lockfile
-selections. The generated `src/index.ts`, `src/agent.ts`,
+selections. The generated `src/main.ts`,
 `src/http.ts`, `src/turn.ts`, custom augments and copied skills are application-owned
 source. Review release notes and adapt those files explicitly when a contract
 changes; dependency installation never silently rewrites them. The optional

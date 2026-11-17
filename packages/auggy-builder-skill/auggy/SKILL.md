@@ -309,11 +309,10 @@ are clear. Do not require these scripts when shell access is unavailable.
 ## Project Map
 
 - `agent.yaml`: sole enabled-augment/configuration graph, including inline options
-  and `application.entrypoint: ./src/index.ts`.
-- `src/index.ts`: actual managed startup: prepare configuration, create model and
-  augments, create agent, bind transports, configure HTTP, then start.
-- `src/agent.ts`: local turn program and optional finalization observer passed as
-  execution options to `createAgent`; YAML owns the enabled graph.
+  and `application.entrypoint: ./src/main.ts`.
+- `src/main.ts`: actual managed startup: prepare configuration, create model and
+  augments, call `createAgent` with `turnProgram` and an optional `onTurnFinalized`
+  callback, bind transports, configure HTTP, then start. YAML owns the enabled graph.
 - `src/http.ts`: visible `POST /agent/run`, delegating the original request to the
   maintained authentication, validation and durable-delivery adapter. Its literal
   mount path is editable; console and metadata follow the selected mount.

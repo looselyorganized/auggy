@@ -290,9 +290,10 @@ export function buildInspectionReport(
     }
     const conventional: Partial<Record<"composition" | "http" | "turn", InspectionSource>> = {};
     if (application.mode === "application") {
-      if (normalize(application.entrypoint!) === "src/index.ts") {
+      const entrypoint = normalize(application.entrypoint!);
+      if (entrypoint === "src/main.ts" || entrypoint === "src/index.ts") {
         for (const [key, file] of [
-          ["composition", "agent.ts"],
+          ["composition", entrypoint === "src/main.ts" ? "main.ts" : "agent.ts"],
           ["http", "http.ts"],
           ["turn", "turn.ts"],
         ] as const) {

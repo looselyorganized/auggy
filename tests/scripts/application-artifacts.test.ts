@@ -20,7 +20,10 @@ import {
   applicationHash,
   inspectApplicationArtifact,
 } from "../../scripts/release-smoke/application-consumer";
-import { INSPECTABLE_APPLICATION_RECIPE as recipe } from "../../scripts/release-smoke/application-recipe";
+import {
+  HISTORICAL_APPLICATION_RECIPE as recipe,
+  INSPECTABLE_APPLICATION_RECIPE,
+} from "../../scripts/release-smoke/application-recipe";
 
 let root: string;
 let source: string;
@@ -45,6 +48,22 @@ beforeEach(() => {
   }
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+test("current and pinned reference recipes keep their distinct owned entrypoints", () => {
+  expect(INSPECTABLE_APPLICATION_RECIPE.entrypoint).toBe("src/main.ts");
+  expect(INSPECTABLE_APPLICATION_RECIPE.sourceFiles).not.toContain("src/index.ts");
+  expect(INSPECTABLE_APPLICATION_RECIPE.sourceFiles).not.toContain("src/agent.ts");
+  expect(recipe.entrypoint).toBe("src/index.ts");
+  expect(recipe.sourceFiles).toContain("src/agent.ts");
+  expect(recipe.sourceFiles).not.toContain("src/main.ts");
+  for (const edit of Object.values(INSPECTABLE_APPLICATION_RECIPE.edits)) {
+    const source = readFileSync(
+      join(import.meta.dir, "../../examples/inspectable-agent", edit.path),
+      "utf8",
+    );
+    expect(source.split(edit.before)).toHaveLength(2);
+  }
+});
 
 test("retains only verified pinned reference files independently of the temporary build tree", () => {
   const privatePath = join(source, "examples/inspectable-agent/node_modules/private.txt");

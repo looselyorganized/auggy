@@ -22,8 +22,7 @@ An Auggy agent is a normal project folder wherever the operator creates it:
 ├── identity.md
 ├── learned-behaviors.md
 ├── src/
-│   ├── index.ts             # managed startup
-│   ├── agent.ts             # central-config composition
+│   ├── main.ts              # managed startup and turn-program binding
 │   ├── http.ts              # POST /agent/run
 │   ├── turn.ts              # turn recipe
 │   └── augments/README.md   # add custom modules here
@@ -47,7 +46,7 @@ variable names and placeholders and remains normally readable.
 
 ### Default-scaffold details
 
-- `agent.yaml` uses the top-level `identity: ./identity.md` shorthand; the runtime loads it through fileMemory with `placement: system`, `origin: operator`, and `mutable: false`. `augments:` lists inline declarations in boot order, each with `name`, `type`, and optional `options` or custom `source`. `application.entrypoint` selects `./src/index.ts`.
+- `agent.yaml` uses the top-level `identity: ./identity.md` shorthand; the runtime loads it through fileMemory with `placement: system`, `origin: operator`, and `mutable: false`. `augments:` lists inline declarations in boot order, each with `name`, `type`, and optional `options` or custom `source`. `application.entrypoint` selects `./src/main.ts`.
 - `identity.md` is rendered from `src/scaffold-templates/identity.md` and ships with the agent's stable identity, voice, and baked-in security rules. It does **not** contain the skill manifest.
 - `learned-behaviors.md` is the scaffolded mutable `fileMemory` store. It is for creator-approved, agent-global operating guidance, not autonomous policy changes, operator identity, authorization facts, or visitor-specific memory. Default writes require runtime-verified creator trust. The former `learned.md` filename is no longer supported; rename the file and update its `fileMemory` source before upgrading.
 - With an admitted runtime root, `learned-behaviors.md` is only the immutable

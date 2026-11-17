@@ -93,11 +93,11 @@ export function assertGeneratedRecipeSources(options: {
 }): void {
   const { recipe } = options;
   check(
-    recipe.schemaVersion === 1 && recipe.entrypoint === "src/index.ts",
+    recipe.schemaVersion === 1 && recipe.entrypoint === "src/main.ts",
     "Unknown authoring recipe",
   );
   snapshotGeneratedAuthoringSources({ ...options, sourceFiles: recipe.sourceFiles });
-  const expected = { startup: "src/index.ts", http: "src/http.ts", turn: "src/turn.ts" };
+  const expected = { startup: "src/main.ts", http: "src/http.ts", turn: "src/turn.ts" };
   for (const kind of ["startup", "http", "turn"] as const) {
     const edit = recipe.edits[kind];
     check(edit.path === expected[kind], "Sensitivity edit targets the wrong owned source");
@@ -328,7 +328,7 @@ export function generatedApplicationRecipe(
 ): GeneratedApplicationRecipe {
   return {
     schemaVersion: 1,
-    entrypoint: "src/index.ts",
+    entrypoint: "src/main.ts",
     sourceFiles,
     capability: {
       slug: "authoring-record",
@@ -343,7 +343,7 @@ export function generatedApplicationRecipe(
     },
     edits: {
       startup: {
-        path: "src/index.ts",
+        path: "src/main.ts",
         before: "  const runtime = launch.createHost();",
         after:
           '  throw new Error("authoring-startup-rejected");\n  const runtime = launch.createHost();',
@@ -876,17 +876,17 @@ export async function runGeneratedApplication(
           after: 'path: "/owned-agent/run",',
         };
         const executionEdit = {
-          path: "src/agent.ts",
-          before: "  turnProgram,",
-          after: `  turnProgram: { ...turnProgram, maxInferences: 1 },
-  onTurnFinalized: async (observation) => {
-    await Bun.write(new URL("../data/authoring/finalization.jsonl", import.meta.url), JSON.stringify({
-      threadId: observation.threadId, turnId: observation.turnId,
-      outcome: observation.outcome, status: observation.status, disposition: observation.disposition,
-      trace: { inferenceAttempts: observation.trace.inferenceAttempts,
-        toolAttempts: observation.trace.toolAttempts, successfulToolCalls: observation.trace.successfulToolCalls },
-    }) + "\\n");
-  },`,
+          path: "src/main.ts",
+          before: "    turnProgram,",
+          after: `    turnProgram: { ...turnProgram, maxInferences: 1 },
+    onTurnFinalized: async (observation) => {
+      await Bun.write(new URL("../data/authoring/finalization.jsonl", import.meta.url), JSON.stringify({
+        threadId: observation.threadId, turnId: observation.turnId,
+        outcome: observation.outcome, status: observation.status, disposition: observation.disposition,
+        trace: { inferenceAttempts: observation.trace.inferenceAttempts,
+          toolAttempts: observation.trace.toolAttempts, successfulToolCalls: observation.trace.successfulToolCalls },
+      }) + "\\n");
+    },`,
         };
         await withApplicationEdit(
           consumer,
@@ -924,7 +924,7 @@ export async function runGeneratedApplication(
                       });
                     }
                     const hashes = snapshot(customFiles);
-                    assertOnlyApplicationEdits(baseline, hashes, ["src/http.ts", "src/agent.ts"]);
+                    assertOnlyApplicationEdits(baseline, hashes, ["src/http.ts", "src/main.ts"]);
                     const limited = await stopped(async () => {
                       await start(path);
                       const result = await turn(

@@ -246,8 +246,7 @@ support-agent/
 ├── identity.md
 ├── skills/                      # model-visible instruction snapshots
 ├── src/
-│   ├── index.ts                  # main: compose, configure HTTP, start
-│   ├── agent.ts                  # configured augments + local turn recipe
+│   ├── main.ts                   # prepare, createAgent({ turnProgram }), bind, start
 │   ├── http.ts                   # POST /agent/run → guarded web.agentRun
 │   ├── turn.ts                   # visible inference/tool decision loop
 │   └── augments/README.md        # add project-owned business modules here
@@ -257,10 +256,11 @@ support-agent/
 └── node_modules/auggy/src/       # installed runtime and built-in implementations
 ```
 
-`src/agent.ts` binds the recipe to the augments declared in `agent.yaml`; it does
-not maintain a second enabled list. `auggy inspect` reports the selected installed
-runtime and declared source locations. Open `src/index.ts`, follow composition and
-HTTP dispatch, then open `src/turn.ts` and the indicated built-in implementation.
+`src/main.ts` binds `turnProgram` and an optional `onTurnFinalized` callback at
+`createAgent`. `agent.yaml` remains the sole enabled-augment list. `auggy inspect`
+reports the selected installed runtime and declared source locations. Open
+`src/main.ts`, follow assembly and HTTP dispatch, then open `src/turn.ts` and the
+indicated built-in implementation.
 Custom source hints are static navigation, not proof of an arbitrary call graph.
 
 `auggy augment create orders` adds

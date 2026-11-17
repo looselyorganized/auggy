@@ -16,12 +16,14 @@ import {
   APPLICATION_ROWS,
   applicationHash,
   type PackedArtifactInput,
+  type ApplicationRecipe,
 } from "./application-consumer";
 import { installApplicationConsumer } from "./application-install";
 import { runApplicationCompatibility } from "./application-compatibility";
 import { runInstalledApplicationLaunchd } from "./application-launchd";
 import {
   INSPECTABLE_APPLICATION_RECIPE as recipe,
+  HISTORICAL_APPLICATION_RECIPE,
   INSPECTABLE_ORDER_OUTPUT as expectedToolOutput,
 } from "./application-recipe";
 import { runInstalledApplication } from "./application-runner";
@@ -57,6 +59,7 @@ export async function runApplicationSuite(options: {
     provider: PackedArtifactInput,
     legacy = false,
     referenceDir?: string,
+    applicationRecipe?: ApplicationRecipe,
   ) =>
     installApplicationConsumer({
       repoRoot,
@@ -66,6 +69,7 @@ export async function runApplicationSuite(options: {
       provider,
       legacy,
       referenceDir,
+      recipe: applicationRecipe,
       evidenceDirectory: join(evidence, "installs"),
     });
   const context = (name: string) => {
@@ -115,6 +119,7 @@ export async function runApplicationSuite(options: {
       baseline.provider,
       false,
       baseline.referenceDir,
+      HISTORICAL_APPLICATION_RECIPE,
     );
     results.artifacts = {
       candidate: { core, provider },

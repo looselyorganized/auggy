@@ -125,7 +125,7 @@ export async function runGeneratedAuthoringInspection(options: {
   );
   check(trap.byteLength < 1024, "Passive fixture exceeded bound");
   const targets = [
-    join(consumer, "src/index.ts"),
+    join(consumer, "src/main.ts"),
     runtime.entry,
     provider.entry,
     join(local.packageRoot, "src/transports/web-transport.ts"),
@@ -167,7 +167,7 @@ export async function runGeneratedAuthoringInspection(options: {
       assertInstalledAuthoringInspection(report, {
         packageRoot: local.packageRoot,
         manifestSHA256: applicationHash(readAuthoringSource(local.packageRoot, "package.json")),
-        entrypoint: join(consumer, "src/index.ts"),
+        entrypoint: join(consumer, "src/main.ts"),
       });
       check(
         !JSON.stringify(report).includes("authoring-passive-import-forbidden"),

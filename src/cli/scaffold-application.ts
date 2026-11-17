@@ -4,8 +4,7 @@ import type { ApplicationScaffoldPlan } from "./authoring/contracts";
 
 const TEMPLATE_ROOT = resolve(import.meta.dir, "../scaffold-templates/application");
 const TEMPLATE_FILES = [
-  "src/index.ts",
-  "src/agent.ts",
+  "src/main.ts",
   "src/http.ts",
   "src/turn.ts",
   "src/augments/README.md",
@@ -37,8 +36,8 @@ export function applicationPackageFields(
   return Object.freeze({
     type: "module",
     scripts: Object.freeze({
-      start: "bun src/index.ts",
-      dev: "bun src/index.ts",
+      start: "bun src/main.ts",
+      dev: "bun src/main.ts",
       cli: `auggy dev --config ${configArgument}`,
       typecheck: "tsc --project tsconfig.json --noEmit",
       test: "bun test tests",
@@ -55,7 +54,7 @@ export function planApplicationScaffold(input: {
   const packageFields = applicationPackageFields(name);
   const configUrl = JSON.stringify(`../${encodeURIComponent(name)}`);
   return Object.freeze({
-    application: Object.freeze({ entrypoint: "./src/index.ts", contractVersion: 2 }),
+    application: Object.freeze({ entrypoint: "./src/main.ts", contractVersion: 2 }),
     files: Object.freeze(
       TEMPLATE_FILES.map((relativePath) =>
         Object.freeze({

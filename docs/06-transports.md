@@ -5,7 +5,7 @@
 ## Finding the application endpoint
 
 New generated applications expose the actual `POST /agent/run` mount in their
-own `src/http.ts`, selected from `src/index.ts`. The
+own `src/http.ts`, selected from `src/main.ts`. The
 [reference's HTTP module](../examples/inspectable-agent/src/http.ts) also shows
 this pattern. It passes the original managed request to `web.agentRun(request)` and returns its
 stream. That delegate retains transport authentication, admission, idempotency

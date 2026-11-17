@@ -525,7 +525,7 @@ test("prepared HTTP source inventory is explicit and owns its startup, shutdown 
   const root = mkdtempSync(join(tmpdir(), "m5-http-source-"));
   try {
     mkdirSync(join(root, "src"));
-    for (const file of ["index", "http"])
+    for (const file of ["main", "http"])
       writeFileSync(
         join(root, `src/${file}.ts`),
         readFileSync(
@@ -551,16 +551,16 @@ test("prepared HTTP source inventory is explicit and owns its startup, shutdown 
         ),
       ),
     ).toThrow();
-    expect(readFileSync(join(root, "src/index.ts"), "utf8")).toContain(
+    expect(readFileSync(join(root, "src/main.ts"), "utf8")).toContain(
       "await startContainerHttpFixture()",
     );
     expect(readFileSync(join(root, "src/augments/orders/index.ts"), "utf8")).toContain(
       "onShutdown: stopContainerHttpFixture",
     );
-    const original = readFileSync(join(root, "src/index.ts"));
-    writeFileSync(join(root, "src/index.ts"), `${original.toString("utf8")}\n// changed\n`);
+    const original = readFileSync(join(root, "src/main.ts"));
+    writeFileSync(join(root, "src/main.ts"), `${original.toString("utf8")}\n// changed\n`);
     expect(() => assertHostedHttpFixtures(root, prepared.files)).toThrow();
-    writeFileSync(join(root, "src/index.ts"), original);
+    writeFileSync(join(root, "src/main.ts"), original);
     const edited = editHostedHttpSource(root, "owned-marker");
     expect(edited.beforeSHA256).not.toBe(edited.afterSHA256);
     expect(readFileSync(join(root, "src/http.ts"), "utf8")).toContain(

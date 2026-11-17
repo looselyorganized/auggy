@@ -653,7 +653,7 @@ export async function runApplicationCompatibility(
                 configPath,
                 stringify({
                   ...configValue,
-                  application: { entrypoint: "./src/index.ts", contractVersion: 37 },
+                  application: { entrypoint: "./src/main.ts", contractVersion: 37 },
                 }),
                 () => reject("L05-invalid-app-contract", "supports integer contracts 1 and 2"),
               );

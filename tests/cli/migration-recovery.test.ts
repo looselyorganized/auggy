@@ -189,8 +189,8 @@ describe("migration publication and recovery integration", () => {
     ["after-ignore", ""],
     ["before-first-backup", ""],
     ["prepared", ""],
-    ["before-file", "src/index.ts"],
-    ["after-file", "src/index.ts"],
+    ["before-file", "src/main.ts"],
+    ["after-file", "src/main.ts"],
     ["after-activation", "agent.yaml"],
     ["before-complete", ""],
   ] as const) {
@@ -215,7 +215,7 @@ describe("migration publication and recovery integration", () => {
       expect(result.report.status).toBe("rolled-back");
       expect(result.report.activation).toBe("original");
       for (const [path, hash] of hashes) expect(fileHashes(project).get(path)).toBe(hash);
-      expect(existsSync(join(project, "src/index.ts"))).toBe(false);
+      expect(existsSync(join(project, "src/main.ts"))).toBe(false);
       expect(lstatSync(join(project, ".auggy/authoring.lock")).ino).toBe(inode);
       const privateFiles = readdirSync(join(project, ".auggy/operations", id));
       expect(privateFiles.every((file) => file === "receipt.json")).toBe(true);
@@ -234,7 +234,7 @@ describe("migration publication and recovery integration", () => {
       planMigration(readAuthoringDocument(config), { application: true }),
       {
         fault(event) {
-          if (event.boundary === "after-file" && event.path === "src/index.ts")
+          if (event.boundary === "after-file" && event.path === "src/main.ts")
             throw new Error("synthetic disk failure");
         },
       },
@@ -242,7 +242,7 @@ describe("migration publication and recovery integration", () => {
     expect(result.status).toBe("rolled-back");
     expect(result.activation).toBe("original");
     expect(readFileSync(config)).toEqual(original);
-    expect(existsSync(join(project, "src/index.ts"))).toBe(false);
+    expect(existsSync(join(project, "src/main.ts"))).toBe(false);
   });
 
   test("operator-modified or deleted config and owned source block rollback without any changes", async () => {

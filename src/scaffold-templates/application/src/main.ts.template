@@ -1,6 +1,6 @@
 import { runApplication, type ApplicationMain } from "auggy/application";
-import { agentExecution } from "./agent";
 import { configureHttp } from "./http";
+import { turnProgram } from "./turn";
 
 export const main: ApplicationMain = async (launch) => {
   // The managed runner owns every stage, including cleanup after startup failures.
@@ -8,7 +8,14 @@ export const main: ApplicationMain = async (launch) => {
   const config = await runtime.prepareConfiguration();
   const model = await runtime.createModel(config);
   const augments = await runtime.createAugments(config);
-  const agent = runtime.createAgent({ config, model, augments, ...agentExecution });
+  const agent = runtime.createAgent({
+    config,
+    model,
+    augments,
+    turnProgram,
+    // Optional: record final turn outcomes and execution statistics.
+    // onTurnFinalized: (result) => console.log(result.status, result.trace),
+  });
   for (const transport of runtime.transportsFrom(augments)) {
     runtime.bindTransport(transport, agent);
   }

@@ -29,15 +29,8 @@ while (turn.remainingInferences > 0) {
 function recipe(): GeneratedApplicationRecipe {
   return {
     schemaVersion: 1,
-    entrypoint: "src/index.ts",
-    sourceFiles: [
-      "package.json",
-      "agent.yaml",
-      "src/index.ts",
-      "src/agent.ts",
-      "src/http.ts",
-      "src/turn.ts",
-    ],
+    entrypoint: "src/main.ts",
+    sourceFiles: ["package.json", "agent.yaml", "src/main.ts", "src/http.ts", "src/turn.ts"],
     capability: {
       slug: "sample",
       tool: { name: "sample_lookup_record", input: { id: "SAMPLE-001" }, invalidInput: { id: 17 } },
@@ -47,7 +40,7 @@ function recipe(): GeneratedApplicationRecipe {
     },
     edits: {
       startup: {
-        path: "src/index.ts",
+        path: "src/main.ts",
         before: "launch.createHost()",
         after: 'throw new Error("startup-control"); launch.createHost()',
       },
@@ -80,8 +73,7 @@ beforeEach(() => {
   for (const [path, source] of Object.entries({
     "package.json": "{}",
     "agent.yaml": "augments: []",
-    "src/agent.ts": "compose()",
-    "src/index.ts": "launch.createHost()",
+    "src/main.ts": "launch.createHost()",
     "src/http.ts": "web.agentRun(request)",
     "src/turn.ts": turnSource,
   }))
@@ -223,7 +215,7 @@ describe("generated application assertion sensitivity, not installed acceptance"
       "prepared terminal check",
     );
     const wrong = recipe();
-    wrong.edits.http.path = "src/agent.ts";
+    wrong.edits.http.path = "src/main.ts";
     expect(() => assertGeneratedRecipeSources({ ...input, recipe: wrong })).toThrow(
       "wrong owned source",
     );

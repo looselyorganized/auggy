@@ -328,7 +328,7 @@ export function inspectGeneratedAuthoringTree(consumer: string) {
   check(
     record(config) &&
       record(config.application) &&
-      config.application.entrypoint === "./src/index.ts" &&
+      config.application.entrypoint === "./src/main.ts" &&
       config.application.contractVersion === 2,
     "Fresh project lacks the owned application declaration",
   );

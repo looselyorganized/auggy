@@ -1,7 +1,9 @@
 import type { TurnProgramBinding } from "auggy/application";
 
 // Edit orchestration here. Guarded operations retain authorization and accounting.
-// Omitted limits use configured inference limits and the managed 15-minute deadline.
+// By default, the model loop uses settings.maxInferenceLoops from agent.yaml.
+// Auggy cancels this turn program after 15 minutes; the agent service stays running.
+// Set maxInferences or timeoutMs below to use lower limits.
 export const turnProgram: TurnProgramBinding = {
   async run(turn) {
     const internal = await turn.dispatchInternalTurn();

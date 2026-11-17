@@ -4,16 +4,16 @@
 
 ## Trace an application from its own source
 
-A new `auggy create` project owns `src/index.ts`, `src/agent.ts`, `src/http.ts`
-and `src/turn.ts`. Open `src/index.ts` to see startup: prepare configuration,
-create the model, create the declared augments, create the agent with execution
-options from `agent.ts`, bind each transport, configure HTTP with `http.ts`,
+A new `auggy create` project owns `src/main.ts`, `src/http.ts` and `src/turn.ts`.
+Open `src/main.ts` to see startup: prepare configuration, create the model and
+declared augments, call `createAgent` with `turnProgram` and an optional
+`onTurnFinalized` callback, bind each transport, configure HTTP with `http.ts`,
 then start. Each call executes its stage under runner-owned cleanup. `POST /agent/run` passes its original request to `web.agentRun`;
 authentication, validation and durable delivery stay in that maintained adapter.
 `turn.ts` visibly orders prompt preparation, inference, tool execution, required
 final answers, refresh and exhaustion through guarded runtime operations.
 
-`agent.yaml` declares `application: { entrypoint: ./src/index.ts, contractVersion: 2 }`
+`agent.yaml` declares `application: { entrypoint: ./src/main.ts, contractVersion: 2 }`
 and is the sole enabled-augment graph. Built-in options are inline; custom
 modules normally live under `src/augments/<slug>/`. The runtime and built-ins
 stay in `node_modules/auggy/src/`. `auggy inspect` reports the selected local
