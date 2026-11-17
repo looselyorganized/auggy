@@ -272,8 +272,10 @@ roots, requires the runtime-owned root to have mode `0700`, creates
 write/fsync/rename/delete probe through pinned directory descriptors. Startup
 fails closed when the advertised mount or durability contract is wrong.
 Only explicit Railway startup may narrow the permissions of an already existing,
-owned, empty advertised mount to `0700`. A nonempty unsafe mount is refused;
-generic Docker and local startup never perform this initialization. If
+owned advertised mount itself to `0700`, whether empty or nonempty. Existing
+files, subdirectory permissions and ownership are left untouched; unsafe runtime
+state still fails ordinary admission. Generic Docker and local startup never
+perform this initialization. If
 `AUGGY_DATA_DIR` is also set on Railway, it must equal `/app/data`.
 Fence checking, agent/volume identity binding, and that probe share one held
 root descriptor. The platform must keep the admitted mountpoint stable for the
@@ -591,7 +593,7 @@ contract connects them to a common bounded signal boundary.
 | visitorAuth refuses to boot — "publicUrl required" | Check that the `visitorAuth` entry in `agent.yaml` has `publicUrl: ${AUGGY_PUBLIC_URL}` and the deploy actually generated a domain. Re-run `auggy deploy` to refresh. |
 | Deploy preflight fails because visitorAuth uses console mail | If `agentMail` is installed, run `auggy augment setup agentMail --mode connect` followed by `auggy augment setup visitorAuth --mode env`; otherwise run `auggy augment setup visitorAuth --mode connect`. Set `allowConsoleInProduction: true` only for smoke tests where log-visible magic links are acceptable. |
 | Deploy preflight fails because MCP has an enabled `stdio` server | Use a remote HTTPS MCP server for cloud, or mark the local server `cloud: "disabled"` in `.mcp.json`. |
-| Runtime refuses to start with a volume-admission error | Confirm the advertised `/app/data` mount, runtime ownership, mode `0700`, matching agent ID and reconciled restore fence. Railway may initialize only an empty owned mount; inspect existing state before repairing it offline. |
+| Runtime refuses to start with a volume-admission error | Confirm the advertised `/app/data` mount, runtime ownership, matching agent ID and reconciled restore fence. Railway initializes the owned mount root to `0700` without changing child files or ownership; invalid existing state still requires offline recovery. |
 | Memory disappears after redeploy | Check Railway dashboard → service → Volumes and confirm the mount is `/app/data`. Core SQLite augments resolve directly to that root; do not repair this by adding an `/app/*.db` symlink. |
 | Console chats disappear after restart | Confirm the database exists at `/app/data/console-chat.db`, the service still has the `/app/data` volume attached, `webTransport.consoleChat.dbPath` is not `null`, and the service is configured for one replica. An explicit custom path must remain below `/app/data`. |
 | Daily budget cap hit unexpectedly | If you enabled autoSave with an extraction engine, extraction calls count against the cap. Run `bun run packages/evals/src/layered-memory/smoke.ts` to measure your per-extraction cost; lower the cadence in the `layeredMemory` entry in `agent.yaml` if needed. |

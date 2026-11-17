@@ -6,13 +6,7 @@ import {
   pinDirectory,
   type PinnedDirectory,
 } from "../lib/anchored-files";
-import {
-  listDirectoryFd,
-  renameAt,
-  tryLockFileExclusive,
-  tryOpenAt,
-  unlinkAt,
-} from "../lib/posix-at";
+import { renameAt, tryLockFileExclusive, tryOpenAt, unlinkAt } from "../lib/posix-at";
 import { issueRuntimeDataAdmission } from "../runtime-data-admission";
 import {
   RAILWAY_RUNTIME_DATA_ROOT,
@@ -112,31 +106,17 @@ function verifyPinnedRootPath(root: PinnedDirectory, configuredPath: string): vo
 
 /**
  * Package-private provisioning, called only by explicit Railway admission.
- * No mount creation, ownership change, recursive repair or content mutation.
+ * Narrow only the owned mount root, including mounts containing provider metadata
+ * or existing state. No mount creation, ownership change or child mutation.
  * The separate helper lets tests exercise actual default-mode temporary mounts.
  */
-export function initializeEmptyRailwayRuntimeMount(
-  root: PinnedDirectory,
-  configuredPath: string,
-): void {
+export function initializeRailwayRuntimeMount(root: PinnedDirectory, configuredPath: string): void {
   verifyPinnedRootPath(root, configuredPath);
   if ((fstatSync(root.fd).mode & 0o7777) === 0o700) return;
-  const assertEmpty = () => {
-    // Reading at most one entry proves emptiness without traversing contents.
-    const entries = listDirectoryFd(root.fd, 1);
-    if (entries.names.length !== 0 || entries.truncated) {
-      throw new Error(
-        "[runtime-volume] nonempty Railway mount must already have mode 0700; prepare its ownership and permissions while stopped",
-      );
-    }
-  };
-  assertEmpty();
   verifyPinnedRootPath(root, configuredPath);
-  assertEmpty();
   fchmodSync(root.fd, 0o700);
   fsyncSync(root.fd);
   verifyPinnedRootPath(root, configuredPath);
-  assertEmpty();
   if ((fstatSync(root.fd).mode & 0o7777) !== 0o700) {
     throw new Error("[runtime-volume] Railway mount mode changed during initialization");
   }
@@ -170,7 +150,7 @@ function admitRuntimeVolume({
 
   try {
     root = pinDirectory(runtimeDataRoot, "[runtime-volume] runtime data root");
-    if (initializeRailwayMount) initializeEmptyRailwayRuntimeMount(root, runtimeDataRoot);
+    if (initializeRailwayMount) initializeRailwayRuntimeMount(root, runtimeDataRoot);
     if ((fstatSync(root.fd).mode & 0o7777) !== 0o700) {
       throw new Error(`[runtime-volume] runtime data root must have mode 0700: ${runtimeDataRoot}`);
     }

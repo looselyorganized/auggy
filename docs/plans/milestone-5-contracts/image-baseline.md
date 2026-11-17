@@ -122,8 +122,8 @@ Freeze the existing default container-user compatibility as `0:0`. For this
 default, an admitted private data root must be owned by container-visible UID 0;
 0700 is the required directory mode. A default newly provisioned root-owned
 volume normally has GID 0 as well, but this inspection does not establish any
-particular Railway volume's ownership or mode. C2's narrowly admitted empty-volume
-initialization and fresh-volume tests remain required.
+particular Railway volume's ownership or mode. C2's root-only permission
+initialization and fresh-volume tests, including filesystem metadata, remain required.
 
 Do not hard-code UID 0 into platform-neutral admission: direct/local launches
 must continue to validate ownership against their actual runtime identity.

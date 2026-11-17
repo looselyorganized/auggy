@@ -90,8 +90,10 @@ root must already exist, be owned/private and admit durability operations. Fail
 without creating a missing explicit root or falling back to project storage.
 Generic Docker/local admission never repairs permissions. Railway alone has the
 narrow first-use provisioning step specified in C2: before ordinary admission,
-an already existing, pinned, current-owner, empty advertised mount may have its
-own mode narrowed to 0700. Existing nonempty state receives no such repair.
+an already existing, pinned, current-owner advertised mount may have its own mode
+narrowed to 0700 regardless of contents. Only the mount directory mode changes;
+existing contents, child permissions and ownership remain untouched. This
+compatibility rollback supersedes the earlier empty-only preparation rule.
 
 | Launch/configuration | Selection and effect |
 | --- | --- |

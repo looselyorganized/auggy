@@ -10,6 +10,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -18,7 +19,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  initializeEmptyRailwayRuntimeMount,
+  initializeRailwayRuntimeMount,
   prepareRuntimeDataVolume,
   prepareRuntimeVolume,
   prepareRuntimeVolumeLease,
@@ -42,7 +43,7 @@ function admitRoot(root: string): AdmittedRuntimeVolumeLease {
 function initializeRailwayMount(root: string): void {
   const pinned = pinDirectory(root, "Railway test mount");
   try {
-    initializeEmptyRailwayRuntimeMount(pinned, root);
+    initializeRailwayRuntimeMount(pinned, root);
   } finally {
     closeSync(pinned.fd);
   }
@@ -289,7 +290,7 @@ describe("prepareRuntimeDataVolume", () => {
   });
 });
 
-describe("explicit Railway empty-mount initialization", () => {
+describe("explicit Railway mount initialization", () => {
   test("narrows an owned default-mode empty mount and permits subsequent admission", () => {
     const root = makeRoot();
     chmodSync(root, 0o755);
@@ -303,16 +304,73 @@ describe("explicit Railway empty-mount initialization", () => {
   });
 
   test.each(["metadata", "lost+found", ".hidden"])(
-    "does not repair a permissive mount containing %s",
+    "narrows only the mount root while preserving existing %s",
     (entry) => {
       const root = makeRoot();
       chmodSync(root, 0o755);
-      writeFileSync(join(root, entry), "platform metadata");
-      expect(() => initializeRailwayMount(root)).toThrow("nonempty Railway mount");
-      expect(lstatSync(root).mode & 0o777).toBe(0o755);
+      const child = join(root, entry);
+      if (entry === "lost+found") {
+        mkdirSync(child, { mode: 0o755 });
+        chmodSync(child, 0o755);
+      } else writeFileSync(child, "existing state", { mode: 0o644 });
+      const before = lstatSync(child);
+      initializeRailwayMount(root);
+      expect(lstatSync(root).mode & 0o7777).toBe(0o700);
       expect(readdirSync(root)).toEqual([entry]);
+      const after = lstatSync(child);
+      expect({
+        mode: after.mode,
+        uid: after.uid,
+        gid: after.gid,
+        ino: after.ino,
+        mtimeMs: after.mtimeMs,
+      }).toEqual({
+        mode: before.mode,
+        uid: before.uid,
+        gid: before.gid,
+        ino: before.ino,
+        mtimeMs: before.mtimeMs,
+      });
+      if (entry === "lost+found") {
+        expect(after.isDirectory()).toBe(true);
+        expect(readdirSync(child)).toEqual([]);
+      } else expect(readFileSync(child, "utf8")).toBe("existing state");
     },
   );
+
+  test("does not follow or mutate a child symlink or its target", () => {
+    const root = makeRoot();
+    chmodSync(root, 0o755);
+    const outside = `${root}-outside`;
+    mkdirSync(outside, { mode: 0o755 });
+    chmodSync(outside, 0o755);
+    const file = join(outside, "state");
+    writeFileSync(file, "untouched external state", { mode: 0o644 });
+    const link = join(root, "external");
+    symlinkSync(outside, link);
+    const before = [outside, file, link].map((path) => lstatSync(path));
+    initializeRailwayMount(root);
+    expect(lstatSync(root).mode & 0o7777).toBe(0o700);
+    expect(readlinkSync(link)).toBe(outside);
+    expect(readFileSync(file, "utf8")).toBe("untouched external state");
+    [outside, file, link].forEach((path, index) => {
+      const after = lstatSync(path);
+      const original = before[index]!;
+      expect({
+        mode: after.mode,
+        uid: after.uid,
+        gid: after.gid,
+        ino: after.ino,
+        mtimeMs: after.mtimeMs,
+      }).toEqual({
+        mode: original.mode,
+        uid: original.uid,
+        gid: original.gid,
+        ino: original.ino,
+        mtimeMs: original.mtimeMs,
+      });
+    });
+  });
 
   test("rejects a symlink or replaced configured mount without changing either directory", () => {
     const root = makeRoot();
@@ -323,16 +381,12 @@ describe("explicit Railway empty-mount initialization", () => {
       renameSync(root, original);
       mkdirSync(root, { mode: 0o755 });
       chmodSync(root, 0o755);
-      expect(() => initializeEmptyRailwayRuntimeMount(pinned, root)).toThrow(
-        "changed during admission",
-      );
+      expect(() => initializeRailwayRuntimeMount(pinned, root)).toThrow("changed during admission");
       expect(lstatSync(root).mode & 0o777).toBe(0o755);
       expect(lstatSync(original).mode & 0o777).toBe(0o755);
       rmSync(root, { recursive: true });
       symlinkSync(original, root);
-      expect(() => initializeEmptyRailwayRuntimeMount(pinned, root)).toThrow(
-        "must not be a symlink",
-      );
+      expect(() => initializeRailwayRuntimeMount(pinned, root)).toThrow("must not be a symlink");
       expect(lstatSync(original).mode & 0o777).toBe(0o755);
     } finally {
       closeSync(pinned.fd);
@@ -345,7 +399,7 @@ describe("explicit Railway empty-mount initialization", () => {
     const pinned = pinDirectory(root, "Railway test mount");
     const getuid = spyOn(process, "getuid").mockReturnValue(process.getuid!() + 1);
     try {
-      expect(() => initializeEmptyRailwayRuntimeMount(pinned, root)).toThrow(
+      expect(() => initializeRailwayRuntimeMount(pinned, root)).toThrow(
         "owned by the current user",
       );
       expect(lstatSync(root).mode & 0o777).toBe(0o755);
@@ -378,7 +432,7 @@ describe("explicit Railway empty-mount initialization", () => {
     expect(readdirSync(original)).toEqual([]);
   });
 
-  test("rechecks emptiness after durable mode initialization", () => {
+  test("preserves contents added during durable root mode initialization", () => {
     const root = makeRoot();
     chmodSync(root, 0o755);
     const originalFsync = fs.fsyncSync;
@@ -387,10 +441,11 @@ describe("explicit Railway empty-mount initialization", () => {
       return originalFsync(fd);
     });
     try {
-      expect(() => initializeRailwayMount(root)).toThrow("nonempty Railway mount");
+      expect(() => initializeRailwayMount(root)).not.toThrow();
     } finally {
       fsync.mockRestore();
     }
+    expect(lstatSync(root).mode & 0o7777).toBe(0o700);
     expect(readdirSync(root)).toEqual(["unexpected"]);
     expect(readFileSync(join(root, "unexpected"), "utf8")).toBe("leave this file untouched");
   });

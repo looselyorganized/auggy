@@ -334,26 +334,25 @@ adds its existing advertised-volume check: `RAILWAY_VOLUME_MOUNT_PATH` must be
 fails. Storage pathname equality must not select Railway trusted-proxy policy;
 root threads the explicit platform policy through the existing resolver.
 
-Root's reviewed first-use disposition separates provisioning from C1 admission.
+Root's compatibility rollback separates provisioning from C1 admission and
+supersedes the earlier empty-only initialization rule.
 Generic Docker/local roots are operator-provisioned with expected ownership and
 0700 permissions; their startup never changes an unsafe root into an admitted one.
 For the explicit Railway launch only, retain a narrow initialization step for a
-fresh advertised mount. Verify the existing `/app/data` directory's physical
-identity, current-owner UID and absence of symlinks; pin its descriptor and
-inspect emptiness with a finite entry bound. Only an empty directory may have
-its own mode narrowed to 0700 through descriptor-based `fchmod`. Recheck identity
-and emptiness before creating any state. No mount creation, recursive chmod,
-chown, permission repair of unexpected contents, or subdirectory/link mutation
-belongs in this step. A nonempty existing root must already satisfy C1's private
-ownership, identity and restore-fence rules. If a new platform mount contains
-metadata, fail with an explicit operator preparation remedy rather than broaden
-the definition of empty. Confirm actual UID/mode behavior at M5-00 and A13.
+advertised mount. Verify the existing `/app/data` directory's physical identity,
+current-owner UID and absence of symlinks; pin its descriptor and narrow the
+mount directory mode to 0700 through descriptor-based `fchmod`, regardless of
+contents. Recheck identity after the durable mode update. No mount creation,
+recursive chmod, chown, content changes or subdirectory/link mutation belongs in
+this step. Existing state still must pass C1's identity, ownership and restore-fence
+rules. Preserve `/app/data` and existing database paths; no migration is introduced.
+Confirm actual UID/mode behavior at M5-00 and A13.
 
 Then run common runtime admission and acquire its lease before augment or
 compatibility-state creation. Admission itself retains its identity/lock/probe
 control-file operations.
-Test a fresh default-mode volume as well as reused admitted state; nonempty
-unsafe, wrong-owner and symlink roots must fail. Do not precondition every fixture
+Test a fresh default-mode volume, filesystem metadata and reused admitted state;
+wrong-owner and symlink roots and invalid runtime state must fail. Do not precondition every fixture
 to 0700 and claim first deployment works. Root owns admission integration;
 M5-02/03 propose the bounded bootstrap and M5-07 independently verifies it.
 

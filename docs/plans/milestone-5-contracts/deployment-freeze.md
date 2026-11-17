@@ -194,7 +194,8 @@ Linux CI gate, and fresh Railway mount ownership remains a G4 hosted check.
 Export itself performs no network access.
 
 Generic roots remain operator-provisioned; only explicit Railway mode can use
-C1/C2's empty, pinned, current-owner advertised-mount first-use initialization.
+C1/C2's pinned, current-owner advertised-mount permission initialization, including
+nonempty mounts. Only the mount root mode changes; child state is not repaired.
 Root owns that admission and proxy-policy separation. M5-02 owns entrypoint text;
 M5-03 requests changes through that owner. Runtime admission may create its own
 identity/lock/probe files, but compatibility-state and augment construction wait

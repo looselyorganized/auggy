@@ -67,8 +67,9 @@ singleton, directory/durability and restore-fence checks before effects, across
 direct generated application, local/global CLI and legacy execution. An explicit
 missing or unsafe root fails without creation/ephemeral fallback. Unset preserves
 local behavior. Railway still requires its advertised `/app/data`; conflicts fail.
-Railway-only provisioning may narrow an already existing, pinned, owned, empty
-mount to 0700 before ordinary admission; it never repairs nonempty state. Generic
+Railway-only provisioning may narrow an already existing, pinned, owned mount
+itself to 0700 before ordinary admission, including nonempty mounts. This restores
+the prior Railway behavior without modifying children, ownership or layout. Generic
 roots are operator-prepared. Test fresh volumes without preconditioning their mode.
 Select Railway proxy trust by explicit platform policy, never by storage pathname.
 Use the existing foreground mode, not a second container/worker framework.

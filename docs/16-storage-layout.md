@@ -104,8 +104,11 @@ such effects.
 
 Managed local/global CLI, generated application, legacy and macOS service launches
 use the same admission checks. Generic startup never creates or repairs the root.
-Only explicit Railway mode may initialize permissions on an existing owned,
-empty advertised `/app/data` mount. A generic container using the pathname
+Only explicit Railway mode may narrow the existing, owned, advertised `/app/data`
+mount itself to `0700`, including when it contains metadata or existing state.
+This preserves the previous Railway initialization behavior; it does not change
+ownership or recursively alter children. Identity, restore-fence and exclusive
+lease checks still apply before startup. A generic container using the pathname
 `/app/data` does not thereby become Railway or trust its proxy headers.
 
 Configured relative stores are resolved beneath the admitted root; paths already
