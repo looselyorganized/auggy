@@ -67,6 +67,9 @@ if (import.meta.main) {
     if (depth > 4) throw new Error("Evidence directory nesting exceeded");
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const name = `${prefix}${entry.name}`;
+      // This is retained application source, already hashed in application-baseline.json.
+      // Its nested augment files are not execution records.
+      if (name === "application/application-baseline/reference") continue;
       if (entry.isDirectory()) hashRecords(join(directory, entry.name), `${name}/`, depth + 1);
       else if (entry.isFile() && name !== "release.json" && /\.(log|json|jsonl)$/.test(name)) {
         if (Object.keys(records).length >= 1_000) throw new Error("Evidence record limit exceeded");
