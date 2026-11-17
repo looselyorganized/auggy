@@ -1,6 +1,12 @@
 /** Test-fixture policy only; production authentication and storage remain unchanged. */
 import { z } from "zod";
 import { hostedCheck as check } from "./hosted-context";
+import { assertSealedHostedHttpSnapshot, parseHostedHttpSnapshot } from "./integration-hosted-http";
+import {
+  hostedCheckpoint,
+  type HostedHttpCheckpoint,
+  type HostedHttpControl,
+} from "./integration-fixtures/http-container/startup";
 
 export const HOSTED_HTTP_ASSERTION_TTL_SECONDS = 180;
 export const HOSTED_HTTP_RESTORE_HOLD_MS = (HOSTED_HTTP_ASSERTION_TTL_SECONDS + 30) * 1000;
@@ -59,4 +65,44 @@ export function assertHostedExpiredAssertion(response: HostedAuthResponse) {
   z.object({ error: z.literal("unauthorized") })
     .strict()
     .parse(response.body);
+}
+
+/** Every fresh process needs its downstream checkpoint before probing and sealing. */
+export async function observeHostedHttpHold(options: {
+  control: (input: HostedHttpControl) => Promise<unknown>;
+  checkpoint: HostedHttpCheckpoint;
+  generationId: string;
+  request: () => Promise<HostedAuthResponse>;
+}) {
+  const control = async (input: HostedHttpControl) => {
+    const result = z
+      .object({ generationId: z.string(), snapshot: z.string() })
+      .parse(await options.control(input));
+    check(result.generationId === options.generationId, "HTTP hold fixture generation changed");
+    return result.snapshot;
+  };
+  const expected = hostedCheckpoint(options.checkpoint).sha256;
+  const initialized = parseHostedHttpSnapshot(
+    await control({
+      operation: "initialize",
+      checkpoint: options.checkpoint,
+    }),
+  );
+  check(
+    initialized.state === "active" &&
+      initialized.initializedFrom === expected &&
+      initialized.checkpointSHA256 === expected,
+    "HTTP hold fixture checkpoint changed",
+  );
+  const held = await options.request();
+  assertHostedAuthHold(held);
+  const sealedSnapshot = await control({ operation: "seal" });
+  const sealed = assertSealedHostedHttpSnapshot(sealedSnapshot);
+  check(
+    sealed.checkpointSHA256 === expected &&
+      sealed.domain.calls === 0 &&
+      sealed.model.totalRequests === 0,
+    "Held ingress performed work",
+  );
+  return { held, sealedSnapshot };
 }

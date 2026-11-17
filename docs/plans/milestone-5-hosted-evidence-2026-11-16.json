@@ -1,0 +1,105 @@
+{
+  "scope": "HTTP lifecycle plus failed HTTP recovery; not full M5 acceptance",
+  "runtimeRevision": "13bf80df4ead1bbf0b53ee0cc1b221df10868999",
+  "harnessRevision": "f41526ef49ddbfdb20d76300f41b422a0f9e0435",
+  "rows": [
+    {
+      "scenario": "http",
+      "status": "passed",
+      "elapsedWallMs": 229072,
+      "baseline": {
+        "effects": 1,
+        "duplicateEffects": 0,
+        "unauthorizedEffects": 0,
+        "sourceMarker": null,
+        "previousReplay": false,
+        "checkpointEffects": 1
+      },
+      "replacement": {
+        "effects": 1,
+        "duplicateEffects": 0,
+        "unauthorizedEffects": 0,
+        "sourceMarker": "g4-http-owned-source",
+        "previousReplay": true,
+        "checkpointEffects": 2
+      },
+      "cleanup": {
+        "verifiedComplete": true,
+        "projectsDeleted": 1,
+        "servicesDeleted": 1,
+        "volumesDeleted": 1,
+        "temporaryKeysDeleted": 1,
+        "projectAbsent": true,
+        "keyAbsent": true,
+        "unknownMutations": 0,
+        "warnings": []
+      },
+      "assessment": {
+        "path": "/private/tmp/m5-http-replacement-1794889483609/evidence/assessment.json",
+        "sha256": "44181ef0ab2a52f5124f45a251eb9653d16929d4c2002bcfed4f011f344c909c"
+      }
+    },
+    {
+      "scenario": "recovery-http",
+      "status": "failed",
+      "elapsedWallMs": 462846,
+      "baseline": {
+        "effects": 1,
+        "duplicateEffects": 0,
+        "unauthorizedEffects": 0,
+        "sourceMarker": null,
+        "previousReplay": false,
+        "checkpointEffects": 1
+      },
+      "replacement": {
+        "effects": 1,
+        "duplicateEffects": 0,
+        "unauthorizedEffects": 0,
+        "sourceMarker": "g4-http-owned-source",
+        "previousReplay": true,
+        "checkpointEffects": 2
+      },
+      "cleanup": {
+        "verifiedComplete": true,
+        "projectsDeleted": 1,
+        "servicesDeleted": 2,
+        "volumesDeleted": 2,
+        "temporaryKeysDeleted": 1,
+        "projectAbsent": true,
+        "keyAbsent": true,
+        "unknownMutations": 0,
+        "warnings": []
+      },
+      "recovery": {
+        "backup": "passed",
+        "restoreAndReconcile": "passed",
+        "restoreGuardUnchanged": true,
+        "failedOperation": "seal before fixture initialization",
+        "localReproduction": "real fixture returns 400 before initialization; corrected restored/restarted sequence passes",
+        "hostedRestart": "not reached",
+        "postHoldOperations": "not reached",
+        "initialHold": "assertions evaluated before rejected seal; raw response not separately saved"
+      },
+      "assessment": {
+        "path": "/private/tmp/m5-http-recovery-1794889738498/evidence/assessment.json",
+        "sha256": "d1603a3004b2f30ff105b6c84249e703d979ba534b646649b5366f26f22bcb95"
+      }
+    }
+  ],
+  "pollingRecovery": "not run: execution stopped after HTTP recovery failure",
+  "productSourceChanged": false,
+  "recoveryRca": {
+    "rejectedPayload": {
+      "operation": "seal"
+    },
+    "inputSHA256": "a0d9371ba3cee05bcf238bcb123dbafe6a18499583ad2276b4edd27a89f362c5",
+    "reconstructedInputMatchesReceipt": true,
+    "genericChildStderrMatches": false,
+    "reason": "First controller call to the fresh restored process was seal; its fixture state starts waiting and only initialize permits sealing",
+    "localRegression": "Both real restored/restarted fixtures return 400 before initialization and accept initialization/checkpoint/hold/seal with zero work",
+    "proof": {
+      "path": "/private/tmp/m5-http-recovery-1794889738498/evidence/fixture-rejection-rca.json",
+      "sha256": "02b9c226f086a464ebd09eb079570f002b56842805c6069c5912eca8270136ed"
+    }
+  }
+}

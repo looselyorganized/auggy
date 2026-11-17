@@ -1,15 +1,66 @@
 # Milestone 5 execution evidence
 
 Current status: G0/G1/G3 and M5-00/01/02/03/04/05/06/08 are accepted for their
-recorded scopes. Candidate `13bf80df` passed all 28 reported PR checks. The latest
-hosted attempt on November 16 Vancouver / November 17 UTC passed HTTP deployment,
-health, authenticated channel/tool operation, safe replay and stopped-instance
-confirmation, then failed in the recovery test's backup-transfer validator. Both
-latest attempts completed cleanup. M5-07, M5-09 and M5-10 remain open: hosted
-HTTP replacement and recovery are not fully accepted. The
+recorded scopes. Candidate `13bf80df` and harness `f41526ef` passed all 28 reported
+PR checks. HTTP and polling lifecycle/replacement are now accepted at that runtime
+candidate. The latest HTTP recovery attempt passed backup, fresh-volume restore
+and reconciliation, then failed when its first controller command tried to seal
+an uninitialized fixture. All owned resources were deleted and absence verified.
+The narrow initialization correction passes a real local fixture regression;
+it has not been retried on Railway. M5-07, M5-09 and M5-10 remain open: both
+hosted recovery rows and final review/current-revision CI remain incomplete. The
 [change and validation audit](./milestone-5-audit-2026-11-16.md) records exact
 scope, defects and the proposed smaller harness. Earlier entries record
 historical gate states; their incomplete full-run outcomes remain unchanged.
+
+## Bounded hosted execution on `f41526ef`
+
+The standalone HTTP lifecycle passed in 229 seconds: installed deployment and
+health, authenticated stream/tool operation, edited-source replacement on the
+same volume, completed-response replay, zero duplicate/unauthorized effects and
+both quiescent stops. One project, service, volume and temporary key were deleted;
+complete post-deletion inventories confirm absence. There were no cleanup or
+telemetry warnings and no unknown mutations.
+
+HTTP recovery ran for 463 seconds. Baseline, stopped backup, newer downstream
+effect, replacement stop, fresh-volume restore and reconciliation passed. During
+the restored phase, auth-hold assertions evaluated before the first fixture
+command failed. Its hash-bound input is exactly `{ "operation": "seal" }`.
+The controller starts in `waiting` and requires `initialize` before sealing; the
+runner omitted that step. The receipt exposes a failed child and stderr hash,
+not a detailed remote exception. The diagnosis combines the verified input,
+selected control flow/state machine and an actual local reproduction. The initial
+held response was not separately saved, so it is not independent response evidence.
+Same-image restart and post-hold operation were not reached. Both owned services
+and volumes, the project and temporary key were deleted with verified absence.
+
+The previous review missed this fixture lifecycle requirement. The correction
+uses one shared held-phase operation for both fresh processes: initialize the
+latest downstream checkpoint, verify the hold, then seal and require unchanged
+checkpoint plus zero model/domain work. A real local fixture test reproduces
+the rejected old order and verifies the corrected restored/restarted sequences.
+The initial successful hold seal now has its own evidence record. Product source,
+storage behavior and the selected runtime package are unchanged.
+
+Execution stopped after the failed row; polling recovery was not started and no
+hosted retry was performed. [Hash-bound assessments and RCA](./milestone-5-hosted-evidence-2026-11-16.json)
+preserve both raw results. Local verification passed 82 tests / 970 assertions
+across seven focused files and repository typecheck. Remaining acceptance is HTTP
+recovery, polling recovery, integrated review and final CI/findings disposition.
+
+At `f41526ef`, all 28 checks passed. CodeQL analysis `2183107875` of PR merge
+commit `35d0639c02f7461e92b58b60e22a86dab9761811` completed without diagnostics and
+reported two medium `js/file-access-to-http` findings:
+[134](https://github.com/looselyorganized/auggy/security/code-scanning/134) and
+[135](https://github.com/looselyorganized/auggy/security/code-scanning/135).
+Both trace intentional file-derived request data in the test harness. The held
+probe targets the exact owned service domain; the shared observer validates its
+origin and uses the same bound caller. Redirects are disabled. Requests contain
+synthetic operations and signed assertions; the signing secret is used for HMAC,
+not sent as a raw header or request body. This is expected fixture behavior under
+the approved isolated execution, with no product remediation proposed. Alerts
+were not suppressed or dismissed. The initialization fix requires fresh CI and
+final findings review; this record does not claim zero open alerts or close M5.
 
 ## Principal review of outstanding hosted work
 

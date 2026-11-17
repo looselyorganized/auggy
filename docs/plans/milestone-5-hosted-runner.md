@@ -168,15 +168,15 @@ never permission to retry a mutation or change production behavior.
 
 ### Remaining hosted execution
 
-Run these independently in this order, preserving accepted polling and earlier
-HTTP observations. All use the already verified runtime candidate and existing
+Run unaccepted rows independently in this order, preserving accepted lifecycle
+observations. All use the already verified runtime candidate and existing
 fixtures; a harness-only change does not require repacking the runtime.
 
-| Row | Required proof | Maximum allocated resources |
-|---|---|---|
-| `http` | Installed CLI readiness, authenticated stream/tool effect, edited-source replacement on the same volume, state/completed replay continuity, quiescent stop | One service and volume |
-| `recovery-http` | Baseline stopped backup, newer downstream effect, restore/reconcile on a fresh volume, persisted auth hold across same-image restart, real expiry, replay and new work, quiescent stop | Two services and volumes, workloads sequential |
-| `recovery-polling` | Back up confirmed deliveries 1/2/3, restore/reconcile the exact namespace, duplicate 1 does no work, delivery 4 succeeds, no ingress, quiescent stop | Two services and volumes, workloads sequential |
+| Row | Required proof | Maximum allocated resources | Current result |
+|---|---|---|---|
+| `http` | Installed CLI readiness, authenticated stream/tool effect, edited-source replacement on the same volume, state/completed replay continuity, quiescent stop | One service and volume | Passed, 229 seconds, verified cleanup |
+| `recovery-http` | Baseline stopped backup, newer downstream effect, restore/reconcile on a fresh volume, persisted auth hold across same-image restart, real expiry, replay and new work, quiescent stop | Two services and volumes, workloads sequential | Failed at missing fixture initialization; corrected locally, no retry |
+| `recovery-polling` | Back up confirmed deliveries 1/2/3, restore/reconcile the exact namespace, duplicate 1 does no work, delivery 4 succeeds, no ingress, quiescent stop | Two services and volumes, workloads sequential | Not run after HTTP recovery failure |
 
 Each row ends with exact owned-resource deletion and complete absence readbacks.
 One failure stops that row, retains diagnostics and triggers a narrow diagnosis;
@@ -188,3 +188,14 @@ Review verification: focused fault-injection/provider/auth-contract tests,
 repository typecheck and lint, and a real `recovery-http` local preparation/export
 with no Railway calls. The new restart path is locally verified, not yet hosted
 certified. This review created no hosted resources and changed no product source.
+
+Subsequent execution is recorded in the
+[hosted evidence](./milestone-5-hosted-evidence-2026-11-16.json). The recovery run
+exposed a missed fixture lifecycle step: every fresh restored/restarted peer must
+initialize its current downstream checkpoint before the held probe and seal.
+The corrected shared operation checks generation identity and checkpoint
+continuity, then rejects any model/domain work. A local regression uses the real
+fixture to reproduce the old 400 and prove both corrected process lifetimes.
+Local focused suites pass 82 tests / 970 assertions; no product code changed.
+The failed hosted result and complete cleanup remain recorded, and both hosted
+recovery rows remain open.

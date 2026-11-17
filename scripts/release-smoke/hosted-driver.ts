@@ -26,7 +26,6 @@ import {
 } from "./integration-hosted-maintenance";
 import { createExternalAuthAssertion } from "../../src/auth/external-auth";
 import { createSyntheticOrdersStore } from "../../examples/company-app/fixtures/synthetic-orders";
-import { parseHostedHttpSnapshot } from "./integration-hosted-http";
 import {
   createScenarioControl,
   observeScenarioHttp,
@@ -40,9 +39,9 @@ import {
 import { hostedCheck as check, hostedHash as hash, type HostedContext } from "./hosted-context";
 import type { HostedScenario, HostedScenarioDriver } from "./hosted-scenarios";
 import {
-  assertHostedAuthHold,
   assertHostedExpiredAssertion,
   assertHostedHttpFixture,
+  observeHostedHttpHold,
   HOSTED_HTTP_RESTORE_HOLD_MS,
   HOSTED_HTTP_EXPIRY_PROBE_TTL_SECONDS,
 } from "./hosted-http-recovery";
@@ -470,18 +469,16 @@ export function createHostedDriver(
           check(Buffer.byteLength(body) <= 1024, "Unexpected authentication error payload");
           return { status, retryAfter, body: JSON.parse(body) as unknown };
         };
-        const held = await post(active.origin);
-        assertHostedAuthHold(held);
         const control = createScenarioControl(ctx, active.deployment, active.consumer);
-        const value = z
-          .object({ snapshot: z.string() })
-          .parse(await control("http-control", { operation: "seal" }));
-        const snapshot = parseHostedHttpSnapshot(value.snapshot);
-        check(
-          snapshot.domain.calls === 0 && snapshot.model.totalRequests === 0,
-          "Held ingress performed work",
-        );
-        active.sealedSHA256 = hash(value.snapshot);
+        const firstHold = await observeHostedHttpHold({
+          control: (input) => control("http-control", input),
+          checkpoint: latestHttp.checkpoint,
+          generationId: active.generationId,
+          request: () => post(active.origin!),
+        });
+        ctx.save("http-hold-first.json", firstHold);
+        const held = firstHold.held;
+        active.sealedSHA256 = hash(firstHold.sealedSnapshot);
         const before = active.deployment;
         const after = await provider().restart(
           active.service,
@@ -504,26 +501,22 @@ export function createHostedDriver(
           active.origin && Date.now() + 5000 < until,
           "Restore hold expired before restart observation",
         );
-        const restartedHeld = await post(active.origin, mintAssertion());
-        assertHostedAuthHold(restartedHeld);
+        const restartedControl = createScenarioControl(ctx, active.deployment, active.consumer);
+        const restartedHold = await observeHostedHttpHold({
+          control: (input) => restartedControl("http-control", input),
+          checkpoint: latestHttp.checkpoint,
+          generationId: active.generationId,
+          request: () => post(active.origin!, mintAssertion()),
+        });
         ctx.save("http-hold-restart.json", {
           before,
           after,
           held,
-          restartedHeld,
+          restartedHeld: restartedHold.held,
           holdUntilMs: until,
           rebuild: false,
         });
-        const restartedControl = createScenarioControl(ctx, active.deployment, active.consumer);
-        const restartedSeal = z
-          .object({ snapshot: z.string() })
-          .parse(await restartedControl("http-control", { operation: "seal" }));
-        const restartedSnapshot = parseHostedHttpSnapshot(restartedSeal.snapshot);
-        check(
-          restartedSnapshot.domain.calls === 0 && restartedSnapshot.model.totalRequests === 0,
-          "Restarted held ingress performed work",
-        );
-        active.sealedSHA256 = hash(restartedSeal.snapshot);
+        active.sealedSHA256 = hash(restartedHold.sealedSnapshot);
         await stopCurrent();
         while (Date.now() <= until) {
           check(
