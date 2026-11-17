@@ -859,7 +859,7 @@ async function runCreateIntoDir(
   }
   console.log(`   ${cream(`${step++}.`)}  auggy doctor`);
   console.log(
-    `   ${cream(`${step++}.`)}  auggy run${opts.skipInstall ? "   (verifies installed application contract 1)" : ""}`,
+    `   ${cream(`${step++}.`)}  auggy run${opts.skipInstall ? "   (verifies installed application contract 2)" : ""}`,
   );
   console.log();
   if (!installOk || !runtimeInstallOk) {
@@ -922,13 +922,13 @@ const checkApplicationRuntimeInstall: RuntimeInstallCheck = (projectDir) => {
   try {
     const legacy = checkAgentRuntimeInstall(projectDir);
     if (!legacy.ok) return legacy;
-    inspectProjectRuntime(projectDir, { applicationContract: 1 });
+    inspectProjectRuntime(projectDir, { applicationContract: 2 });
     return { ok: true };
   } catch {
     return {
       ok: false,
       message:
-        "Installed Auggy does not expose a valid project-local application contract 1 runtime.",
+        "Installed Auggy does not expose a valid project-local application contract 2 runtime.",
       fix: "Select an application-capable Auggy dependency or the exact candidate tarball in package.json, run bun install, then bun run typecheck and auggy run.",
     };
   }
@@ -1177,7 +1177,7 @@ function buildAgentYaml(
         maxCausalDepth: 8,
       },
     },
-    application: { entrypoint: "./src/index.ts", contractVersion: 1 },
+    application: { entrypoint: "./src/index.ts", contractVersion: 2 },
     augments: augments.map((entry) => ({
       name: entry.defaultName,
       type: entry.type,

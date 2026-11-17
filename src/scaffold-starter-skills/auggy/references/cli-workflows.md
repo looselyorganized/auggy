@@ -30,10 +30,14 @@ auggy run
 ```
 
 The generated application owns `src/index.ts`, `src/agent.ts`, `src/http.ts`
-and `src/turn.ts`. `agent.yaml` is the sole enabled graph. The global CLI is a
+and `src/turn.ts`. Startup explicitly prepares configuration, creates the model
+and augments, creates the agent, binds transports, configures HTTP, then starts.
+`agent.ts` supplies execution options, and `http.ts` owns an editable mount path.
+`agent.yaml` is the sole enabled graph. Existing contract-1 applications stay
+compatible and keep their owned source. The global CLI is a
 convenience; execution selects the project-local Auggy dependency. Pin matching
 core/provider versions and verify the installed package supports application
-contract 1. These authoring changes are unreleased; a published 0.5 package
+contract 2. These authoring changes are unreleased; a published 0.5 package
 with the same version number is not this development implementation.
 
 For files-only automated creation, provide both provider and model:

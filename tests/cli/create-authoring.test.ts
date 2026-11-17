@@ -79,7 +79,7 @@ describe("automated creation", () => {
       const project = join(directory, "demo");
       const config = parse(readFileSync(join(project, "agent.yaml"), "utf8"));
       expect(config.engine).toMatchObject({ provider, model });
-      expect(config.application).toEqual({ entrypoint: "./src/index.ts", contractVersion: 1 });
+      expect(config.application).toEqual({ entrypoint: "./src/index.ts", contractVersion: 2 });
       expect(config.augments.map((entry: { type: string }) => entry.type)).toEqual([
         "fileMemory",
         "filesystem",
@@ -365,7 +365,7 @@ describe("collision-safe initialization", () => {
 
 function installedRuntime(
   project: string,
-  mode: "compatible" | "legacy" | "missing-export" | "redirected-export",
+  mode: "compatible" | "contract-1" | "legacy" | "missing-export" | "redirected-export",
 ) {
   const runtime = join(project, "node_modules/auggy");
   mkdirSync(join(runtime, "src/cli"), { recursive: true });
@@ -382,7 +382,13 @@ function installedRuntime(
       bin: { auggy: "cli.ts" },
       ...(mode === "legacy"
         ? {}
-        : { auggyRuntime: { schemaVersion: 1, launcherProtocol: 1, applicationContracts: [1] } }),
+        : {
+            auggyRuntime: {
+              schemaVersion: 1,
+              launcherProtocol: 1,
+              applicationContracts: mode === "contract-1" ? [1] : [1, 2],
+            },
+          }),
       exports: mode === "missing-export" ? {} : { "./application": "./application.ts" },
     }),
   );
@@ -428,7 +434,13 @@ describe("installation readiness", () => {
     expect(logs.join("\n")).not.toContain("application runtime verified");
   });
 
-  for (const mode of ["compatible", "legacy", "missing-export", "redirected-export"] as const) {
+  for (const mode of [
+    "compatible",
+    "contract-1",
+    "legacy",
+    "missing-export",
+    "redirected-export",
+  ] as const) {
     test(`actual runtime postcheck handles ${mode} installation`, async () => {
       const operation = runCreate("installed", {
         ...automatic,
@@ -445,7 +457,7 @@ describe("installation readiness", () => {
       } else {
         await expect(operation).rejects.toThrow("dependencies are not ready");
         expect(logs.join("\n")).not.toContain("application runtime verified");
-        expect(logs.join("\n")).toContain("application contract 1");
+        expect(logs.join("\n")).toContain("application contract 2");
       }
       expect(existsSync(join(directory, "installed/src/index.ts"))).toBe(true);
     });

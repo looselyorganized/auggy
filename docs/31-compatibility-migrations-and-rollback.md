@@ -22,6 +22,7 @@ company application is a separate service with its own dependency selection.
 
 | Contract | Current boundary | Compatibility rule |
 | --- | --- | --- |
+| Managed application | Application contracts 1 and 2; launcher protocol 1 | New scaffolds declare contract 2 and expose staged host assembly and an editable HTTP mount. Contract-1 applications retain compatible startup and `/agent/run`; dependencies never regenerate owned source. |
 | `agent.yaml` | Structural 0.x contract | Omitted `settings` means defaults. `settings` must otherwise be an object. Unknown top-level fields are rejected so typos cannot silently restore defaults. A breaking field change requires an Unreleased changelog entry and an operator edit; no general config migrator is claimed. |
 | `GET /health` | Minimal unversioned liveness probe | HTTP 200 with `status: "healthy"` means only that the web listener is alive. It is not readiness, migration, provider, or queue evidence. Operators must not deserialize it as `AgentHealth`. |
 | `AgentHealth` | Package source API | Follows the installed pre-1.0 package version. It is not a persisted or wire schema. |

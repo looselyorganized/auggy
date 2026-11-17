@@ -266,7 +266,7 @@ describe("explicit application adoption", () => {
     expect(readFileSync(join(project, "bun.lock"), "utf8")).toBe("untouched lock fixture");
     expect(parseYaml(readFileSync(config, "utf8")).application).toEqual({
       entrypoint: "./src/index.ts",
-      contractVersion: 1,
+      contractVersion: 2,
     });
     for (const file of planApplicationScaffold({ configFileName: "agent.yaml" }).files)
       expect(readFileSync(join(project, file.relativePath))).toEqual(Buffer.from(file.bytes));
@@ -307,6 +307,7 @@ describe("explicit application adoption", () => {
   test.each([
     "missing-runtime",
     "unsupported-runtime",
+    "contract-1-runtime",
     "missing-export",
     "escaping-export",
     "runtime-fifo",
@@ -321,6 +322,14 @@ describe("explicit application adoption", () => {
     if (mode === "missing-runtime") rmSync(runtime, { recursive: true });
     if (mode === "unsupported-runtime")
       put(join(runtime, "package.json"), JSON.stringify({ ...manifest, auggyRuntime: undefined }));
+    if (mode === "contract-1-runtime")
+      put(
+        join(runtime, "package.json"),
+        JSON.stringify({
+          ...manifest,
+          auggyRuntime: { ...manifest.auggyRuntime, applicationContracts: [1] },
+        }),
+      );
     if (mode === "missing-export")
       put(join(runtime, "package.json"), JSON.stringify({ ...manifest, exports: {} }));
     if (mode === "escaping-export") {

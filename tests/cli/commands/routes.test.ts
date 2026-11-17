@@ -222,7 +222,7 @@ describe("runRoutes", () => {
     writeAgent(root, "zip", { routes: "reserved" });
 
     await expect(runRoutes("zip", { cwd: root })).rejects.toThrow(
-      'GET "/console" — that path is reserved by webTransport',
+      'GET "/console" — it matches "/console", which is reserved by webTransport',
     );
   });
 

@@ -55,7 +55,7 @@ export function planApplicationScaffold(input: {
   const packageFields = applicationPackageFields(name);
   const configUrl = JSON.stringify(`../${encodeURIComponent(name)}`);
   return Object.freeze({
-    application: Object.freeze({ entrypoint: "./src/index.ts", contractVersion: 1 }),
+    application: Object.freeze({ entrypoint: "./src/index.ts", contractVersion: 2 }),
     files: Object.freeze(
       TEMPLATE_FILES.map((relativePath) =>
         Object.freeze({

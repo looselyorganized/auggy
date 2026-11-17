@@ -125,6 +125,38 @@ describe("pure portable Docker export", () => {
       ),
     );
   });
+  test.each([1, 2])(
+    "preserves supported application contract %s through portable export",
+    async (contractVersion) => {
+      const path = join(project, "agent.yaml");
+      const value = JSON.parse(fs.readFileSync(path, "utf8"));
+      value.application.contractVersion = contractVersion;
+      fs.writeFileSync(path, JSON.stringify(value));
+      const before = bytes(path);
+      await run();
+      expect(bytes(path)).toEqual(before);
+      expect(bytes(join(out, "agent.yaml"))).toEqual(before);
+      expect(
+        JSON.parse(fs.readFileSync(join(out, "agent.yaml"), "utf8")).application.contractVersion,
+      ).toBe(contractVersion);
+      expect(manifest().sourceFiles.find((entry) => entry.path === "src/index.ts")?.sha256).toBe(
+        hash(join(project, "src/index.ts")),
+      );
+    },
+  );
+
+  test.each([0, 37, "2"])(
+    "rejects unsupported application contract %j before export",
+    async (contractVersion) => {
+      const path = join(project, "agent.yaml");
+      const value = JSON.parse(fs.readFileSync(path, "utf8"));
+      value.application.contractVersion = contractVersion;
+      fs.writeFileSync(path, JSON.stringify(value));
+      await expect(run()).rejects.toThrow("supported application declaration");
+      noTemporaryOutput();
+    },
+  );
+
   test("HTTP profile exposes only declared port and preserves a nondefault selected configuration", async () => {
     config([{ name: "web", type: "webTransport", options: { port: 4321, adminRoute: false } }]);
     fs.renameSync(join(project, "agent.yaml"), join(project, "agent.production.yaml"));

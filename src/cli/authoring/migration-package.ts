@@ -145,7 +145,7 @@ export function planApplicationPackage(
   if (!before.exists)
     throw new AuthoringError(
       "application-runtime-required",
-      "Application adoption requires an existing package.json and an already installed local Auggy runtime with application contract 1. Install compatible dependencies explicitly first.",
+      "Application adoption requires an existing package.json and an already installed local Auggy runtime with application contract 2. Install compatible dependencies explicitly first.",
     );
   const value = parseManifest(before);
   const output: Record<string, unknown> = Object.assign(Object.create(null), value);
@@ -190,11 +190,11 @@ export function planApplicationPackage(
   if (diagnostics.length) return { inputs: [before], file: null, diagnostics, toolingAdded };
   let runtime: ReturnType<typeof inspectProjectRuntimeMetadata>;
   try {
-    runtime = inspectProjectRuntimeMetadata(projectDir, { applicationContract: 1 });
+    runtime = inspectProjectRuntimeMetadata(projectDir, { applicationContract: 2 });
   } catch {
     throw new AuthoringError(
       "application-runtime-required",
-      "Application adoption requires an already installed local Auggy package advertising application contract 1 and a contained public application export. Install compatible dependencies explicitly first.",
+      "Application adoption requires an already installed local Auggy package advertising application contract 2 and a contained public application export. Install compatible dependencies explicitly first.",
     );
   }
   // Keep the project-local selection path as the precondition so replacing a

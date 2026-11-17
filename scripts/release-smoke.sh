@@ -462,7 +462,7 @@ for (const type of types) {
   if (!config.augments.some((item) => item.type === type))
     throw new Error(`Generated configuration missing augment: ${type}`);
 }
-if (config.application?.entrypoint !== "./src/index.ts" || config.application.contractVersion !== 1)
+if (config.application?.entrypoint !== "./src/index.ts" || config.application.contractVersion !== 2)
   throw new Error("Generated configuration missing owned application entrypoint");
 for (const fileName of ["index.ts", "agent.ts", "http.ts", "turn.ts"])
   if (!existsSync(join(dirname(file), "src", fileName)))

@@ -9,6 +9,7 @@ import {
   assertAuthoringEffectsUnchanged,
   assertAuthoringReplay,
   assertGeneratedApplicationTurn,
+  assertGeneratedFinalizationObservation,
   assertGeneratedApplicationFailure,
   assertGeneratedRecipeSources,
 } from "../../scripts/release-smoke/authoring-application";
@@ -259,6 +260,55 @@ describe("generated application assertion sensitivity, not installed acceptance"
         response: response([...events(), { type: "RUN_ERROR" }]),
       }),
     ).toThrow("terminal stream");
+  });
+
+  test("inference limit requires one real tool batch and rejects a second inference", () => {
+    const limitedEvents = events().map((event) =>
+      event.type === "TEXT_MESSAGE_CONTENT"
+        ? { ...event, delta: "I've completed the available actions." }
+        : event,
+    );
+    const limited = {
+      ...turnOptions(),
+      mode: "inference-limit" as const,
+      response: response(limitedEvents),
+      provider: { ...provider(), calls: 1, validatedToolResults: 0, finalResponses: 0 },
+    };
+    expect(assertGeneratedApplicationTurn(limited).threadId).toBe("thread-1");
+    expect(() => assertGeneratedApplicationTurn({ ...limited, provider: provider() })).toThrow(
+      "roundtrip",
+    );
+    expect(() => assertGeneratedApplicationTurn({ ...limited, toolEffects: 0 })).toThrow(
+      "roundtrip",
+    );
+    expect(() => assertGeneratedApplicationTurn({ ...limited, response: response() })).toThrow(
+      "marker",
+    );
+  });
+
+  test("execution observer evidence requires correlated identities and actual inference/tool counts", () => {
+    const expected = { threadId: "thread-1", turnId: "turn-1" };
+    const observation = {
+      ...expected,
+      outcome: "completed",
+      status: "completed",
+      disposition: "returned",
+      trace: { inferenceAttempts: 1, toolAttempts: 1, successfulToolCalls: 1 },
+    };
+    assertGeneratedFinalizationObservation(observation, expected);
+    for (const changed of [
+      { threadId: "wrong-thread" },
+      { turnId: "wrong-turn" },
+      { outcome: "failed" },
+      { status: "failed" },
+      { disposition: "threw" },
+      { trace: { ...observation.trace, inferenceAttempts: 2 } },
+      { trace: { ...observation.trace, successfulToolCalls: 0 } },
+    ]) {
+      expect(() =>
+        assertGeneratedFinalizationObservation({ ...observation, ...changed }, expected),
+      ).toThrow("correlated finalization");
+    }
   });
 
   test("stopped-turn evidence requires zero provider/tool activity and a valid terminal result", () => {

@@ -74,7 +74,7 @@ export function selectAuthoringArtifacts(
     specifiers[name] = specifier;
     return artifact;
   });
-  assertApplicationCapability(inspected[0]!.manifest);
+  assertApplicationCapability(inspected[0]!.manifest, 2);
   const specifiersJSON = JSON.stringify(specifiers);
   check(
     Buffer.byteLength(specifiersJSON) <= AUTHORING_BOUNDS.specifiersBytes,
@@ -329,7 +329,7 @@ export function inspectGeneratedAuthoringTree(consumer: string) {
     record(config) &&
       record(config.application) &&
       config.application.entrypoint === "./src/index.ts" &&
-      config.application.contractVersion === 1,
+      config.application.contractVersion === 2,
     "Fresh project lacks the owned application declaration",
   );
   check(
@@ -456,7 +456,7 @@ export async function installAuthoringCli(options: {
   check(/^[a-z][a-z0-9-]{0,50}$/.test(options.name), "Invalid CLI carrier name");
   prepareAuthoringWorkspace(options.workspace);
   const core = inspectApplicationArtifact(options.core);
-  assertApplicationCapability(core.manifest);
+  assertApplicationCapability(core.manifest, 2);
   const consumer = join(options.workspace, options.name);
   mkdirSync(consumer, { mode: 0o700 });
   const raw = core.manifest.overrides;

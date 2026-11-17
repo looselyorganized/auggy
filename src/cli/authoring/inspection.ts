@@ -258,11 +258,13 @@ export function buildInspectionReport(
       } else throw error;
     }
     const applicationSupported = selectedRuntime
-      ? !!selectedRuntime.capabilities?.applicationContracts.includes(1)
+      ? !!selectedRuntime.capabilities?.applicationContracts.includes(
+          application.contractVersion ?? 1,
+        )
       : null;
     if (
       application.mode === "application" &&
-      (application.contractVersion !== 1 || applicationSupported === false)
+      (![1, 2].includes(application.contractVersion!) || applicationSupported === false)
     ) {
       note(
         "unsupported-application-contract",
@@ -413,7 +415,7 @@ export function renderInspectionReport(report: InspectionReport): string {
     `Configuration: ${report.project.configPath}${report.project.format ? ` (${report.project.format})` : ""}`,
     `Application: ${report.application.mode}`,
     `Runtime: ${report.runtime.packageRoot ?? "unavailable"}${report.runtime.version ? ` (${report.runtime.version})` : ""}`,
-    "Execution map: conventional-project-files; file existence does not establish application imports.",
+    "Execution map: conventional-project-files; file existence does not establish application imports or HTTP mount paths.",
   ];
   for (const key of ["startup", "composition", "http", "turn"] as const) {
     const item = report.execution[key];

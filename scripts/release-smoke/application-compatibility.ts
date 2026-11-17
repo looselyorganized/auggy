@@ -637,7 +637,7 @@ export async function runApplicationCompatibility(
                   value.auggyRuntime = {
                     schemaVersion: 1,
                     launcherProtocol: 1,
-                    applicationContracts: [2],
+                    applicationContracts: [37],
                   };
                 },
                 "does not support application contract",
@@ -653,9 +653,9 @@ export async function runApplicationCompatibility(
                 configPath,
                 stringify({
                   ...configValue,
-                  application: { entrypoint: "./src/index.ts", contractVersion: 2 },
+                  application: { entrypoint: "./src/index.ts", contractVersion: 37 },
                 }),
-                () => reject("L05-invalid-app-contract", "supports integer contract 1"),
+                () => reject("L05-invalid-app-contract", "supports integer contracts 1 and 2"),
               );
               await edit(
                 configPath,

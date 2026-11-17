@@ -29,7 +29,7 @@ function report(): InspectionReport {
     application: {
       mode: "application",
       entrypoint: "./src/index.ts",
-      contractVersion: 1,
+      contractVersion: 2,
       source: project,
     },
     runtime: {

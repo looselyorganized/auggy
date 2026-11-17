@@ -50,7 +50,8 @@ export function prepareHostedMaintenanceExportConfig(consumer: string) {
   const original = readFileSync(join(consumer, "agent.yaml"));
   const config = parse(original.toString("utf8"));
   check(
-    typeof config.id === "string" && config.application?.contractVersion === 1,
+    typeof config.id === "string" &&
+      (config.application?.contractVersion === 1 || config.application?.contractVersion === 2),
     "Expected owned application configuration",
   );
   const maintenance = Buffer.from(

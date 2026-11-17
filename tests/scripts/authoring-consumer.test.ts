@@ -51,7 +51,7 @@ function artifact(packageName: string): PackedArtifactInput {
       version: "0.5.0",
       ...(packageName === "auggy"
         ? {
-            auggyRuntime: { schemaVersion: 1, launcherProtocol: 1, applicationContracts: [1] },
+            auggyRuntime: { schemaVersion: 1, launcherProtocol: 1, applicationContracts: [1, 2] },
           }
         : {}),
     }),
@@ -92,7 +92,7 @@ describe("authoring helper preparation, not installed CLI acceptance", () => {
   test("fresh-tree inventory rejects parallel legacy registries and hashes no private bytes", () => {
     const consumer = join(root, "consumer");
     const config = {
-      application: { entrypoint: "./src/index.ts", contractVersion: 1 },
+      application: { entrypoint: "./src/index.ts", contractVersion: 2 },
       augments: [{ name: "web", type: "webTransport", options: {} }],
     };
     write(join(consumer, "agent.yaml"), JSON.stringify(config));
@@ -129,7 +129,7 @@ describe("authoring helper preparation, not installed CLI acceptance", () => {
     write(
       join(consumer, "agent.yaml"),
       JSON.stringify({
-        application: { entrypoint: "./src/index.ts", contractVersion: 1 },
+        application: { entrypoint: "./src/index.ts", contractVersion: 2 },
         augments: [{ name: "web", type: "webTransport" }],
       }),
     );

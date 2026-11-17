@@ -467,17 +467,20 @@ test("maintenance artifacts bind the public CLI command to25s and no-ingress bou
   expect(() => installHostedMaintenanceEntrypoint(consumer, prepared)).toThrow("no-ingress");
 });
 
-test("separate maintenance export keeps the real runtime config bytes and immutable identity", () => {
-  const runtime =
-    "id: aug1_76eaa8dc-ec24-4122-ad9b-d1f9891052f5\nname: http-agent\napplication:\n  contractVersion: 1\n  entrypoint: ./src/index.ts\naugments:\n  - name: web\n    type: webTransport\n";
-  writeFileSync(join(workspace, "agent.yaml"), runtime);
-  const prepared = prepareHostedMaintenanceExportConfig(workspace);
-  expect(readFileSync(join(workspace, "agent.yaml"), "utf8")).toBe(runtime);
-  expect(prepared.runtimeConfig.sha256).toBe(hash(runtime));
-  const exported = readFileSync(join(workspace, "maintenance.yaml"), "utf8");
-  expect(exported).toContain(`id: ${prepared.agentId}`);
-  expect(exported).toContain("augments: []");
-  expect(exported).toContain("./src/fixtures/g4-maintenance/commands/maintenance.js");
-  expect(prepared.exportConfig.sha256).toBe(hash(exported));
-  expect(() => prepareHostedMaintenanceExportConfig(workspace)).toThrow("exists");
-});
+test.each([1, 2])(
+  "separate maintenance export preserves contract %s, runtime config and identity",
+  (contractVersion) => {
+    const runtime = `id: aug1_76eaa8dc-ec24-4122-ad9b-d1f9891052f5\nname: http-agent\napplication:\n  contractVersion: ${contractVersion}\n  entrypoint: ./src/index.ts\naugments:\n  - name: web\n    type: webTransport\n`;
+    writeFileSync(join(workspace, "agent.yaml"), runtime);
+    const prepared = prepareHostedMaintenanceExportConfig(workspace);
+    expect(readFileSync(join(workspace, "agent.yaml"), "utf8")).toBe(runtime);
+    expect(prepared.runtimeConfig.sha256).toBe(hash(runtime));
+    const exported = readFileSync(join(workspace, "maintenance.yaml"), "utf8");
+    expect(exported).toContain(`id: ${prepared.agentId}`);
+    expect(exported).toContain(`contractVersion: ${contractVersion}`);
+    expect(exported).toContain("augments: []");
+    expect(exported).toContain("./src/fixtures/g4-maintenance/commands/maintenance.js");
+    expect(prepared.exportConfig.sha256).toBe(hash(exported));
+    expect(() => prepareHostedMaintenanceExportConfig(workspace)).toThrow("exists");
+  },
+);

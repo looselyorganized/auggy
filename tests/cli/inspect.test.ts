@@ -103,9 +103,34 @@ describe("passive inspection reports", () => {
     updateManifest({ auggyRuntime: undefined });
     expect(inspectProject(fixture.config).status).toBe("partial");
     expect(inspectProject(fixture.config).runtime.applicationSupported).toBe(false);
-    config("name: sample\napplication: { entrypoint: ./src/index.ts, contractVersion: 2 }\n");
-    expect(inspectProject(fixture.config).application.contractVersion).toBe(2);
+    config("name: sample\napplication: { entrypoint: ./src/index.ts, contractVersion: 37 }\n");
+    expect(inspectProject(fixture.config).application.contractVersion).toBe(37);
     expect(inspectProject(fixture.config).status).toBe("partial");
+  });
+
+  test("contract 2 uses the declared runtime capability without executing mount code", () => {
+    config("name: sample\napplication: { entrypoint: ./src/index.ts, contractVersion: 2 }\n");
+    writeFixture(
+      join(fixture.project, "src/http.ts"),
+      'throw new Error("INSPECTION_EXECUTED_CODE"); const path = "/private-custom-mount";',
+    );
+    const older = inspectProject(fixture.config);
+    expect(older.runtime.applicationSupported).toBe(false);
+    expect(older.diagnostics.some((item) => item.code === "unsupported-application-contract")).toBe(
+      true,
+    );
+    updateManifest({
+      auggyRuntime: { schemaVersion: 1, launcherProtocol: 1, applicationContracts: [1, 2] },
+    });
+    const report = inspectProject(fixture.config);
+    expect(report.status).toBe("complete");
+    expect(report.application.contractVersion).toBe(2);
+    expect(report.runtime.applicationSupported).toBe(true);
+    expect(report.execution.http?.path).toBe(join(fixture.project, "src/http.ts"));
+    expect(JSON.stringify(report)).not.toContain("private-custom-mount");
+    expect(renderInspectionReport(report)).toContain(
+      "does not establish application imports or HTTP mount paths",
+    );
   });
 
   test("an explicitly linked selected installation retains its own provenance", () => {

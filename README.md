@@ -89,8 +89,9 @@ New projects created by this checkout expose their execution code. Open
 
 ```text
 Startup wiring:
-src/index.ts → src/agent.ts → agent.yaml's enabled graph + local turn recipe
-src/index.ts → src/http.ts → managed HTTP host
+src/index.ts → configuration → model → augments → agent → transport bindings → start
+src/agent.ts → local turn program + optional finalization observer
+src/http.ts → selected HTTP mount and guarded adapter
 
 Request execution:
 POST /agent/run → src/http.ts → web.agentRun(originalRequest)
@@ -102,17 +103,22 @@ POST /agent/run → src/http.ts → web.agentRun(originalRequest)
 These arrows show calls and wiring, not directory nesting. The physical project
 tree is below in [What Gets Created](#what-gets-created).
 
-The endpoint is visible in your `src/http.ts`. Its maintained adapter owns
+Startup visibly prepares configuration, creates the model and augments, creates
+the agent, binds transports, configures HTTP and starts the host. Every stage
+runs under managed cleanup. `agent.ts` supplies the local turn program and
+optional finalization observer. The endpoint's literal mount path is editable in
+`src/http.ts`; console chat and metadata follow that selected path. Its maintained adapter owns
 caller authentication, request validation and durable delivery. Your turn
 program calls guarded operations; the runtime still enforces tool authorization,
 cancellation, limits, accounting and settlement. Application TypeScript is trusted
 code, so keep authorization explicit in each augment's tool and route interfaces.
 
 `agent.yaml` is the single enabled-augment graph and declares
-`application: { entrypoint: ./src/index.ts, contractVersion: 1 }`. The generated
+`application: { entrypoint: ./src/index.ts, contractVersion: 2 }`. The generated
 application source and custom augments belong to you. The local `auggy`
 dependency owns built-ins and guarded operations; upgrading it does not rewrite
-your source or skills. Review compatibility notes and update owned code explicitly.
+your source or skills. Existing contract-1 applications remain supported with
+their owned source. Review compatibility notes and update owned code explicitly.
 
 After installing a compatible runtime, `bun start`, `bun run dev`, and compatible
 local/global `auggy run` and `auggy dev` use the same application main and the
@@ -122,7 +128,7 @@ source paths without starting the agent. A partial report is navigation evidence
 not a readiness check; `auggy doctor` performs readiness checks. The `auggy`
 executable disables Bun environment loading, automatic installation and local
 configuration preloads during inspection. Custom source hints
-do not prove the execution path through arbitrary TypeScript.
+do not prove the execution path through arbitrary TypeScript or infer HTTP mount paths.
 
 The [inspectable reference](examples/inspectable-agent/README.md) remains a
 separate worked example with a sample capability and extra observations. Its demo
@@ -222,8 +228,8 @@ my-agent/
   learned-behaviors.md
   src/
     index.ts                  # actual startup
-    agent.ts                  # composition from central configuration
-    http.ts                   # POST /agent/run
+    agent.ts                  # local turn program and optional observer
+    http.ts                   # editable POST /agent/run mount
     turn.ts                   # actual turn orchestration
     augments/README.md        # custom capability authoring guide
   tests/application.test.ts
@@ -243,7 +249,7 @@ Built-in options live directly in those declarations:
 # Fragment of agent.yaml; retain the other generated fields.
 application:
   entrypoint: ./src/index.ts
-  contractVersion: 1
+  contractVersion: 2
 augments:
   - name: layeredMemory
     type: layeredMemory
@@ -269,7 +275,7 @@ bun start
 ```
 
 Fill the private `.env` before startup. `--skip-install` creates files only;
-a successful install must select an application-contract-1 capable local runtime.
+a successful install must select an application-contract-2 capable local runtime.
 Automated creation does not discover or download models. An unknown-price model
 requires explicit `--allow-unpriced-model`; `--yes` does not waive budget policy.
 `auggy init` uses the current directory and refuses occupied generated files,

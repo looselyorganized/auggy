@@ -32,8 +32,9 @@ Augments are infrastructure. Tools are mechanism. Skills are teaching.
 ## A Turn
 
 ```text
-src/index.ts prepares composition and starts the managed host
-  -> src/agent.ts binds src/turn.ts to agent.yaml's enabled graph
+src/index.ts prepares config, creates model and augments, creates agent,
+binds transports, configures HTTP, then starts under managed cleanup
+  -> src/agent.ts supplies src/turn.ts and optional finalization observer
   -> src/http.ts handles POST /agent/run through web.agentRun(originalRequest)
   -> maintained transport authenticates, validates and schedules the request
   -> src/turn.ts calls prompt, inference, tool and completion operations

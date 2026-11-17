@@ -5,19 +5,21 @@
 ## Trace an application from its own source
 
 A new `auggy create` project owns `src/index.ts`, `src/agent.ts`, `src/http.ts`
-and `src/turn.ts`. Open `src/index.ts` to see startup. It prepares the managed host,
-binds the turn program in `agent.ts`, mounts the HTTP listener from `http.ts`,
-and starts. `POST /agent/run` passes its original request to `web.agentRun`;
+and `src/turn.ts`. Open `src/index.ts` to see startup: prepare configuration,
+create the model, create the declared augments, create the agent with execution
+options from `agent.ts`, bind each transport, configure HTTP with `http.ts`,
+then start. Each call executes its stage under runner-owned cleanup. `POST /agent/run` passes its original request to `web.agentRun`;
 authentication, validation and durable delivery stay in that maintained adapter.
 `turn.ts` visibly orders prompt preparation, inference, tool execution, required
 final answers, refresh and exhaustion through guarded runtime operations.
 
-`agent.yaml` declares `application: { entrypoint: ./src/index.ts, contractVersion: 1 }`
+`agent.yaml` declares `application: { entrypoint: ./src/index.ts, contractVersion: 2 }`
 and is the sole enabled-augment graph. Built-in options are inline; custom
 modules normally live under `src/augments/<slug>/`. The runtime and built-ins
 stay in `node_modules/auggy/src/`. `auggy inspect` reports the selected local
 installation and its real source paths; it does not import the application or
-prove runtime readiness.
+prove runtime readiness or evaluate custom HTTP mount paths. Contract-1
+applications remain supported without rewriting their owned files.
 
 Application files and skills belong to the engineer. Dependency upgrades update
 managed implementations without regenerating owned code. Compatible direct,

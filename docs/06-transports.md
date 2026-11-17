@@ -14,6 +14,13 @@ turn program. The managed router rejects foreign or already-consumed requests.
 `web.fallback` serves the configured health, console and augment routes with their
 existing policies. Keep this fallback when customizing the HTTP response.
 
+Application contract 2 supports changing the literal `path` in `src/http.ts`.
+The selected mount drives console chat, public metadata and route inventory.
+The delegate still applies the same authentication, request limits, durable replay
+and SSE behavior. Legacy applications and YAML-only startup retain `/agent/run`.
+`auggy inspect` navigates the HTTP source without executing it, so it does not
+infer that custom path.
+
 For a separate application with existing login, the optional
 [company application reference](../examples/company-app/README.md) traces the
 browser's fresh assertion through this endpoint to the owned turn program and

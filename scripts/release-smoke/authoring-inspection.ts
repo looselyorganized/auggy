@@ -44,7 +44,7 @@ export function assertInstalledAuthoringInspection(
   );
   check(
     report.application.mode === "application" &&
-      report.application.contractVersion === 1 &&
+      report.application.contractVersion === 2 &&
       report.application.source?.path === expected.entrypoint,
     "Inspection omitted owned application declaration",
   );
