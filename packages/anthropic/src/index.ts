@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { lookup, getFreshness, priceAnthropicResponse } from "auggy/internal/anthropic-pricing";
 import { normalizeSchema } from "auggy/internal/schema-normalize";
 import { safeParseToolCall } from "auggy/internal/tool-call";
+import { createToolReplay } from "auggy/internal/tool-replay";
 import { assembleSystemBlocks } from "auggy/internal/prompt-assembly";
 import { assertSecureCredentialTransport } from "auggy/internal/credential-transport";
 import { providerRequestError } from "auggy/internal/provider-error";
@@ -22,7 +23,6 @@ import type {
   AssembledPrompt,
   Message,
   ModelClient,
-  ModelDelta,
   ModelResponse,
   ModelResponseLimits,
   ToolDefinition,
@@ -105,6 +105,9 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
 
   const maxContextTokens = opts.maxContextTokens ?? 200_000;
   const maxOutputTokens = opts.maxTokens ?? 4096;
+  const replay = ["claude-fable-5-2", "claude-fable-5", "claude-opus-5"].includes(opts.model)
+    ? createToolReplay<MessageParam>()
+    : undefined;
 
   // Pricing freshness + availability warning at startup. Cost estimation
   // is advisory; this surfaces gaps so the operator isn't surprised when
@@ -144,13 +147,41 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
 
     async complete(
       prompt: AssembledPrompt,
-      opts2?: { onDelta?: (delta: ModelDelta) => void; signal?: AbortSignal },
+      opts2?: Parameters<ModelClient["complete"]>[1],
     ): Promise<ModelResponse> {
       opts2?.signal?.throwIfAborted();
       return withProviderRequestDeadline(opts2?.signal, requestTimeoutMs, async (requestSignal) => {
         const system = assembleSystemBlocks(prompt);
-        const messages = convertMessages(prompt.messages);
         const tools = convertTools(prompt.tools);
+        if (
+          opts.model === "claude-fable-5-2" &&
+          tools.length &&
+          prompt.toolChoice &&
+          prompt.toolChoice !== "auto"
+        ) {
+          throw new Error(
+            "Claude Fable 5.2 requires automatic tool choice. Set toolChoice to auto or select a model that supports forced tool calls.",
+          );
+        }
+        const binding = replay ? JSON.stringify([system, tools]) : "";
+        const messages = replay
+          ? replay.messages(
+              prompt.messages,
+              binding,
+              opts2?.toolExchange,
+              convertMessages,
+              (outputs) => [
+                {
+                  role: "user",
+                  content: outputs.map(({ id, content }) => ({
+                    type: "tool_result",
+                    tool_use_id: id,
+                    content,
+                  })),
+                },
+              ],
+            )
+          : convertMessages(prompt.messages);
         const toolChoice =
           prompt.toolChoice === "any"
             ? { type: "any" as const }
@@ -210,6 +241,57 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
               : {}),
           };
         };
+        const finish = (
+          message: Anthropic.Messages.Message,
+          accounting: ReturnType<typeof accountingForUsage>,
+        ) => {
+          try {
+            const result = withAccounting(buildModelResponse(message, responseLimits), accounting);
+            if (replay && result.toolCalls?.length && result.finishReason !== "max_tokens") {
+              if (result.finishReason !== "tool_use")
+                throw new ModelResponseLimitError("maxResponseBytes");
+              if (
+                utf8ByteLength(JSON.stringify(message.content), responseLimits.maxResponseBytes) >
+                responseLimits.maxResponseBytes
+              ) {
+                throw new ModelResponseLimitError("maxResponseBytes");
+              }
+              const blocks = message.content.filter(
+                (block) =>
+                  block.type === "tool_use" ||
+                  block.type === "thinking" ||
+                  block.type === "redacted_thinking" ||
+                  block.type === "text",
+              );
+              const ids = blocks
+                .filter((block) => block.type === "tool_use")
+                .map((block) => block.id);
+              if (
+                blocks.length !== message.content.length ||
+                blocks.some(
+                  (block) =>
+                    (block.type === "thinking" &&
+                      (typeof block.signature !== "string" || !block.signature)) ||
+                    (block.type === "redacted_thinking" &&
+                      (typeof block.data !== "string" || !block.data)),
+                )
+              ) {
+                throw new ModelResponseLimitError("maxResponseBytes");
+              }
+              replay.remember(
+                result,
+                prompt.messages,
+                binding,
+                [...messages, { role: "assistant", content: structuredClone(blocks) }],
+                ids,
+              );
+            }
+            return result;
+          } catch (error) {
+            if (error instanceof ModelResponseLimitError) throw error.withAccounting(accounting);
+            throw error;
+          }
+        };
         const incompleteAccountingForUsage = (rawUsage: unknown) => {
           const usage: Record<string, unknown> = isProviderRecord(rawUsage) ? rawUsage : {};
           return {
@@ -265,27 +347,12 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
             }
             const accounting = accountingForUsage(finalMessage.usage);
             if (limitFailure.error) throw limitFailure.error.withAccounting(accounting);
-            try {
-              return withAccounting(buildModelResponse(finalMessage, responseLimits), accounting);
-            } catch (error) {
-              if (error instanceof ModelResponseLimitError) {
-                throw error.withAccounting(accounting);
-              }
-              throw error;
-            }
+            return finish(finalMessage, accounting);
           }
 
           // Non-streaming path (backward compat for tests, other consumers)
           const response = await client.messages.create(params, { signal: requestSignal });
-          const accounting = accountingForUsage(response.usage);
-          try {
-            return withAccounting(buildModelResponse(response, responseLimits), accounting);
-          } catch (error) {
-            if (error instanceof ModelResponseLimitError) {
-              throw error.withAccounting(accounting);
-            }
-            throw error;
-          }
+          return finish(response, accountingForUsage(response.usage));
         } catch (err) {
           const responseLimitError = findModelResponseLimitError(err);
           if (responseLimitError) throw responseLimitError;
@@ -509,7 +576,9 @@ function buildModelResponse(
     arguments: Record<string, unknown>;
   }[] = [];
 
-  for (const block of rawResponse.content) {
+  const refused = rawResponse.stop_reason === "refusal";
+  if (refused) content = "The provider declined this request.";
+  for (const block of refused ? [] : rawResponse.content) {
     if (!isProviderRecord(block) || typeof block.type !== "string") {
       throw new ModelResponseLimitError("maxResponseBytes");
     }
@@ -537,7 +606,8 @@ function buildModelResponse(
   const finishReason: ModelResponse["finishReason"] =
     rawResponse.stop_reason === "tool_use"
       ? "tool_use"
-      : rawResponse.stop_reason === "max_tokens"
+      : rawResponse.stop_reason === "max_tokens" ||
+          rawResponse.stop_reason === "model_context_window_exceeded"
         ? "max_tokens"
         : "end_turn";
 

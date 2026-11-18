@@ -336,6 +336,51 @@ beforeEach(() => {
   anthropicStreamCalls = 0;
 });
 
+describe("Claude direct tool calls", () => {
+  const tools = [{ name: "lookup", description: "lookup", inputSchema: { type: "object" } }];
+  it.each(["any", { name: "lookup" }] as const)(
+    "rejects unsupported forced choice before dispatch",
+    async (choice) => {
+      const engine = createAnthropicEngine({ model: "claude-fable-5-2", apiKey: "fixture" });
+      await expect(engine.complete(emptyPrompt({ tools, toolChoice: choice }))).rejects.toThrow(
+        "automatic tool choice",
+      );
+      expect(anthropicCreateCalls).toBe(0);
+    },
+  );
+  it("does not send a signed block against a changed prefix", async () => {
+    nextAnthropicResponse = {
+      content: [
+        { type: "thinking", thinking: "", signature: "sig" },
+        { type: "tool_use", id: "t1", name: "lookup", input: {} },
+      ],
+      stop_reason: "tool_use",
+      usage: { input_tokens: 4, output_tokens: 5 },
+    };
+    const engine = createAnthropicEngine({ model: "claude-fable-5-2", apiKey: "fixture" });
+    const prompt = emptyPrompt({ tools, messages: [anthropicMsg({ role: "user" })] });
+    const response = await engine.complete(prompt);
+    await expect(
+      engine.complete(
+        { ...prompt, systemBlocks: ["updated"] },
+        { toolExchange: { response, calls: [{ index: 0, toolCallId: "local" }] } },
+      ),
+    ).rejects.toThrow("original prompt prefix");
+    expect(anthropicCreateCalls).toBe(1);
+  });
+  it("never dispatches a partial tool call accompanying a refusal", async () => {
+    nextAnthropicResponse = {
+      content: [{ type: "tool_use", id: "t1", name: "lookup", input: {} }],
+      stop_reason: "refusal",
+      usage: { input_tokens: 4, output_tokens: 5 },
+    };
+    const engine = createAnthropicEngine({ model: "claude-fable-5-2", apiKey: "fixture" });
+    const response = await engine.complete(emptyPrompt({ tools }));
+    expect(response.toolCalls).toBeUndefined();
+    expect(response.costUsd).toBeGreaterThan(0);
+  });
+});
+
 describe("createAnthropicEngine — credential transport", () => {
   it("rejects an environment credential on non-loopback plaintext HTTP", () => {
     const original = process.env.ANTHROPIC_API_KEY;

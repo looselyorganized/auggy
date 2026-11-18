@@ -15,6 +15,36 @@ The same value configures the first-party adapter and the kernel boundary.
 Direct `ModelClient` consumers of the Anthropic, OpenAI, OpenRouter, and Ollama
 adapters therefore receive a finite default even outside `defineAgent`.
 
+## Direct model selection
+
+Set `engine.provider` and `engine.model` in `agent.yaml`, or pass
+`--provider` and `--model` to `auggy create`. The following direct API
+IDs and standard USD rates per million tokens were verified on 2026-11-18.
+
+| Provider | Model | Input | Output | Cache read | Short write | Long write |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| OpenAI | `gpt-6.2-astra` | 8 | 40 | 0.40 | 10 | 20 |
+| OpenAI | `gpt-6.2-sol` | 2 | 10 | 0.10 | 2.50 | 5 |
+| Anthropic | `claude-fable-5-2` | 8 | 40 | 0.20 | 10 | 16 |
+| Anthropic | `claude-opus-5` | 5 | 25 | 0.50 | 6.25 | 10 |
+
+GPT-6.2 uses the Responses API with `store: false`. The adapter requests
+30-minute cache writes and prices 30-minute and 12-hour writes from usage.
+Above 272,000 input tokens the entire request uses double input and cache
+rates and 1.5 times the output rate. Reasoning tokens are included in output.
+[Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra) · [Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol) · [Cache accounting](https://developers.openai.com/api/docs/guides/prompt-caching)
+
+Claude uses the Messages API. Its write durations are 5 minutes and 1 hour.
+Fable 5.2 uses automatic tool choice. Programmatic callers that require a
+specific tool can use Opus 5. Anthropic requires workspace access to Fable and its
+data-retention terms. [Claude pricing](https://platform.claude.com/docs/en/about-claude/pricing) · [Fable migration guide](https://platform.claude.com/docs/en/models/fable-5-2/migration-guide)
+
+During a tool turn, the adapter returns the provider's signed or encrypted
+reasoning with the original tool calls and their Auggy results. This state
+lives in memory for the active turn. If the history budget trims the prefix
+needed for continuation, the turn stops before another provider request.
+The tool results already recorded in Auggy remain in the thread.
+
 ## One-attempt policy
 
 Automatic model POST retries are disabled. The upstream OpenAI and Anthropic

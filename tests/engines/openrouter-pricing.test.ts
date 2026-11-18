@@ -11,7 +11,7 @@ import { resolveSlug, priceOpenRouterResponse } from "@/engines/openrouter/prici
 
 describe("resolveSlug", () => {
   it("resolves anthropic/* slug to anthropic provider", () => {
-    const r = resolveSlug("anthropic/claude-sonnet-4-6");
+    const r = resolveSlug("anthropic/claude-sonnet-4.6");
     expect(r).toBeTruthy();
     expect(r!.resolvedProvider).toBe("anthropic");
     expect(r!.rates.inputUsdPerMtok).toBe(3.0);
@@ -37,7 +37,7 @@ describe("resolveSlug", () => {
   });
 
   it("freshness binds to resolved provider's verifiedAt (not empty openrouter table)", () => {
-    const r = resolveSlug("anthropic/claude-sonnet-4-6");
+    const r = resolveSlug("anthropic/claude-sonnet-4.6");
     expect(r).toBeTruthy();
     // verifiedAt should come from the anthropic pricing module, which has a real date
     expect(r!.freshness.verifiedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
@@ -64,10 +64,10 @@ describe("priceOpenRouterResponse — costOverride path", () => {
   });
 
   it("costOverride takes precedence over slug routing", () => {
-    // anthropic/claude-sonnet-4-6 would resolve to $3/$15 via routing,
+    // anthropic/claude-sonnet-4.6 would resolve to $3/$15 via routing,
     // but costOverride ($2/$6) wins.
     const result = priceOpenRouterResponse(
-      "anthropic/claude-sonnet-4-6",
+      "anthropic/claude-sonnet-4.6",
       { inputUsdPerMtok: 2, outputUsdPerMtok: 6 },
       { prompt_tokens: 600, completion_tokens: 300 },
     );
@@ -79,9 +79,9 @@ describe("priceOpenRouterResponse — costOverride path", () => {
 
 describe("priceOpenRouterResponse — slug routing path", () => {
   it("prices anthropic/* slug via anthropic pricing module", () => {
-    // anthropic/claude-sonnet-4-6: $3.00/Mtok in, $15.00/Mtok out
+    // anthropic/claude-sonnet-4.6: $3.00/Mtok in, $15.00/Mtok out
     // 200 in + 100 out → 0.0006 + 0.0015 = 0.0021 USD
-    const result = priceOpenRouterResponse("anthropic/claude-sonnet-4-6", undefined, {
+    const result = priceOpenRouterResponse("anthropic/claude-sonnet-4.6", undefined, {
       prompt_tokens: 200,
       completion_tokens: 100,
     });

@@ -27,6 +27,7 @@
       "auggy/internal/cost": ["./src/engines/_shared/cost.ts"],
       "auggy/internal/schema-normalize": ["./src/engines/_shared/schema-normalize.ts"],
       "auggy/internal/tool-call": ["./src/engines/_shared/tool-call.ts"],
+      "auggy/internal/tool-replay": ["./src/engines/_shared/tool-replay.ts"],
       "auggy/internal/prompt-assembly": ["./src/engines/_shared/prompt-assembly.ts"],
       "auggy/internal/response-limits": ["./src/engines/_shared/response-limits.ts"],
       "auggy/internal/credential-transport": ["./src/engines/_shared/credential-transport.ts"],

@@ -48,6 +48,7 @@
     "./internal/cost": "./src/engines/_shared/cost.ts",
     "./internal/schema-normalize": "./src/engines/_shared/schema-normalize.ts",
     "./internal/tool-call": "./src/engines/_shared/tool-call.ts",
+    "./internal/tool-replay": "./src/engines/_shared/tool-replay.ts",
     "./internal/prompt-assembly": "./src/engines/_shared/prompt-assembly.ts",
     "./internal/response-limits": "./src/engines/_shared/response-limits.ts",
     "./internal/credential-transport": "./src/engines/_shared/credential-transport.ts",

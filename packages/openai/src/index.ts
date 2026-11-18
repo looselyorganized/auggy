@@ -1,6 +1,13 @@
 import OpenAI from "openai";
+import { safeParseJson } from "./tool-arguments";
+import { createResponsesCompletion } from "./responses";
 import { normalizeSchema } from "auggy/internal/schema-normalize";
-import { lookup, getFreshness, priceOpenAIResponse } from "auggy/internal/openai-pricing";
+import {
+  lookup,
+  getFreshness,
+  priceOpenAIResponse,
+  usesResponsesAPI,
+} from "auggy/internal/openai-pricing";
 import { safeParseToolCall } from "auggy/internal/tool-call";
 import { assembleSystemBlocks } from "auggy/internal/prompt-assembly";
 import { warnCacheRatesIgnored } from "auggy/internal/cost";
@@ -13,17 +20,14 @@ import {
 import {
   createBoundedModelFetch,
   findModelResponseLimitError,
-  measureJsonValue,
   ModelResponseLimitError,
   resolveModelResponseLimits,
-  utf8ByteLength,
   validateModelResponse,
 } from "auggy/internal/response-limits";
 import type {
   AssembledPrompt,
   Message,
   ModelClient,
-  ModelDelta,
   ModelResponse,
   ModelResponseLimits,
   ToolDefinition,
@@ -31,7 +35,7 @@ import type {
 
 /**
  * OpenAI engine — a ModelClient adapter that drives the agent's reasoning
- * via OpenAI's Chat Completions API.
+ * via Responses for GPT-6.2 Astra/Sol and Chat Completions for other models.
  *
  * Responsibilities:
  *  - Translate AssembledPrompt into Chat Completions request shape
@@ -87,9 +91,8 @@ export interface OpenAIEngineOptions {
    * instead of the built-in pricing table. Useful for unknown models or custom
    * pricing arrangements. USD per million tokens.
    *
-   * Accepts the full Pricing shape; cache fields are accepted for type symmetry
-   * with Anthropic but not used by the OpenAI adapter today (no cache-token
-   * usage is parsed from OpenAI Chat Completions responses).
+   * Responses uses override cache rates for reported reads and writes. The
+   * Chat Completions path uses input and output rates.
    */
   costOverride?: import("auggy/internal/cost").Pricing;
   /** Finite application-layer response limits. Omitted fields use secure defaults. */
@@ -122,6 +125,10 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
   const maxContextTokens = opts.maxContextTokens ?? 128_000;
   const maxOutputTokens = opts.maxTokens ?? 4096;
 
+  const responses = usesResponsesAPI(opts.model)
+    ? createResponsesCompletion(client, opts, responseLimits)
+    : undefined;
+
   // Pricing freshness + availability warning at startup. Fires once at
   // factory time, not per-turn.
   if (!opts.costOverride) {
@@ -143,7 +150,7 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
         );
       }
     }
-  } else {
+  } else if (!responses) {
     // Operator set a custom pricing override. Warn if they included cache
     // rates — the OpenAI adapter doesn't parse cache tokens from upstream
     // responses, so those rates would be silently ignored.
@@ -159,13 +166,14 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
 
     async complete(
       prompt: AssembledPrompt,
-      requestOptions?: { onDelta?: (delta: ModelDelta) => void; signal?: AbortSignal },
+      requestOptions?: Parameters<ModelClient["complete"]>[1],
     ): Promise<ModelResponse> {
       requestOptions?.signal?.throwIfAborted();
       return withProviderRequestDeadline(
         requestOptions?.signal,
         requestTimeoutMs,
         async (requestSignal) => {
+          if (responses) return responses(prompt, requestOptions?.toolExchange, requestSignal);
           const systemMessage = assembleOpenAISystemMessage(prompt);
           const messages = convertOpenAIMessages(prompt.messages);
           const tools = convertOpenAITools(prompt.tools);
@@ -419,33 +427,7 @@ export function convertOpenAITools(toolDefs: ToolDefinition[]): OpenAI.Chat.Chat
 // OpenAI response → ModelResponse translation
 // ===========================================================================
 
-/** Strictly parses a bounded tool argument object from the SDK string form. */
-export function safeParseJson(
-  s: string,
-  configured?: Partial<ModelResponseLimits>,
-): Record<string, unknown> {
-  const limits = resolveModelResponseLimits(configured);
-  if (typeof s !== "string") {
-    throw new ModelResponseLimitError("maxToolArgumentBytes");
-  }
-  if (utf8ByteLength(s, limits.maxToolArgumentBytes) > limits.maxToolArgumentBytes) {
-    throw new ModelResponseLimitError("maxToolArgumentBytes");
-  }
-  try {
-    const parsed = JSON.parse(s);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      measureJsonValue(parsed, {
-        maxBytes: limits.maxToolArgumentBytes,
-        maxDepth: limits.maxArgumentDepth,
-        maxNodes: limits.maxArgumentNodes,
-      });
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    throw new ModelResponseLimitError("maxToolArgumentBytes");
-  }
-  throw new ModelResponseLimitError("maxToolArgumentBytes");
-}
+export { safeParseJson } from "./tool-arguments";
 
 function isProviderRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
