@@ -54,9 +54,6 @@ describe("auggy export docker command", () => {
     const declared = JSON.parse(readFileSync(resolve(dirname(cli), "../../package.json"), "utf8"))
       .bin.auggy;
     expect(declared).toBe("src/cli/index.ts");
-    expect(readFileSync(cli, "utf8").split("\n")[0]).toContain(
-      "--no-env-file --no-install --config=/dev/null",
-    );
     writeFileSync(join(project, "bunfig.toml"), 'preload = ["./preload.ts"]\n');
     writeFileSync(
       join(project, "preload.ts"),
@@ -65,20 +62,41 @@ describe("auggy export docker command", () => {
     const output = join(root, "refused-context");
     expect(command(["export", "docker", "--out", output]).exitCode).not.toBe(0);
     expect(command(["export", "docker", "--help"]).exitCode).toBe(0);
-    const linkedBin = join(root, "auggy");
+    const linkedBin = join(root, "linked auggy");
     symlinkSync(cli, linkedBin);
+    // Observe the interpreter boundary, independent of the launcher's source layout.
+    const observed = join(root, "bun-argv");
+    writeFileSync(
+      join(root, "bun"),
+      '#!/bin/sh\nprintf "%s\\n" "$@" > "$OBSERVED_ARGV"\nexec "$REAL_BUN" "$@"\n',
+      { mode: 0o755 },
+    );
     const help = Bun.spawnSync([linkedBin, "export", "docker", "--help"], {
       cwd: project,
       timeout: 10_000,
       maxBuffer: 1024 * 1024,
-      env: { ...process.env, PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}` },
+      env: {
+        ...process.env,
+        PATH: `${root}:${process.env.PATH ?? ""}`,
+        REAL_BUN: process.execPath,
+        OBSERVED_ARGV: observed,
+      },
     });
     expect(help.exitCode).toBe(0);
+    expect(readFileSync(observed, "utf8").trimEnd().split("\n")).toEqual([
+      "--no-env-file",
+      "--no-install",
+      "--config=/dev/null",
+      linkedBin,
+      "export",
+      "docker",
+      "--help",
+    ]);
     expect(existsSync(join(project, "PRELOAD_EXECUTED"))).toBe(false);
     expect(existsSync(output)).toBe(false);
   });
   test("executes the passive exporter without delegating to local runtime or loading project code", () => {
-    const output = join(root, "build-context");
+    const output = join(root, "build context");
     const result = command(["export", "docker", "--out", output]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString()).toContain("Ingress: none (worker)");

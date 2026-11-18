@@ -79,6 +79,7 @@ export interface IntegrationDockerScope {
     imageId: string;
     volume: string;
     restoreVolume?: string;
+    offline?: boolean;
     env: Readonly<Record<string, string>>;
   }): Promise<{ containerId: string }>;
   status(containerId: string): Promise<{ running: boolean; exitCode: number }>;
@@ -248,6 +249,7 @@ export async function withIntegrationDocker<T>(
     profile: DeploymentProfile;
     env: Readonly<Record<string, string>>;
     utility?: boolean;
+    offline?: boolean;
     restoreVolume?: string;
   }) => {
     await owned(requireResource("image", input.imageId), false);
@@ -293,6 +295,7 @@ export async function withIntegrationDocker<T>(
           : []),
         "--env-file",
         envFile,
+        ...(input.offline ? ["--network", "none"] : []),
         ...(input.profile.kind === "http" ? ["--publish", `127.0.0.1::${input.profile.port}`] : []),
         ...(input.utility ? ["--entrypoint", "bun"] : []),
         input.imageId,

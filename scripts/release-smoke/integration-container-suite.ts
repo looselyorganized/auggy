@@ -554,7 +554,14 @@ export async function runContainerIntegration(options: ContainerSuiteOptions) {
           imageId: http.imageId,
           volume,
           env: runtimeEnv,
+          offline: true,
         });
+        await scope.exec(utility.containerId, [
+          "sh",
+          "-ec",
+          "bunx --no-install auggy create launcher-smoke --provider ollama --model llama3.2 --yes --skip-install && test -f launcher-smoke/agent.yaml",
+        ]);
+        checks.push("installed-alpine-cli-create");
         const initial = await scope.exec(
           utility.containerId,
           script(
