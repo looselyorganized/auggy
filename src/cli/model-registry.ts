@@ -116,14 +116,9 @@ export function listStaticModels(provider?: Provider): ModelRegistryEntry[] {
       case "openai":
         return openaiPricing.listModels().map((id) => staticEntry(p, id, openaiPricing.lookup(id)));
       case "openrouter":
-        return [
-          ...anthropicPricing
-            .listModels()
-            .map((id) => staticEntry(p, `anthropic/${id}`, anthropicPricing.lookup(id))),
-          ...openaiPricing
-            .listModels()
-            .map((id) => staticEntry(p, `openai/${id}`, openaiPricing.lookup(id))),
-        ];
+        return openrouterPricing
+          .listModels()
+          .map((id) => staticEntry(p, id, lookupEnginePricing(p, id)));
       case "ollama":
         return [
           "qwen3.6:27b",

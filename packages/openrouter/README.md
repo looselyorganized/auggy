@@ -24,7 +24,7 @@ runtime, so install the matching local core explicitly.
 import { createOpenRouterEngine } from "@auggy/openrouter";
 
 const engine = createOpenRouterEngine({
-  model: "anthropic/claude-sonnet-4-6",
+  model: "anthropic/claude-sonnet-4.6",
   // apiKey omitted → SDK reads OPENROUTER_API_KEY from env.
 });
 ```
@@ -34,7 +34,7 @@ The auggy runtime resolves the engine via `agent.yaml`:
 ```yaml
 engine:
   provider: openrouter
-  model: anthropic/claude-sonnet-4-6
+  model: anthropic/claude-sonnet-4.6
   maxContextTokens: 200000
   maxTokens: 4096
   requestTimeoutMs: 120000

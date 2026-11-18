@@ -4,6 +4,7 @@ import type {
   AssembledPrompt,
   ModelClient,
   ModelDelta,
+  ModelToolExchange,
   ModelResponse,
   TurnTrigger,
   TurnState,
@@ -123,6 +124,7 @@ async function streamingInference(
   prompt: AssembledPrompt,
   streamEmitter: InferenceStreamEmitter,
   responseLimits: ReturnType<typeof resolveModelResponseLimits>,
+  toolExchange: ModelToolExchange | undefined,
   signal?: AbortSignal,
 ): Promise<{ response: ModelResponse; streamed: boolean; messageId: string }> {
   const limitFailure: { error: ModelResponseLimitError | null } = { error: null };
@@ -139,6 +141,7 @@ async function streamingInference(
   try {
     response = await model.complete(prompt, {
       signal: inferenceSignal,
+      toolExchange,
       onDelta: (delta) => {
         if (delta.kind === "text_delta") {
           if (limitFailure.error) return;
@@ -268,6 +271,8 @@ export async function executeManagedTurn(
   let toolChoiceOpt: { toolChoice: NonNullable<AgentConfig["toolChoice"]> } | undefined;
   let currentPrompt!: AssembledPrompt;
   let response!: ModelResponse;
+  let assistantMessageId: string | undefined;
+  let toolExchange: ModelToolExchange | undefined;
   const consecutiveFailures = new Map<string, number>();
   let inferenceCount = 0;
   let inferenceAttempts = 0;
@@ -900,7 +905,14 @@ export async function executeManagedTurn(
     try {
       const result = await withTimeout(
         (deadlineSignal) =>
-          streamingInference(model, prompt, streamEmitter, responseLimits, deadlineSignal),
+          streamingInference(
+            model,
+            prompt,
+            streamEmitter,
+            responseLimits,
+            toolExchange,
+            deadlineSignal,
+          ),
         providerRequestTimeoutMs,
         signal,
         trackDetachedProviderAttempt,
@@ -1003,10 +1015,10 @@ export async function executeManagedTurn(
     response = nextResponse;
     if (signal?.aborted) return makeAbortResult();
 
-    // Always append model content to history (even on tool_use turns)
-    if (response.content) {
+    assistantMessageId = response.content ? crypto.randomUUID() : undefined;
+    if (assistantMessageId) {
       history.append({
-        id: crypto.randomUUID(),
+        id: assistantMessageId,
         role: "assistant",
         content: response.content,
         timestamp: Date.now(),
@@ -1404,6 +1416,14 @@ export async function executeManagedTurn(
       }
     }
     if (batchFailure) throw batchFailure.error;
+    toolExchange = {
+      response,
+      assistantMessageId,
+      calls: execResults.map(({ call, toolCallId }) => ({
+        index: response.toolCalls!.indexOf(call),
+        toolCallId,
+      })),
+    };
 
     if (execResults.some((result) => result.outcomeUnknown)) {
       emitEvent({

@@ -67,7 +67,7 @@ const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
   anthropic: { model: "claude-sonnet-4-6", envVar: "ANTHROPIC_API_KEY" },
   openai: { model: "gpt-5.4-mini", envVar: "OPENAI_API_KEY" },
   openrouter: {
-    model: "anthropic/claude-sonnet-4-6",
+    model: "anthropic/claude-sonnet-4.6",
     envVar: "OPENROUTER_API_KEY",
   },
   // Ollama is local + free — no API key. Empty `envVar` signals to

@@ -1,10 +1,13 @@
 import { describe, test, expect } from "bun:test";
+import { listStaticModels, lookupEnginePricing } from "../../src/cli/model-registry";
 import { getModelChoices, formatChoiceLabel, type ModelChoice } from "../../src/cli/model-picker";
 
 describe("getModelChoices", () => {
   test("anthropic returns all anthropic table keys", () => {
     const choices = getModelChoices("anthropic");
     const ids = choices.map((c) => c.id);
+    expect(ids).toContain("claude-fable-5-2");
+    expect(ids).toContain("claude-opus-5");
     expect(ids).toContain("claude-haiku-4-5");
     expect(ids).toContain("claude-sonnet-4-6");
     expect(ids).toContain("claude-opus-4-8");
@@ -16,6 +19,8 @@ describe("getModelChoices", () => {
   test("openai returns all openai table keys", () => {
     const choices = getModelChoices("openai");
     const ids = choices.map((c) => c.id);
+    expect(ids).toContain("gpt-6.2-astra");
+    expect(ids).toContain("gpt-6.2-sol");
     expect(ids).toContain("gpt-5.5");
     expect(ids).toContain("gpt-5.4");
     expect(ids).toContain("gpt-5.4-mini");
@@ -23,15 +28,26 @@ describe("getModelChoices", () => {
     expect(ids).toContain("gpt-5-mini");
   });
 
-  test("openrouter returns cross-product of upstream tables", () => {
+  test("openrouter offers published router IDs", () => {
     const choices = getModelChoices("openrouter");
     const ids = choices.map((c) => c.id);
-    expect(ids).toContain("anthropic/claude-sonnet-4-6");
-    expect(ids).toContain("anthropic/claude-opus-4-8");
+    expect(ids).toContain("anthropic/claude-sonnet-4.6");
+    expect(ids).toContain("anthropic/claude-opus-4.8");
     expect(ids).toContain("openai/gpt-5.4-mini");
     expect(ids).toContain("openai/gpt-5");
-    expect(ids).toContain("anthropic/claude-haiku-4-5");
+    expect(ids).toContain("anthropic/claude-haiku-4.5");
     expect(ids).toContain("openai/gpt-5-mini");
+    expect(ids).not.toContain("anthropic/claude-haiku-4-5-20251001");
+    expect(ids).not.toContain("anthropic/claude-sonnet-4-6");
+    expect(lookupEnginePricing("openrouter", "anthropic/claude-sonnet-4-6")).toBeNull();
+    const bundled = listStaticModels("openrouter");
+    expect(bundled.map((entry) => entry.id).sort()).toEqual([...ids].sort());
+    for (const choice of choices) {
+      expect(lookupEnginePricing("openrouter", choice.id)).toMatchObject({
+        inputUsdPerMtok: choice.inputUsdPerMtok,
+        outputUsdPerMtok: choice.outputUsdPerMtok,
+      });
+    }
   });
 
   test("choices are ordered cheapest-first by input rate", () => {

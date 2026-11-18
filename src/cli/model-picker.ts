@@ -8,6 +8,7 @@
 
 import * as anthropicPricing from "../engines/anthropic/pricing";
 import * as openaiPricing from "../engines/openai/pricing";
+import * as openrouterPricing from "../engines/openrouter/pricing";
 
 // Provider lives in `./types` (single source of truth for the union +
 // runtime mirror). Re-exported here for backward compat with the existing
@@ -69,16 +70,10 @@ export function getModelChoices(provider: Provider): ModelChoice[] {
         .filter(isPriced);
       break;
     case "openrouter":
-      pairs = [
-        ...anthropicPricing.listModels().map((id) => ({
-          id: `anthropic/${id}`,
-          entry: readEntry("anthropic", id),
-        })),
-        ...openaiPricing.listModels().map((id) => ({
-          id: `openai/${id}`,
-          entry: readEntry("openai", id),
-        })),
-      ].filter(isPriced);
+      pairs = openrouterPricing
+        .listModels()
+        .map((id) => ({ id, entry: openrouterPricing.resolveSlug(id)?.rates ?? null }))
+        .filter(isPriced);
       break;
     case "ollama":
       // Ollama is free + local. The wizard's primary path queries the

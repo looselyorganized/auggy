@@ -4,7 +4,50 @@
  * Covers: table lookup, freshness, reasoning_token folding, costOverride.
  */
 import { describe, it, expect } from "bun:test";
-import { lookup, getFreshness, priceOpenAIResponse } from "@/engines/openai/pricing";
+import {
+  lookup,
+  getFreshness,
+  priceOpenAIResponse,
+  priceResponsesUsage,
+} from "@/engines/openai/pricing";
+
+describe("GPT-6.2 Responses accounting", () => {
+  const details = {
+    cached_tokens: 10,
+    cache_write_tokens: 20,
+    cache_write_tokens_details: {
+      ttl_30m_tokens: 8,
+      ttl_12h_tokens: 12,
+    },
+  };
+  it.each([272000, 272001])("prices the full request at %i input tokens", (input) => {
+    const price = priceResponsesUsage("gpt-6.2-sol", undefined, "default", {
+      input_tokens: input,
+      output_tokens: 100,
+      input_tokens_details: details,
+    });
+    const inputCost = (input - 30) * 2 + 10 * 0.1 + 8 * 2.5 + 12 * 5;
+    expect(price).toEqual({
+      priced: true,
+      costUsd: input === 272000 ? (inputCost + 1000) / 1e6 : (inputCost * 2 + 1500) / 1e6,
+    });
+  });
+  it("leaves contradictory usage and unsupported tiers unpriced", () => {
+    const usage = { input_tokens: 20, output_tokens: 10, input_tokens_details: details };
+    expect(priceResponsesUsage("gpt-6.2-astra", undefined, "default", usage).priced).toBe(false);
+    expect(
+      priceResponsesUsage("gpt-6.2-astra", undefined, "priority", { ...usage, input_tokens: 30 })
+        .priced,
+    ).toBe(false);
+    expect(
+      priceResponsesUsage("gpt-6.2-astra", undefined, "default", {
+        ...usage,
+        input_tokens: 100,
+        input_tokens_details: { ...details, cache_write_tokens: 21 },
+      }).priced,
+    ).toBe(false);
+  });
+});
 
 describe("openai lookup", () => {
   it("returns rates for known models", () => {
