@@ -111,6 +111,54 @@ describe("runPollLoop", () => {
     expect(throwOnce).toBe(false); // proves we got past the throw
   });
 
+  it("retries HTTP 502 at the pending offset without quarantine or duplicate dispatch", async () => {
+    const updates: TelegramUpdate[] = [{ update_id: 42 }, { update_id: 43 }];
+    const { client } = mockClient([]);
+    const offsets: Array<number | undefined> = [];
+    const received: TelegramUpdate[] = [];
+    const warnings: string[] = [];
+    const snapshots: PollLoopSnapshot[] = [];
+    let failureSnapshot: PollLoopSnapshot | undefined;
+    client.getUpdates = async (opts) => {
+      offsets.push(opts.offset);
+      if (offsets.length === 1) return [updates[0]!];
+      if (offsets.length === 2) throw new TelegramBotApiError("getUpdates", 502);
+      return [updates[1]!];
+    };
+    const handle = runPollLoop({
+      client,
+      timeoutSec: 0,
+      errorBackoffMs: 1,
+      onUpdate(update) {
+        received.push(update);
+        if (received.length === 2) handle.stop();
+      },
+      onStateChange: (snapshot) => snapshots.push(snapshot),
+      log: {
+        warn(message) {
+          warnings.push(message);
+          failureSnapshot = handle.snapshot();
+        },
+      },
+    });
+    const deadline = setTimeout(() => handle.stop(), 2_000);
+    try {
+      await handle.done;
+      expect(offsets).toEqual([undefined, 43, 43]);
+      expect(received).toEqual(updates);
+      expect(failureSnapshot).toEqual({ state: "running", conflict: null, nextOffset: 43 });
+      expect(snapshots.every((snapshot) => snapshot.state !== "conflict-quarantined")).toBe(true);
+      expect(handle.snapshot()).toEqual({ state: "stopped", conflict: null, nextOffset: 44 });
+      expect(warnings).toEqual([
+        "[telegram-transport.polling] getUpdates error: Telegram bot API getUpdates returned HTTP 502 — retrying in 1ms",
+      ]);
+    } finally {
+      clearTimeout(deadline);
+      handle.stop();
+      await handle.done;
+    }
+  });
+
   it("quarantines Telegram polling ownership conflicts until exact recovery", async () => {
     const quarantined = deferred<PollLoopSnapshot>();
     const secondPoll = deferred<void>();
@@ -362,8 +410,9 @@ describe("runPollLoop", () => {
     expect(warnings).toEqual([]);
   });
 
-  it("wakes retry backoff when stopped", async () => {
+  it("interrupts HTTP 502 retry backoff when stopped without another poll", async () => {
     const warnings: string[] = [];
+    let calls = 0;
     let resolveWarned: (() => void) | undefined;
     const warned = new Promise<void>((resolve) => {
       resolveWarned = resolve;
@@ -371,7 +420,8 @@ describe("runPollLoop", () => {
     const client: TelegramBotClient = {
       sendMessage: async (c) => ({ messageId: 1, chatId: c }),
       getUpdates: async () => {
-        throw new Error("net");
+        calls++;
+        throw new TelegramBotApiError("getUpdates", 502);
       },
       setWebhook: async () => {},
       deleteWebhook: async () => {},
@@ -391,13 +441,25 @@ describe("runPollLoop", () => {
     });
 
     await warned;
+    expect(handle.snapshot()).toEqual({ state: "running", conflict: null });
     handle.stop();
-    await Promise.race([
-      handle.done,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("stop timed out")), 250)),
-    ]);
-
-    expect(warnings).toHaveLength(1);
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        handle.done,
+        new Promise((_, reject) => {
+          deadline = setTimeout(() => reject(new Error("stop timed out")), 250);
+        }),
+      ]);
+      expect(calls).toBe(1);
+      expect(handle.snapshot()).toEqual({ state: "stopped", conflict: null });
+      expect(warnings).toEqual([
+        "[telegram-transport.polling] getUpdates error: Telegram bot API getUpdates returned HTTP 502 — retrying in 60000ms",
+      ]);
+    } finally {
+      clearTimeout(deadline);
+      handle.stop();
+    }
   });
 
   it("stops cleanly when handle.stop() called", async () => {
