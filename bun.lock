@@ -67,12 +67,12 @@
     },
     "packages/anthropic": {
       "name": "@auggy/anthropic",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.94.0",
       },
       "peerDependencies": {
-        "auggy": "^0.6.0",
+        "auggy": "^0.6.1",
       },
       "optionalPeers": [
         "auggy",
@@ -80,17 +80,17 @@
     },
     "packages/auggy-builder-skill": {
       "name": "@auggy/builder-skill",
-      "version": "0.6.0",
+      "version": "0.6.1",
     },
     "packages/evals": {
       "name": "@auggy/evals",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "dependencies": {
         "yaml": "^2.8.3",
         "zod": "^4.6.6",
       },
       "peerDependencies": {
-        "auggy": "^0.6.0",
+        "auggy": "^0.6.1",
       },
       "optionalPeers": [
         "auggy",
@@ -98,12 +98,12 @@
     },
     "packages/ollama": {
       "name": "@auggy/ollama",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "dependencies": {
         "ollama": "^0.6.0",
       },
       "peerDependencies": {
-        "auggy": "^0.6.0",
+        "auggy": "^0.6.1",
       },
       "optionalPeers": [
         "auggy",
@@ -111,12 +111,12 @@
     },
     "packages/openai": {
       "name": "@auggy/openai",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "dependencies": {
         "openai": "^6.34.0",
       },
       "peerDependencies": {
-        "auggy": "^0.6.0",
+        "auggy": "^0.6.1",
       },
       "optionalPeers": [
         "auggy",
@@ -124,13 +124,13 @@
     },
     "packages/openrouter": {
       "name": "@auggy/openrouter",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "dependencies": {
-        "@auggy/openai": "^0.6.0",
+        "@auggy/openai": "^0.6.1",
         "openai": "^6.34.0",
       },
       "peerDependencies": {
-        "auggy": "^0.6.0",
+        "auggy": "^0.6.1",
       },
       "optionalPeers": [
         "auggy",

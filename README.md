@@ -28,17 +28,11 @@ preview software until `1.0.0`. Pin exact versions for production-like evaluatio
 
 Requires **Bun 1.3.14 or newer**. [Install Bun](https://bun.com/docs/installation).
 
-After Auggy 0.6 is published, run:
-
 ```bash
-bunx auggy@0.6.0 create my-agent
+bunx auggy@0.6.1 create my-agent
 cd my-agent
 bun run auggy run
 ```
-
-For evaluation before publication, use matching local core and provider candidate
-packages. The [release guide](docs/RELEASING.md) records publication state and
-packaged verification. The published 0.5 scaffold uses the previous layout.
 
 `bunx` runs the create wizard once. Inside the project, `bun run auggy run` uses
 the installed CLI to start your agent and open chat.
@@ -648,8 +642,7 @@ is unavailable, it opens the password screen and points to the applicable
 ## CLI Reference
 
 Inside an agent project, use `bun run auggy <command>`. For a persistent
-`auggy` command on your PATH, optionally install `bun add --global auggy@0.6.0`
-after publication.
+`auggy` command on your PATH, optionally install `bun add --global auggy@0.6.1`.
 
 | Command | What it does |
 | --- | --- |
