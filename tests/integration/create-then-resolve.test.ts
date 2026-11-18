@@ -105,7 +105,7 @@ describe("end-to-end: create → fabricate install → resolveEngine", () => {
   test("OpenRouter scaffold yields a resolveable engine (requires @auggy/openai workspace dep)", async () => {
     answers = {
       provider: "openrouter",
-      model: "anthropic/claude-sonnet-4-6",
+      model: "anthropic/claude-sonnet-4.6",
     };
 
     process.env.OPENROUTER_API_KEY = "sk-or-test-fabricated";

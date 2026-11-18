@@ -60,7 +60,7 @@ describe("automated creation", () => {
   for (const [provider, model] of [
     ["anthropic", "claude-sonnet-4-6"],
     ["openai", "gpt-5.4-mini"],
-    ["openrouter", "anthropic/claude-sonnet-4-6"],
+    ["openrouter", "anthropic/claude-sonnet-4.6"],
     ["ollama", "llama3.2"],
   ] as const) {
     test(`${provider} uses explicit choices without prompts or live discovery`, async () => {
