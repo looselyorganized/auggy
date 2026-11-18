@@ -15,6 +15,9 @@ let nextResponse: OpenAI.Chat.ChatCompletion | null = null;
 let throwOnCreate: Error | null = null;
 let createOverride: (() => Promise<OpenAI.Chat.ChatCompletion>) | null = null;
 let createCalls = 0;
+let responsesReply: unknown;
+let responsesError: Error | undefined;
+let responsesCalls = 0;
 
 const defaultResponse = (): OpenAI.Chat.ChatCompletion => ({
   id: "chatcmpl-test",
@@ -38,6 +41,13 @@ const defaultResponse = (): OpenAI.Chat.ChatCompletion => ({
 
 mock.module("openai", () => {
   class FakeOpenAI {
+    responses = {
+      create: async () => {
+        responsesCalls++;
+        if (responsesError) throw responsesError;
+        return responsesReply;
+      },
+    };
     chat = {
       completions: {
         create: async (
@@ -79,6 +89,9 @@ beforeEach(() => {
   throwOnCreate = null;
   createOverride = null;
   createCalls = 0;
+  responsesReply = undefined;
+  responsesError = undefined;
+  responsesCalls = 0;
 });
 
 // ---------------------------------------------------------------------------
@@ -110,6 +123,47 @@ function emptyPrompt(over: Partial<AssembledPrompt> = {}): AssembledPrompt {
 }
 
 // ---------------------------------------------------------------------------
+// GPT-6.2 uses the Responses SDK resource even when there are no tools.
+describe("GPT-6.2 Responses boundary", () => {
+  const usage = {
+    input_tokens: 10,
+    output_tokens: 5,
+    input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+  };
+  const fn = { type: "function_call", call_id: "native", name: "lookup", arguments: "{" };
+  test("truncated function arguments never become executable", async () => {
+    responsesReply = {
+      status: "incomplete",
+      incomplete_details: { reason: "max_output_tokens" },
+      output: [fn],
+      usage,
+    };
+    const engine = createOpenAIEngine({ model: "gpt-6.2-astra", apiKey: "fixture" });
+    const result = await engine.complete(emptyPrompt());
+    expect(result).toMatchObject({ finishReason: "max_tokens", costUsd: (10 * 8 + 5 * 40) / 1e6 });
+    expect(result.toolCalls).toBeUndefined();
+    expect(createCalls).toBe(0);
+  });
+  test("malformed complete arguments retain invoiced usage", async () => {
+    responsesReply = { status: "completed", output: [fn], usage };
+    const engine = createOpenAIEngine({ model: "gpt-6.2-sol", apiKey: "fixture" });
+    await expect(engine.complete(emptyPrompt())).rejects.toMatchObject({
+      accounting: { inputTokens: 10, outputTokens: 5, costUsd: (10 * 2 + 5 * 10) / 1e6 },
+    });
+  });
+  test("sanitizes errors and honors pre-aborted requests", async () => {
+    const engine = createOpenAIEngine({ model: "gpt-6.2-sol", apiKey: "fixture" });
+    responsesError = Object.assign(new Error("raw provider message"), { status: 503 });
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow(
+      "OpenAI engine (gpt-6.2-sol) request failed (HTTP 503).",
+    );
+    await expect(
+      engine.complete(emptyPrompt(), { signal: AbortSignal.abort(new Error("canceled")) }),
+    ).rejects.toThrow("canceled");
+    expect(responsesCalls).toBe(1);
+  });
+});
+
 // assembleOpenAISystemMessage
 // ---------------------------------------------------------------------------
 

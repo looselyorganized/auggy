@@ -885,8 +885,8 @@ export interface ModelResponse {
   toolCalls?: { name: string; arguments: Record<string, unknown> }[];
   inputTokens: number;
   outputTokens: number;
-  cacheCreationTokens?: number; // Anthropic-specific: tokens written to prompt cache
-  cacheReadTokens?: number; // Anthropic-specific: tokens read from prompt cache
+  cacheCreationTokens?: number; // Provider-reported tokens written to prompt cache
+  cacheReadTokens?: number; // Provider-reported tokens read from prompt cache
   finishReason: "end_turn" | "tool_use" | "max_tokens";
   costUsd?: number; // populated by adapter when pricing is known; undefined otherwise
   unpricedReason?: string; // set when costUsd is absent, describes why pricing was unavailable
@@ -915,10 +915,21 @@ export interface ModelResponseLimits {
 
 export type ModelDelta = { kind: "text_delta"; text: string };
 
+/** Correlates one inference with messages admitted to the current turn's history. */
+export interface ModelToolExchange {
+  response: ModelResponse;
+  assistantMessageId?: string;
+  calls: { index: number; toolCallId: string }[];
+}
+
 export interface ModelClient {
   complete(
     prompt: AssembledPrompt,
-    opts?: { onDelta?: (delta: ModelDelta) => void; signal?: AbortSignal },
+    opts?: {
+      onDelta?: (delta: ModelDelta) => void;
+      signal?: AbortSignal;
+      toolExchange?: ModelToolExchange;
+    },
   ): Promise<ModelResponse>;
   countTokens(text: string): number;
   maxContextTokens: number;

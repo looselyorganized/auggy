@@ -6,6 +6,8 @@ describe("getModelChoices", () => {
   test("anthropic returns all anthropic table keys", () => {
     const choices = getModelChoices("anthropic");
     const ids = choices.map((c) => c.id);
+    expect(ids).toContain("claude-fable-5-2");
+    expect(ids).toContain("claude-opus-5");
     expect(ids).toContain("claude-haiku-4-5");
     expect(ids).toContain("claude-sonnet-4-6");
     expect(ids).toContain("claude-opus-4-8");
@@ -17,6 +19,8 @@ describe("getModelChoices", () => {
   test("openai returns all openai table keys", () => {
     const choices = getModelChoices("openai");
     const ids = choices.map((c) => c.id);
+    expect(ids).toContain("gpt-6.2-astra");
+    expect(ids).toContain("gpt-6.2-sol");
     expect(ids).toContain("gpt-5.5");
     expect(ids).toContain("gpt-5.4");
     expect(ids).toContain("gpt-5.4-mini");
