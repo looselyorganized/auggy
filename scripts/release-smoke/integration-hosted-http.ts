@@ -416,7 +416,7 @@ export function prepareHostedHttpFixtures(consumer: string) {
     `export const INTEGRATION_LIMITS = ${JSON.stringify(INTEGRATION_LIMITS)} as const;\n`,
     "fixture-overlay",
   );
-  const beforeMain = readIntegrationFile(consumer, "src/index.ts", 32768);
+  const beforeMain = readIntegrationFile(consumer, "src/main.ts", 32768);
   const main = "export const main: ApplicationMain = async (launch) => {";
   const injected = rewrite(
     rewrite(
@@ -428,7 +428,7 @@ export function prepareHostedHttpFixtures(consumer: string) {
     "\n  } catch (error) { await stopContainerHttpFixture(); throw error; }\n};",
   );
   put(
-    "src/index.ts",
+    "src/main.ts",
     `import { startContainerHttpFixture, stopContainerHttpFixture } from "./fixtures/hosted-http-startup";\n${injected}`,
     "fixture-overlay",
     beforeMain,
@@ -471,7 +471,7 @@ export function assertHostedHttpFixtures(
 ) {
   const expected = [
     "agent.yaml",
-    "src/index.ts",
+    "src/main.ts",
     "src/augments/orders/index.ts",
     "src/augments/orders/contracts.ts",
     "src/augments/orders/service-client.ts",

@@ -1154,67 +1154,117 @@ describe("owned Railway npm wrapper groups", () => {
     await cli.status({ cwd: "/tmp" });
     expect(requests).toEqual([undefined, true]);
   });
-  test.each(["timeout", "abort", "stdout-overflow", "stderr-overflow"])(
-    "default spawn kills and drains every started wrapper-group member on %s",
-    async (variant) => {
-      const dir = realpathSync(mkdtempSync(join(tmpdir(), "railway-wrapper-group-")));
-      const wrapperPidPath = join(dir, "wrapper.pid");
-      const nativePidPath = join(dir, "native.pid");
-      const previousPath = process.env.PATH;
-      const nativeScript =
-        `require("node:fs").writeFileSync(${JSON.stringify(nativePidPath)}, String(process.pid));` +
-        (variant === "stdout-overflow"
-          ? 'while(true) require("node:fs").writeSync(1, Buffer.alloc(65536, 120));'
-          : variant === "stderr-overflow"
-            ? 'while(true) require("node:fs").writeSync(2, Buffer.alloc(65536, 120));'
-            : "setInterval(() => {}, 1000);");
-      writeFileSync(
-        join(dir, "railway"),
-        `#!/usr/bin/env node\nrequire("node:fs").writeFileSync(${JSON.stringify(wrapperPidPath)},String(process.pid));require("node:child_process").execFileSync(process.execPath,["-e",${JSON.stringify(nativeScript)}],{stdio:"inherit"});\n`,
-        { mode: 0o700 },
-      );
-      process.env.PATH = `${dir}:${previousPath}`;
-      const controller = new AbortController();
-      let abortTimer: ReturnType<typeof setInterval> | undefined;
-      if (variant === "abort")
-        abortTimer = setInterval(() => {
-          if (existsSync(nativePidPath)) controller.abort();
-        }, 10);
-      const start = performance.now();
-      const overflow = variant.endsWith("overflow");
-      try {
-        await expect(
-          createRailwayCli().status({
-            cwd: dir,
-            timeoutMs: overflow ? 4000 : 2000,
-            signal: controller.signal,
-          }),
-        ).rejects.toThrow(/metadata read failed/);
-        expect(performance.now() - start).toBeLessThan(overflow ? 3000 : 2600);
-        for (const path of [wrapperPidPath, nativePidPath]) {
-          // The timeout includes process startup: on a busy runner it can fire
-          // before Node writes a PID. Abort/overflow still require both PIDs,
-          // proving cleanup of a running wrapper AND its native child.
-          if (variant === "timeout" && !existsSync(path)) continue;
-          const pid = Number(readFileSync(path, "utf8"));
-          expect(Number.isInteger(pid)).toBe(true);
-          expect(() => process.kill(pid, 0)).toThrow();
+  function readFixturePid(path: string): number | undefined {
+    if (!existsSync(path)) return undefined;
+    const pid = Number(readFileSync(path, "utf8"));
+    return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+  }
+
+  async function checkAbort(dir: string, wrapperPath: string, nativePath: string) {
+    const controller = new AbortController();
+    const request = createRailwayCli().status({
+      cwd: dir,
+      timeoutMs: 15_000,
+      signal: controller.signal,
+    });
+    let settled = false;
+    const markSettled = () => {
+      settled = true;
+    };
+    const observed = request.then(markSettled, markSettled);
+    const readyBy = performance.now() + 8000;
+    try {
+      for (;;) {
+        const wrapper = readFixturePid(wrapperPath);
+        const native = readFixturePid(nativePath);
+        if (settled || performance.now() >= readyBy) {
+          const reason = settled ? "request settled before abort" : "readiness deadline expired";
+          throw new Error(
+            `Railway abort fixture: ${reason}; wrapper=${wrapper ?? "pending"}, native=${native ?? "pending"}`,
+          );
         }
-      } finally {
-        if (abortTimer !== undefined) clearInterval(abortTimer);
-        if (previousPath === undefined) delete process.env.PATH;
-        else process.env.PATH = previousPath;
-        for (const path of [nativePidPath, wrapperPidPath]) {
-          if (existsSync(path)) {
-            try {
-              process.kill(Number(readFileSync(path, "utf8")), "SIGKILL");
-            } catch {}
+        if (wrapper && native) {
+          process.kill(wrapper, 0);
+          process.kill(native, 0);
+          const abortAt = performance.now();
+          controller.abort();
+          expect(controller.signal.aborted).toBe(true);
+          await expect(request).rejects.toThrow(/metadata read failed/);
+          expect(performance.now() - abortAt).toBeLessThan(2600);
+          for (const pid of [wrapper, native]) {
+            expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
           }
+          return;
         }
-        rmSync(dir, { recursive: true, force: true });
+        await Bun.sleep(10);
       }
-    },
-  );
+    } finally {
+      controller.abort();
+      await observed;
+    }
+  }
+
+  for (const variant of ["timeout", "abort", "stdout-overflow", "stderr-overflow"]) {
+    test(
+      `default spawn kills and drains every started wrapper-group member on ${variant}`,
+      async () => {
+        const dir = realpathSync(mkdtempSync(join(tmpdir(), "railway-wrapper-group-")));
+        const wrapperPidPath = join(dir, "wrapper.pid");
+        const nativePidPath = join(dir, "native.pid");
+        const previousPath = process.env.PATH;
+        const nativeScript =
+          `require("node:fs").writeFileSync(${JSON.stringify(nativePidPath)}, String(process.pid));` +
+          (variant === "stdout-overflow"
+            ? 'while(true) require("node:fs").writeSync(1, Buffer.alloc(65536, 120));'
+            : variant === "stderr-overflow"
+              ? 'while(true) require("node:fs").writeSync(2, Buffer.alloc(65536, 120));'
+              : "setInterval(() => {}, 1000);");
+        writeFileSync(
+          join(dir, "railway"),
+          `#!/usr/bin/env node\nrequire("node:fs").writeFileSync(${JSON.stringify(wrapperPidPath)},String(process.pid));require("node:child_process").execFileSync(process.execPath,["-e",${JSON.stringify(nativeScript)}],{stdio:"inherit"});\n`,
+          { mode: 0o700 },
+        );
+        process.env.PATH = `${dir}:${previousPath}`;
+        const start = performance.now();
+        const overflow = variant.endsWith("overflow");
+        try {
+          if (variant === "abort") {
+            await checkAbort(dir, wrapperPidPath, nativePidPath);
+            return;
+          }
+          await expect(
+            createRailwayCli().status({
+              cwd: dir,
+              timeoutMs: overflow ? 4000 : 2000,
+            }),
+          ).rejects.toThrow(/metadata read failed/);
+          expect(performance.now() - start).toBeLessThan(overflow ? 3000 : 2600);
+          for (const path of [wrapperPidPath, nativePidPath]) {
+            // The timeout includes process startup: on a busy runner it can fire
+            // before Node writes a PID. Overflow still requires both PIDs,
+            // proving cleanup of a running wrapper AND its native child.
+            if (variant === "timeout" && !existsSync(path)) continue;
+            const pid = Number(readFileSync(path, "utf8"));
+            expect(Number.isInteger(pid)).toBe(true);
+            expect(() => process.kill(pid, 0)).toThrow();
+          }
+        } finally {
+          if (previousPath === undefined) delete process.env.PATH;
+          else process.env.PATH = previousPath;
+          for (const path of [nativePidPath, wrapperPidPath]) {
+            const pid = readFixturePid(path);
+            if (pid) {
+              try {
+                process.kill(pid, "SIGKILL");
+              } catch {}
+            }
+          }
+          rmSync(dir, { recursive: true, force: true });
+        }
+      },
+      variant === "abort" ? 20_000 : undefined,
+    );
+  }
 
   test("unknown group cleanup is a fatal typed error rather than an unavailable status", async () => {
     const factory: RailwaySpawnFactory = () => ({

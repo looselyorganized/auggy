@@ -250,7 +250,7 @@ export interface SecurityEvalOverride {
 /** Opt-in project-owned execution, validated before entry/factory imports. */
 export interface ApplicationConfig {
   readonly entrypoint: string;
-  readonly contractVersion: 1;
+  readonly contractVersion: 1 | 2;
 }
 
 /** The fully parsed and validated agent.yaml content. */

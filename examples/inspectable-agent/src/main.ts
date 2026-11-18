@@ -1,16 +1,29 @@
 import { resolve } from "node:path";
 import { runApplication, type ApplicationMain } from "auggy/application";
-import { composeAgent } from "./agent";
 import { configureHttp } from "./http";
-import { observeStartup } from "./observability";
+import { observeFinalization, observeStartup } from "./observability";
+import { turnProgram } from "./turn";
 
 const startupLabel = "inspectable-agent";
 
 export const main: ApplicationMain = async (launch) => {
-  // The runner owns cleanup before prepare acquires claims or creates augments.
-  const host = launch.createHost({ compose: composeAgent });
-  const prepared = await host.prepare();
-  const ready = await host.start({ http: prepared.http.map(configureHttp) });
+  // The runner owns every stage and cleanup, including startup failures.
+  const runtime = launch.createHost();
+  const config = await runtime.prepareConfiguration();
+  const model = await runtime.createModel(config);
+  const augments = await runtime.createAugments(config);
+  const agent = runtime.createAgent({
+    config,
+    model,
+    augments,
+    turnProgram,
+    onTurnFinalized: observeFinalization,
+  });
+  for (const transport of runtime.transportsFrom(augments)) {
+    runtime.bindTransport(transport, agent);
+  }
+  const http = runtime.httpBindings(agent).map(configureHttp);
+  const ready = await runtime.start({ agent, http });
   observeStartup({
     label: startupLabel,
     mode: launch.mode,

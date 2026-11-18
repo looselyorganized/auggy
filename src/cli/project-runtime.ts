@@ -264,15 +264,17 @@ function inspectRuntime(
   }
   const requestedContract =
     options.applicationContract ??
-    (metadataOnly && capabilities?.applicationContracts.includes(1) ? 1 : undefined);
+    (metadataOnly
+      ? capabilities?.applicationContracts.find((contract) => contract === 1 || contract === 2)
+      : undefined);
   if (
     requestedContract !== undefined &&
     (!Number.isSafeInteger(requestedContract) ||
-      requestedContract !== 1 ||
+      ![1, 2].includes(requestedContract) ||
       !capabilities?.applicationContracts.includes(requestedContract))
   ) {
     throw new Error(
-      "[runtime] local Auggy does not support application contract 1; update the project dependency before starting this application",
+      `[runtime] local Auggy does not support application contract ${requestedContract}; update the project dependency before starting this application`,
     );
   }
 

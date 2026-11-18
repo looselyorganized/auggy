@@ -7,8 +7,8 @@
     "bun": ">=1.3.14"
   },
   "scripts": {
-    "start": "bun src/index.ts",
-    "dev": "bun src/index.ts",
+    "start": "bun src/main.ts",
+    "dev": "bun src/main.ts",
     "cli": "auggy dev --config agent.yaml",
     "typecheck": "tsc --project tsconfig.json --noEmit",
     "test": "bun test tests"

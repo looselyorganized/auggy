@@ -2290,44 +2290,51 @@ describe("handleAdminRoute — POST action dispatch", () => {
     expect(res.status).toBe(403);
   });
 
-  it("POST /console/api/chat creator mode forwards bearer only to /agent/run", async () => {
-    const csrf = await generateCsrfToken({
-      bearer: "test-bearer",
-      agentName: "zip",
-      actionId: "console-chat",
-    });
-    const originalFetch = globalThis.fetch;
-    const forwarded: { headers?: Headers } = {};
-    globalThis.fetch = (async (_input, init) => {
-      forwarded.headers = new Headers(init?.headers);
-      return new Response("event: RUN_STARTED\ndata: {}\n\n", {
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
+  it.each([undefined, "/support/chat"])(
+    "creator proxy uses selected local mount %s",
+    async (agentRunPath) => {
+      const csrf = await generateCsrfToken({
+        bearer: "test-bearer",
+        agentName: "zip",
+        actionId: "console-chat",
       });
-    }) as typeof fetch;
+      const originalFetch = globalThis.fetch;
+      const forwarded: { headers?: Headers; url?: string; redirect?: RequestInit["redirect"] } = {};
+      globalThis.fetch = (async (input, init) => {
+        forwarded.url = String(input);
+        forwarded.redirect = init?.redirect;
+        forwarded.headers = new Headers(init?.headers);
+        return new Response("event: RUN_STARTED\ndata: {}\n\n", {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      }) as typeof fetch;
 
-    try {
-      const req = new Request("http://127.0.0.1:8080/console/api/chat", {
-        method: "POST",
-        headers: {
-          authorization: basicHeader("test-bearer"),
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          csrf,
-          message: "creator check",
-          threadId: "abc",
-          chatMode: "creator",
-        }),
-      });
-      const res = await handleAdminRoute(req, await makeCtx({ selfPort: 9999 }));
-      expect(res.status).toBe(200);
-      expect(forwarded.headers?.get("authorization")).toBe("Bearer test-bearer");
-      expect(forwarded.headers?.get("x-visitor-token")).toBeNull();
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
+      try {
+        const req = new Request("http://127.0.0.1:8080/console/api/chat", {
+          method: "POST",
+          headers: {
+            authorization: basicHeader("test-bearer"),
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            csrf,
+            message: "creator check",
+            threadId: "abc",
+            chatMode: "creator",
+          }),
+        });
+        const res = await handleAdminRoute(req, await makeCtx({ selfPort: 9999, agentRunPath }));
+        expect(res.status).toBe(200);
+        expect(forwarded.url).toBe(`http://127.0.0.1:9999${agentRunPath ?? "/agent/run"}`);
+        expect(forwarded.redirect).toBe("error");
+        expect(forwarded.headers?.get("authorization")).toBe("Bearer test-bearer");
+        expect(forwarded.headers?.get("x-visitor-token")).toBeNull();
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    },
+  );
 
   it("POST /console/api/chat anonymous mode strips bearer and visitor token", async () => {
     const csrf = await generateCsrfToken({
@@ -2515,4 +2522,57 @@ describe("handleAdminRoute — POST action dispatch", () => {
     expect(body).toContain("Session expired");
     expect(body).toContain('http-equiv="refresh"');
   });
+});
+
+it("dashboard reports the selected conversation mount", async () => {
+  const response = await handleAdminRoute(
+    new Request("http://localhost/console/api/dashboard", {
+      headers: { authorization: basicHeader("test-bearer") },
+    }),
+    await makeCtx({ agentRunPath: "/support/chat" }),
+  );
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { web: { agentRunPath: string } };
+  expect(body.web.agentRunPath).toBe("/support/chat");
+});
+
+it("console proxy rejects invalid destinations before forwarding credentials", async () => {
+  const csrf = await generateCsrfToken({
+    bearer: "test-bearer",
+    agentName: "zip",
+    actionId: "console-chat",
+  });
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    throw new Error("must not fetch");
+  }) as unknown as typeof fetch;
+  try {
+    for (const agentRunPath of [
+      "//external.example/chat",
+      "/support/../chat",
+      "/chat?target=external",
+      "/%2fexternal",
+    ]) {
+      const request = new Request("http://localhost/console/api/chat", {
+        method: "POST",
+        headers: { authorization: basicHeader("test-bearer"), "content-type": "application/json" },
+        body: JSON.stringify({
+          csrf,
+          message: "hello",
+          threadId: "mount-check",
+          chatMode: "creator",
+        }),
+      });
+      const response = await handleAdminRoute(
+        request,
+        await makeCtx({ selfPort: 9999, agentRunPath }),
+      );
+      expect(response.status).toBe(503);
+    }
+    expect(calls).toBe(0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

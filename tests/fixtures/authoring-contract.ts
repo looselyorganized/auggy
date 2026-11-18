@@ -48,8 +48,8 @@ export function authoringContractConsumer(
   }
 }
 
-export function applicationTemplateContract(plan: ApplicationScaffoldPlan): 1 {
-  const entrypoint: "./src/index.ts" = plan.application.entrypoint;
+export function applicationTemplateContract(plan: ApplicationScaffoldPlan): 2 {
+  const entrypoint: "./src/main.ts" = plan.application.entrypoint;
   void entrypoint;
   return plan.application.contractVersion;
 }

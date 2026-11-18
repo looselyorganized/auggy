@@ -1,4 +1,4 @@
-import type { AgentHandle, HostCleanupFailureCode, TurnSchedulerSnapshot } from "../types";
+import type { AgentHandle, Augment, HostCleanupFailureCode, TurnSchedulerSnapshot } from "../types";
 
 /** Package-private lifecycle observations; the host adds its other owned work. */
 export interface HostedAgentSnapshot {
@@ -17,6 +17,10 @@ export interface HostedAgentSnapshot {
 /** Created only through the shared internal agent constructor, never by an app. */
 export interface HostedAgentInstance {
   readonly agent: AgentHandle;
+  /** Selects the configured transport used by the real startup registration pass. */
+  bindTransport(augment: Augment): void;
+  /** Selected application mounts are validated against routes after augment boot. */
+  setReservedHttpPaths(paths: readonly string[]): void;
   /** Requires completed agent readiness and a still-pending host gate. */
   openAdmission(): void;
   /** Synchronously closes admission permanently and settles pending gate waiters. */

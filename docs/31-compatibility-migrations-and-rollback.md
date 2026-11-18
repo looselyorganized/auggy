@@ -12,16 +12,19 @@ An agent selects its own local `auggy` dependency. Updating that package updates
 guarded runtime operations and bundled built-in implementations; updating a global
 CLI alone does not replace it. Separately installed capabilities such as
 `@auggy/link`, and provider packages, follow their own manifest and lockfile
-selections. The generated `src/index.ts`, `src/agent.ts`,
+selections. The generated `src/main.ts`,
 `src/http.ts`, `src/turn.ts`, custom augments and copied skills are application-owned
 source. Review release notes and adapt those files explicitly when a contract
 changes; dependency installation never silently rewrites them. The optional
 company application is a separate service with its own dependency selection.
+A global CLI launching a contract-2 application must understand contract 2 before
+it can delegate execution to the project-local runtime.
 
 ## Contract ledger
 
 | Contract | Current boundary | Compatibility rule |
 | --- | --- | --- |
+| Managed application | Application contracts 1 and 2; launcher protocol 1 | New scaffolds declare contract 2 and expose staged host assembly and an editable HTTP mount. Contract-1 applications retain compatible startup and `/agent/run`; dependencies never regenerate owned source. |
 | `agent.yaml` | Structural 0.x contract | Omitted `settings` means defaults. `settings` must otherwise be an object. Unknown top-level fields are rejected so typos cannot silently restore defaults. A breaking field change requires an Unreleased changelog entry and an operator edit; no general config migrator is claimed. |
 | `GET /health` | Minimal unversioned liveness probe | HTTP 200 with `status: "healthy"` means only that the web listener is alive. It is not readiness, migration, provider, or queue evidence. Operators must not deserialize it as `AgentHealth`. |
 | `AgentHealth` | Package source API | Follows the installed pre-1.0 package version. It is not a persisted or wire schema. |

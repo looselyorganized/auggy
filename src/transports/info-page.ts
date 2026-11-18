@@ -95,6 +95,7 @@ const PUBLIC_PAGE_CSS = `
 `;
 
 export interface InfoPageOptions {
+  agentRunPath?: string;
   publicIntegration?: boolean;
 }
 
@@ -242,6 +243,7 @@ ${actions
  * `web-transport.ts` so per-request cost is just Response construction.
  */
 export function renderInfoPage(card: AgentCard, opts: InfoPageOptions = {}): string {
+  const endpoint = escapeHtml(opts.agentRunPath ?? "/agent/run");
   const { escapedName, escapedPurpose, hasName, hasPurpose, heading } = getAgentText(card);
   const title = hasName ? `${escapedName} — Auggy agent` : FALLBACK;
   const integrationValue = opts.publicIntegration ? '<a href="/agent">Published</a>' : "Private";
@@ -274,7 +276,7 @@ ${renderActions([
           <h2>Runtime access</h2>
           <p>This page reports stable runtime entry points. Detailed capability and security posture live in the creator console.</p>
           ${renderMetaRows([
-            ["Conversation", "POST /agent/run"],
+            ["Conversation", `POST ${endpoint}`],
             ["Developer surface", integrationValue],
           ])}
         </aside>
@@ -310,7 +312,8 @@ ${renderActions([connectAction])}`,
  * Keep this intentionally conservative: full operator DX lives behind
  * `/console`; the public page only orients developers after the creator opts in.
  */
-export function renderAgentIntegrationPage(card: AgentCard): string {
+export function renderAgentIntegrationPage(card: AgentCard, opts: InfoPageOptions = {}): string {
+  const endpoint = escapeHtml(opts.agentRunPath ?? "/agent/run");
   const { escapedName, escapedPurpose, hasName, hasPurpose, heading } = getAgentText(card);
   const title = hasName ? `${escapedName} — developer surface` : "Developer surface";
   const purposeParagraph = hasPurpose ? `\n          <p>${escapedPurpose}</p>` : "";
@@ -326,7 +329,7 @@ export function renderAgentIntegrationPage(card: AgentCard): string {
         <div class="hero-main">
           <p class="eyebrow">Integrate with ${heading}</p>
           <h1>Developer surface for ${heading}.</h1>
-          <p class="lede">Use <code>/agent/run</code> for AG-UI conversation. Use custom augment routes for deterministic app and API traffic.</p>${purposeParagraph}
+          <p class="lede">Use <code>${endpoint}</code> for AG-UI conversation. Use custom augment routes for deterministic app and API traffic.</p>${purposeParagraph}
 ${renderActions([
   { href: "/.well-known/agent-card.json", label: "View legacy runtime metadata", primary: true },
   { href: "/console/integrations", label: "Creator setup" },
@@ -337,7 +340,7 @@ ${renderActions([
           <h2>Surface summary</h2>
           <p>Legacy Auggy metadata, not a current A2A Agent Card. Review its capability and tool-derived entries before publishing it.</p>
           ${renderFacts([
-            ["Conversation", "POST /agent/run"],
+            ["Conversation", `POST ${endpoint}`],
             ["App routes", "Custom augment routes"],
             ["Legacy metadata", "/.well-known/agent-card.json"],
             ["Auth", "Configured by creator"],
@@ -348,7 +351,7 @@ ${renderActions([
 ${renderPanel({
   title: "When to use what",
   body: `          <ul class="steps">
-            <li><span class="mark">1</span><span>Use <code>/agent/run</code> when the agent should reason, remember, ask, or mediate.</span></li>
+            <li><span class="mark">1</span><span>Use <code>${endpoint}</code> when the agent should reason, remember, ask, or mediate.</span></li>
             <li><span class="mark">2</span><span>Use custom routes when a frontend or webhook needs deterministic app behavior.</span></li>
             <li><span class="mark">3</span><span>Put both in one augment when they belong to the same business capability.</span></li>
           </ul>
@@ -358,7 +361,7 @@ curl /.well-known/agent-card.json</pre>`,
 ${renderPanel({
   title: "Conversation request shape",
   body: `          <p>This is the AG-UI chat path, not the required path for every app request. The bearer header below is the creator-authorized form; some agents also accept visitor tokens, external auth assertions, or anonymous access depending on configuration.</p>
-          <pre>POST /agent/run
+          <pre>POST ${endpoint}
 Authorization: Bearer &lt;token&gt;
 Content-Type: application/json
 

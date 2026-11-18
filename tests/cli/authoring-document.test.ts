@@ -353,62 +353,65 @@ describe("closed document edits", () => {
     },
   );
 
-  test("supports adoption after conversion, rejects application replacement and invalid edits", () => {
-    const { dir, path } = fixture("augments: [old]\n");
-    metadata(dir, "old", "type: budgets\n");
-    const document = readAuthoringDocument(path);
-    const result = editAuthoringDocument(document, [
-      { kind: "inline-references" },
-      {
-        kind: "set-application",
-        application: { entrypoint: "./src/index.ts", contractVersion: 1 },
-      },
-    ]);
-    expect(parse(text(result.bytes)).application).toEqual({
-      entrypoint: "./src/index.ts",
-      contractVersion: 1,
-    });
-    writeFileSync(path, result.bytes);
-    const current = readAuthoringDocument(path);
-    expectCode(
-      () =>
-        editAuthoringDocument(current, [
-          {
-            kind: "set-application",
-            application: { entrypoint: "./other.ts", contractVersion: 1 },
-          },
-        ]),
-      "application-conflict",
-    );
-    expectCode(
-      () =>
-        editAuthoringDocument(current, [
-          {
-            kind: "set-application",
-            application: { entrypoint: "./../outside.ts", contractVersion: 1 },
-          },
-        ]),
-      "invalid-application",
-    );
-    expectCode(
-      () =>
-        editAuthoringDocument(current, [
-          { kind: "append-augment", entry: { type: "budgets", name: "old" } },
-        ]),
-      "duplicate-augment",
-    );
-    expectCode(
-      () =>
-        editAuthoringDocument(current, [
-          { kind: "set-augment-options", name: "old", options: Number.POSITIVE_INFINITY },
-        ]),
-      "invalid-edit",
-    );
-    expectCode(
-      () => editAuthoringDocument(current, [{ kind: "remove-augment", name: "absent" }]),
-      "missing-augment",
-    );
-  });
+  test.each([1, 2] as const)(
+    "supports contract %s adoption after conversion and rejects replacement",
+    (contractVersion) => {
+      const { dir, path } = fixture("augments: [old]\n");
+      metadata(dir, "old", "type: budgets\n");
+      const document = readAuthoringDocument(path);
+      const result = editAuthoringDocument(document, [
+        { kind: "inline-references" },
+        {
+          kind: "set-application",
+          application: { entrypoint: "./src/index.ts", contractVersion },
+        },
+      ]);
+      expect(parse(text(result.bytes)).application).toEqual({
+        entrypoint: "./src/index.ts",
+        contractVersion,
+      });
+      writeFileSync(path, result.bytes);
+      const current = readAuthoringDocument(path);
+      expectCode(
+        () =>
+          editAuthoringDocument(current, [
+            {
+              kind: "set-application",
+              application: { entrypoint: "./other.ts", contractVersion },
+            },
+          ]),
+        "application-conflict",
+      );
+      expectCode(
+        () =>
+          editAuthoringDocument(current, [
+            {
+              kind: "set-application",
+              application: { entrypoint: "./../outside.ts", contractVersion },
+            },
+          ]),
+        "invalid-application",
+      );
+      expectCode(
+        () =>
+          editAuthoringDocument(current, [
+            { kind: "append-augment", entry: { type: "budgets", name: "old" } },
+          ]),
+        "duplicate-augment",
+      );
+      expectCode(
+        () =>
+          editAuthoringDocument(current, [
+            { kind: "set-augment-options", name: "old", options: Number.POSITIVE_INFINITY },
+          ]),
+        "invalid-edit",
+      );
+      expectCode(
+        () => editAuthoringDocument(current, [{ kind: "remove-augment", name: "absent" }]),
+        "missing-augment",
+      );
+    },
+  );
 
   test("rejects changed private input bytes and counterfeit documents", () => {
     const { path } = fixture("augments: [{ type: budgets }]\n");

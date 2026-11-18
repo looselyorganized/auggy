@@ -16,6 +16,7 @@ import {
   type PackedArtifactInput,
 } from "./application-consumer";
 import { readBoundedRegularFile } from "./bounded-file";
+import { HISTORICAL_APPLICATION_RECIPE } from "./application-recipe";
 
 // First reviewed application-capable runtime. This is an artifact experiment,
 // never a claim that two different 0.5.0 artifacts were published releases.
@@ -99,6 +100,44 @@ export async function applicationArtifact(
   return input;
 }
 
+/** Retain only the reviewed reference files from the already verified pinned archive. */
+export function preserveApplicationBaselineReference(
+  source: string,
+  outputDirectory: string,
+  verifiedFiles: Readonly<Record<string, string>>,
+) {
+  const selected = HISTORICAL_APPLICATION_RECIPE.sourceFiles.map((file) => {
+    const archivedPath = `examples/inspectable-agent/${file}`;
+    const expected = verifiedFiles[archivedPath];
+    if (!expected)
+      throw new Error(`Baseline reference is absent from the verified archive: ${file}`);
+    return { file, archivedPath, expected };
+  });
+  verifyAcceptedSourceFiles(
+    source,
+    Object.fromEntries(selected.map(({ archivedPath, expected }) => [archivedPath, expected])),
+  );
+  const contents = selected.map(({ file, archivedPath, expected }) => {
+    const bytes = readBoundedRegularFile(
+      join(source, archivedPath),
+      APPLICATION_BOUNDS.sourceBytes,
+    ).bytes;
+    if (applicationHash(bytes) !== expected) throw new Error(`Baseline reference changed: ${file}`);
+    return { file, bytes, sha256: expected };
+  });
+  const referenceDir = join(outputDirectory, "reference");
+  mkdirSync(referenceDir, { mode: 0o700 });
+  for (const { file, bytes } of contents) {
+    const destination = join(referenceDir, file);
+    mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+    writeFileSync(destination, bytes, { flag: "wx", mode: 0o600 });
+  }
+  return {
+    referenceDir,
+    referenceFiles: Object.fromEntries(contents.map(({ file, sha256 }) => [file, sha256])),
+  };
+}
+
 export async function buildApplicationBaseline(repositoryRoot: string, outputDirectory: string) {
   const repo = realpathSync(repositoryRoot);
   const output = resolve(outputDirectory);
@@ -119,6 +158,7 @@ export async function buildApplicationBaseline(repositoryRoot: string, outputDir
         commit: string;
         tree: string;
         lockSHA256: string;
+        referenceDir: string;
       }
     | undefined;
   const run = async (label: string, command: string[], cwd = source) => {
@@ -174,7 +214,9 @@ export async function buildApplicationBaseline(repositoryRoot: string, outputDir
     }
     const core = await applicationArtifact(join(output, coreName), "auggy");
     const provider = await applicationArtifact(join(output, providerName), "@auggy/anthropic");
+    const reference = preserveApplicationBaselineReference(source, output, files);
     provenance = {
+      ...reference,
       core,
       provider,
       commit: APPLICATION_BASELINE,
@@ -183,7 +225,14 @@ export async function buildApplicationBaseline(repositoryRoot: string, outputDir
       toolchain,
     };
     passed = true;
-    built = { core, provider, commit: APPLICATION_BASELINE, tree, lockSHA256: BASELINE_LOCK };
+    built = {
+      core,
+      provider,
+      commit: APPLICATION_BASELINE,
+      tree,
+      lockSHA256: BASELINE_LOCK,
+      referenceDir: reference.referenceDir,
+    };
   } finally {
     if (passed && !cleanupUnknown) {
       try {
@@ -215,16 +264,30 @@ export async function buildApplicationBaseline(repositoryRoot: string, outputDir
 }
 
 /** Unpublished compatibility fixture; only the npm version field changes. */
-export async function buildDifferentVersionArtifact(
+export function buildDifferentVersionArtifact(input: PackedArtifactInput, outputDirectory: string) {
+  return buildApplicationFixtureArtifact(input, outputDirectory, "different-version");
+}
+
+/** A distinct contract-compatible global CLI artifact with the candidate's exact npm version. */
+export function buildSameVersionArtifact(input: PackedArtifactInput, outputDirectory: string) {
+  return buildApplicationFixtureArtifact(input, outputDirectory, "same-version");
+}
+
+async function buildApplicationFixtureArtifact(
   input: PackedArtifactInput,
   outputDirectory: string,
+  kind: "different-version" | "same-version",
 ) {
   const inspectedInput = await applicationArtifact(input.path, input.packageName);
   if (inspectedInput.sha256 !== input.sha256) throw new Error("Version fixture input changed");
   const evidence = inspectApplicationArtifact(inspectedInput);
   const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(evidence.version);
   if (!match || input.packageName !== "auggy") throw new Error("Expected a stable core artifact");
-  const version = `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
+  const version =
+    kind === "different-version"
+      ? `${match[1]}.${match[2]}.${Number(match[3]) + 1}`
+      : evidence.version;
+  const fixtureMarker = "same-version-global-cli";
   const output = resolve(outputDirectory);
   mkdirSync(output, { recursive: false, mode: 0o700 });
   const workspace = mkdtempSync(join(tmpdir(), "auggy-version-fixture-"));
@@ -247,7 +310,11 @@ export async function buildDifferentVersionArtifact(
     const manifest = JSON.parse(
       readBoundedRegularFile(manifestPath, APPLICATION_BOUNDS.sourceBytes).bytes.toString("utf8"),
     );
-    manifest.version = version;
+    if (kind === "same-version") {
+      if (Object.hasOwn(manifest, "auggyApplicationFixture"))
+        throw new Error("Fixture marker already exists");
+      manifest.auggyApplicationFixture = fixtureMarker;
+    } else manifest.version = version;
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     const pack = await runAcceptedBuildCommand({
       command: ["npm", "pack", "--silent", "--ignore-scripts", "--pack-destination", output],
@@ -260,6 +327,14 @@ export async function buildDifferentVersionArtifact(
       throw new Error("Version fixture pack failed");
     const artifact = await applicationArtifact(join(output, name), "auggy");
     const changed = inspectApplicationArtifact(artifact);
+    if (artifact.sha256 === input.sha256 || changed.version !== version)
+      throw new Error("Fixture artifact did not change as declared");
+    const expectedManifest = {
+      ...evidence.manifest,
+      ...(kind === "same-version" ? { auggyApplicationFixture: fixtureMarker } : { version }),
+    };
+    if (JSON.stringify(changed.manifest) !== JSON.stringify(expectedManifest))
+      throw new Error("Fixture changed unexpected package metadata");
     for (const [file, hash] of Object.entries(evidence.fileHashes)) {
       if (file !== "package.json" && changed.fileHashes[file] !== hash)
         throw new Error("Version fixture changed runtime source");
@@ -275,12 +350,16 @@ export async function buildDifferentVersionArtifact(
       }
     }
     writeFileSync(
-      join(output, "version-fixture.json"),
+      join(output, kind === "same-version" ? "same-version-fixture.json" : "version-fixture.json"),
       `${JSON.stringify(
         {
           status: passed && !cleanupUnknown ? "passed" : "failed",
           published: false,
-          purpose: "compatible contract with unequal npm versions",
+          purpose:
+            kind === "same-version"
+              ? "compatible contract with equal npm versions and distinct fixture metadata"
+              : "compatible contract with unequal npm versions",
+          fixtureMarker: kind === "same-version" ? fixtureMarker : null,
           sourceSHA256: input.sha256,
           sourceVersion: evidence.version,
           fixtureVersion: version,

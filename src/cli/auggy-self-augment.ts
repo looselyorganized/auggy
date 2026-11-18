@@ -26,7 +26,7 @@ function customAugmentContract() {
     skillIsRuntimeSource: false,
     configurationPath: "agent.yaml",
     sharedServicePath: "src/augments/<name>/service.ts",
-    executionPaths: ["src/index.ts", "src/agent.ts", "src/http.ts", "src/turn.ts"],
+    executionPaths: ["src/main.ts", "src/http.ts", "src/turn.ts"],
     inspectionCommand: "auggy inspect",
     builtInSource: "node_modules/auggy/src/",
     requiredReference: CUSTOM_AUGMENT_REFERENCE,

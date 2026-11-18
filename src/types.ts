@@ -574,6 +574,7 @@ export interface AgentExecutionOptions {
 declare const compositionBrand: unique symbol;
 declare const httpRequestBrand: unique symbol;
 declare const listenerBrand: unique symbol;
+declare const assemblyBrand: unique symbol;
 
 export type ApplicationMain = (launch: ApplicationLaunch) => Promise<void>;
 
@@ -593,7 +594,60 @@ export interface ApplicationLaunch {
   readonly mode: "direct" | "foreground" | "launchd" | "railway";
   // Synchronous: register runner-owned cleanup before returning this handle.
   // Does not import configured factories or acquire resources yet.
+  createHost(): PhasedApplicationHost;
   createHost(options: { compose: AgentComposer }): ManagedApplicationHost;
+}
+
+/** Public configuration metadata; resolved secrets and factories remain host-owned. */
+export interface PreparedAgentConfiguration {
+  readonly [assemblyBrand]: "configuration";
+  readonly name: string;
+  readonly engine: Readonly<{ provider: string; model: string }>;
+  readonly augments: readonly Readonly<{ name: string; type: string }>[];
+}
+
+export interface ManagedModel {
+  readonly [assemblyBrand]: "model";
+  readonly provider: string;
+  readonly model: string;
+}
+
+export interface ManagedAugments {
+  readonly [assemblyBrand]: "augments";
+  readonly names: readonly string[];
+}
+
+export interface ManagedAgent {
+  readonly [assemblyBrand]: "agent";
+  readonly name: string;
+}
+
+export interface ManagedTransport {
+  readonly [assemblyBrand]: "transport";
+  readonly name: string;
+  readonly kind: "http" | "other";
+}
+
+/** Each stage performs work and remains owned by the managed runner through cleanup. */
+export interface PhasedApplicationHost {
+  prepareConfiguration(): Promise<PreparedAgentConfiguration>;
+  createModel(config: PreparedAgentConfiguration): Promise<ManagedModel>;
+  createAugments(config: PreparedAgentConfiguration): Promise<ManagedAugments>;
+  createAgent(options: {
+    config: PreparedAgentConfiguration;
+    model: ManagedModel;
+    augments: ManagedAugments;
+    turnProgram: TurnProgramBinding;
+    onTurnFinalized?: TurnFinalizationObserver;
+  }): ManagedAgent;
+  transportsFrom(augments: ManagedAugments): readonly ManagedTransport[];
+  bindTransport(transport: ManagedTransport, agent: ManagedAgent): void;
+  httpBindings(agent: ManagedAgent): readonly ConfiguredWebHttp[];
+  start(options: {
+    agent: ManagedAgent;
+    http: readonly ManagedHttpListener[];
+  }): Promise<ApplicationReady>;
+  stop(options?: { deadlineMs?: number }): Promise<HostStopResult>;
 }
 
 export type AgentComposer = (
@@ -626,6 +680,8 @@ export interface PreparedApplication {
 
 export interface ConfiguredWebHttp {
   readonly name: string; // configured augment instance name, not a secret
+  /** Selected mount after listener selection; older contract-1 adapters may omit it. */
+  readonly agentRunPath?: string;
   readonly agentRun: ManagedHttpHandler;
   readonly fallback: ManagedHttpHandler;
   createListener(options: {
@@ -636,7 +692,7 @@ export interface ConfiguredWebHttp {
 
 export interface AgentRunMount {
   readonly method: "POST";
-  readonly path: "/agent/run";
+  readonly path: string;
   readonly handle: ManagedHttpHandler;
 }
 
@@ -663,6 +719,7 @@ export interface ApplicationReady {
     readonly port: number;
     readonly localBaseUrl: string;
     readonly consoleUrl: string | null;
+    readonly agentRunPath?: string;
   }[];
 }
 

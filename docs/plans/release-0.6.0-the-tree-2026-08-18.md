@@ -229,3 +229,19 @@ HTTP endpoint, following a request into the turn loop, tracing an augment call,
 first authenticated response, and a safe customization. M6 repeats those tasks
 with unfamiliar engineers. Five minutes to trace endpoint through augment is a
 proposed target, not a result established by this tranche.
+
+## Temporary console build dependency exception
+
+The Auggy release maintainer owns the workspace-only acceptance of
+[GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf)
+for picomatch 4.0.5. An untrusted console build input could stall a developer
+build or CI. The inspected installed agent serves precompiled assets and its
+dependency graph excludes picomatch. npm and GitHub listed no patched release
+on November 17, 2026. The workspace audit retains the finding and raw exit code.
+
+Acceptance expires **December 1, 2026 at 23:59 UTC**. By then the release
+maintainer checks the advisory and npm. When a patch is available, update the
+lockfile, remove the exception, workflow opt-in and exception tests, then verify
+the resolved version, console build, strict workspace audit and installed-agent
+audit in the same PR. Record its version and PR here. If the finding persists
+at expiry, CI blocks and any renewal requires a fresh exposure review.

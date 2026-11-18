@@ -9,6 +9,7 @@ import {
   assertAuthoringEffectsUnchanged,
   assertAuthoringReplay,
   assertGeneratedApplicationTurn,
+  assertGeneratedFinalizationObservation,
   assertGeneratedApplicationFailure,
   assertGeneratedRecipeSources,
 } from "../../scripts/release-smoke/authoring-application";
@@ -28,15 +29,8 @@ while (turn.remainingInferences > 0) {
 function recipe(): GeneratedApplicationRecipe {
   return {
     schemaVersion: 1,
-    entrypoint: "src/index.ts",
-    sourceFiles: [
-      "package.json",
-      "agent.yaml",
-      "src/index.ts",
-      "src/agent.ts",
-      "src/http.ts",
-      "src/turn.ts",
-    ],
+    entrypoint: "src/main.ts",
+    sourceFiles: ["package.json", "agent.yaml", "src/main.ts", "src/http.ts", "src/turn.ts"],
     capability: {
       slug: "sample",
       tool: { name: "sample_lookup_record", input: { id: "SAMPLE-001" }, invalidInput: { id: 17 } },
@@ -46,7 +40,7 @@ function recipe(): GeneratedApplicationRecipe {
     },
     edits: {
       startup: {
-        path: "src/index.ts",
+        path: "src/main.ts",
         before: "launch.createHost()",
         after: 'throw new Error("startup-control"); launch.createHost()',
       },
@@ -79,8 +73,7 @@ beforeEach(() => {
   for (const [path, source] of Object.entries({
     "package.json": "{}",
     "agent.yaml": "augments: []",
-    "src/agent.ts": "compose()",
-    "src/index.ts": "launch.createHost()",
+    "src/main.ts": "launch.createHost()",
     "src/http.ts": "web.agentRun(request)",
     "src/turn.ts": turnSource,
   }))
@@ -222,7 +215,7 @@ describe("generated application assertion sensitivity, not installed acceptance"
       "prepared terminal check",
     );
     const wrong = recipe();
-    wrong.edits.http.path = "src/agent.ts";
+    wrong.edits.http.path = "src/main.ts";
     expect(() => assertGeneratedRecipeSources({ ...input, recipe: wrong })).toThrow(
       "wrong owned source",
     );
@@ -259,6 +252,55 @@ describe("generated application assertion sensitivity, not installed acceptance"
         response: response([...events(), { type: "RUN_ERROR" }]),
       }),
     ).toThrow("terminal stream");
+  });
+
+  test("inference limit requires one real tool batch and rejects a second inference", () => {
+    const limitedEvents = events().map((event) =>
+      event.type === "TEXT_MESSAGE_CONTENT"
+        ? { ...event, delta: "I've completed the available actions." }
+        : event,
+    );
+    const limited = {
+      ...turnOptions(),
+      mode: "inference-limit" as const,
+      response: response(limitedEvents),
+      provider: { ...provider(), calls: 1, validatedToolResults: 0, finalResponses: 0 },
+    };
+    expect(assertGeneratedApplicationTurn(limited).threadId).toBe("thread-1");
+    expect(() => assertGeneratedApplicationTurn({ ...limited, provider: provider() })).toThrow(
+      "roundtrip",
+    );
+    expect(() => assertGeneratedApplicationTurn({ ...limited, toolEffects: 0 })).toThrow(
+      "roundtrip",
+    );
+    expect(() => assertGeneratedApplicationTurn({ ...limited, response: response() })).toThrow(
+      "marker",
+    );
+  });
+
+  test("execution observer evidence requires correlated identities and actual inference/tool counts", () => {
+    const expected = { threadId: "thread-1", turnId: "turn-1" };
+    const observation = {
+      ...expected,
+      outcome: "completed",
+      status: "completed",
+      disposition: "returned",
+      trace: { inferenceAttempts: 1, toolAttempts: 1, successfulToolCalls: 1 },
+    };
+    assertGeneratedFinalizationObservation(observation, expected);
+    for (const changed of [
+      { threadId: "wrong-thread" },
+      { turnId: "wrong-turn" },
+      { outcome: "failed" },
+      { status: "failed" },
+      { disposition: "threw" },
+      { trace: { ...observation.trace, inferenceAttempts: 2 } },
+      { trace: { ...observation.trace, successfulToolCalls: 0 } },
+    ]) {
+      expect(() =>
+        assertGeneratedFinalizationObservation({ ...observation, ...changed }, expected),
+      ).toThrow("correlated finalization");
+    }
   });
 
   test("stopped-turn evidence requires zero provider/tool activity and a valid terminal result", () => {

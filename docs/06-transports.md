@@ -5,7 +5,7 @@
 ## Finding the application endpoint
 
 New generated applications expose the actual `POST /agent/run` mount in their
-own `src/http.ts`, selected from `src/index.ts`. The
+own `src/http.ts`, selected from `src/main.ts`. The
 [reference's HTTP module](../examples/inspectable-agent/src/http.ts) also shows
 this pattern. It passes the original managed request to `web.agentRun(request)` and returns its
 stream. That delegate retains transport authentication, admission, idempotency
@@ -13,6 +13,13 @@ and SSE behavior before dispatching through the scheduler to the application's
 turn program. The managed router rejects foreign or already-consumed requests.
 `web.fallback` serves the configured health, console and augment routes with their
 existing policies. Keep this fallback when customizing the HTTP response.
+
+Application contract 2 supports changing the literal `path` in `src/http.ts`.
+The selected mount drives console chat, public metadata and route inventory.
+The delegate still applies the same authentication, request limits, durable replay
+and SSE behavior. Legacy applications and YAML-only startup retain `/agent/run`.
+`auggy inspect` navigates the HTTP source without executing it, so it does not
+infer that custom path.
 
 For a separate application with existing login, the optional
 [company application reference](../examples/company-app/README.md) traces the

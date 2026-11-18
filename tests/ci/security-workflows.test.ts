@@ -311,7 +311,7 @@ describe("tracked test-surface workflow enforcement", () => {
       "bun install --frozen-lockfile",
     );
     expect(requireStep(audit, "Audit every workspace dependency and severity").run).toBe(
-      'bun scripts/audit-dependencies.ts --evidence "$AUDIT_EVIDENCE"',
+      'bun scripts/audit-dependencies.ts --workspace-exception --evidence "$AUDIT_EVIDENCE"',
     );
     expect(requireStep(audit, "Preserve sanitized dependency audit evidence").if).toBe("always()");
     expect(requireStep(audit, "Preserve sanitized dependency audit evidence").uses).toBe(

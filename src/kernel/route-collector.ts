@@ -13,7 +13,7 @@
 
 import type { Augment, AugmentHttpRoute } from "../types";
 import { validateAuthorizationRequirements } from "../authz/delegated-authorization";
-import { parseRoutePattern, routePatternsOverlap } from "./route-pattern";
+import { matchRoutePath, parseRoutePattern, routePatternsOverlap } from "./route-pattern";
 
 const MEDIA_TYPE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
@@ -50,7 +50,10 @@ export interface CollectAugmentRoutesResult {
   errors: readonly string[];
 }
 
-export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugmentRoutesResult {
+export function collectAugmentRoutes(
+  augments: readonly Augment[],
+  options: { additionalReservedPaths?: readonly string[] } = {},
+): CollectAugmentRoutesResult {
   const routes: CollectedRoute[] = [];
   const errors: string[] = [];
   // (method, path) → first augment to register it; second registrant errors.
@@ -81,10 +84,11 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
         continue;
       }
 
-      // Reserved-path collision (exact match)
-      if (RESERVED_PATHS.includes(r.path)) {
+      // Reserved-path collision, including parameterized matches.
+      const reservedPath = RESERVED_PATHS.find((path) => matchRoutePath(r.path, path) !== null);
+      if (reservedPath !== undefined) {
         errors.push(
-          `Augment "${aug.name}" registered HTTP route ${r.method} "${r.path}" — that path is reserved by webTransport.`,
+          `Augment "${aug.name}" registered HTTP route ${r.method} "${r.path}" — it matches "${reservedPath}", which is reserved by webTransport.`,
         );
         continue;
       }
@@ -94,6 +98,36 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
       if (reservedPrefix !== undefined) {
         errors.push(
           `Augment "${aug.name}" registered HTTP route ${r.method} "${r.path}" — paths under "${reservedPrefix}" are reserved by webTransport.`,
+        );
+        continue;
+      }
+
+      const reservedMount = options.additionalReservedPaths?.find(
+        (path) => matchRoutePath(r.path, path) !== null,
+      );
+      if (reservedMount !== undefined) {
+        errors.push(
+          `Augment "${aug.name}" registered HTTP route ${r.method} "${r.path}" — it overlaps managed HTTP path "${reservedMount}", which is reserved by webTransport.`,
+        );
+        continue;
+      }
+
+      // A parameterized first segment can enter a reserved namespace even
+      // when none of its literal characters starts with that namespace.
+      const overlappingPrefix = RESERVED_PREFIXES.find((prefix) => {
+        const prefixSegments = prefix.split("/").filter(Boolean);
+        const routeSegments = r.path.split("/").slice(1);
+        return (
+          routeSegments.length > prefixSegments.length &&
+          prefixSegments.every(
+            (segment, index) =>
+              routeSegments[index]!.startsWith(":") || routeSegments[index] === segment,
+          )
+        );
+      });
+      if (overlappingPrefix !== undefined) {
+        errors.push(
+          `Augment "${aug.name}" registered HTTP route ${r.method} "${r.path}" — it overlaps paths under "${overlappingPrefix}", which are reserved by webTransport.`,
         );
         continue;
       }

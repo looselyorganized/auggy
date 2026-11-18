@@ -28,7 +28,9 @@ export const runApplication: ApplicationRunner = async (main, direct) => {
   if (realpathSync(fileURLToPath(direct.entrypoint)) !== definition.entrypointPath) {
     throw new Error("[application] direct entrypoint differs from configured entrypoint");
   }
-  const selected = inspectProjectRuntime(definition.projectDir, { applicationContract: 1 });
+  const selected = inspectProjectRuntime(definition.projectDir, {
+    applicationContract: definition.application.contractVersion,
+  });
   const packageRoot = realpathSync(fileURLToPath(new URL("../..", import.meta.url)));
   if (selected.packageRoot !== packageRoot) {
     throw new Error("[application] start with the project's explicitly installed Auggy runtime");
@@ -69,11 +71,11 @@ export async function runManagedApplication(
   const launch: ApplicationLaunch = Object.freeze({
     configPath: options.configPath,
     mode: options.mode,
-    createHost(input: Parameters<ApplicationLaunch["createHost"]>[0]) {
+    createHost(input?: { compose: import("../types").AgentComposer }) {
       if (owned || terminating)
         throw new Error("[application] exactly one host is allowed per launch");
       // Construction acquires nothing. Assignment registers cleanup before return.
-      owned = createApplicationHost({ ...options, compose: input.compose });
+      owned = createApplicationHost({ ...options, compose: input?.compose });
       return owned;
     },
   });

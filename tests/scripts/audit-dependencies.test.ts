@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type AuditOptions,
   inspectAuditOutput,
+  matchesWorkspaceException,
   runDependencyAudit,
 } from "../../scripts/audit-dependencies";
 
@@ -139,5 +140,70 @@ describe("strict dependency audit", () => {
       { id: "GHSA-6qxp-vccf-f47h", severity: "high" },
       { id: null, severity: "unknown" },
     ]);
+  });
+});
+
+describe("temporary workspace picomatch exception", () => {
+  const finding = {
+    url: "https://github.com/advisories/GHSA-fc5q-39xc-vjpf",
+    severity: "high",
+    vulnerable_versions: "<=4.0.7",
+  };
+  const report = { picomatch: [finding] };
+  const lock = "cd4b421883d2874dba117e9410acae08207f352d99b74fcd6a9872d35afde3f7";
+  const before = Date.parse("2026-12-01T23:58:59.999Z");
+
+  test("requires the sole reviewed finding, graph and unexpired decision", () => {
+    for (const other of [
+      { other: [finding] },
+      { ...report, other: [] },
+      { picomatch: [finding, null] },
+      { picomatch: [{ ...finding, severity: "critical" }] },
+      { picomatch: [{ ...finding, vulnerable_versions: "<=4.0.8" }] },
+      { picomatch: [{ ...finding, url: "https://github.com/advisories/another" }] },
+      { picomatch: [] },
+    ]) {
+      expect(matchesWorkspaceException(JSON.stringify(other), lock, before)).toBe(false);
+    }
+    expect(matchesWorkspaceException("{", lock, before)).toBe(false);
+    expect(matchesWorkspaceException(JSON.stringify(report), "different graph", before)).toBe(
+      false,
+    );
+    expect(matchesWorkspaceException(JSON.stringify(report), lock, before + 1)).toBe(false);
+    expect(matchesWorkspaceException(JSON.stringify(report), lock, before)).toBe(true);
+  });
+
+  test("only an opted-in root audit with an ordinary advisory exit accepts the finding", () => {
+    setSystemTime(new Date(before));
+    try {
+      const code = `console.log(${JSON.stringify(JSON.stringify(report))}); console.error("bun audit v1.3.14 (0d9b296a)");`;
+      const options = {
+        cwd: join(import.meta.dir, "../.."),
+        command: [process.execPath, "-e", `${code}process.exit(1)`] as const,
+      };
+      const accepted = runDependencyAudit({ ...options, workspaceException: true });
+      expect(accepted.status).toBe("passed");
+      expect(accepted.exitCode).toBe(1);
+      expect(accepted.advisories).toHaveLength(1);
+      expect(accepted.acceptedException?.id).toBe("GHSA-fc5q-39xc-vjpf");
+      expect(runDependencyAudit(options).status).toBe("failed");
+      expect(fixture(`${code}process.exit(1)`, { workspaceException: true }).result.status).toBe(
+        "failed",
+      );
+      for (const ending of [
+        'console.error("registry error"); process.exit(1)',
+        "process.exit(2)",
+      ]) {
+        expect(
+          runDependencyAudit({
+            ...options,
+            workspaceException: true,
+            command: [process.execPath, "-e", `${code}${ending}`],
+          }).status,
+        ).toBe("failed");
+      }
+    } finally {
+      setSystemTime();
+    }
   });
 });

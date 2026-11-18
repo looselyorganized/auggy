@@ -52,7 +52,7 @@ config:
           </Badge>
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
-          Connect a web app directly to <code>/agent/run</code> without exposing the creator credential.
+          Connect a web app directly to <code>{guidance.path}</code> without exposing the creator credential.
         </p>
       </div>
 
@@ -143,7 +143,7 @@ config:
           <h4 className="font-semibold leading-none">App routes</h4>
           <CardDescription>
             Generate a typed client for augment routes. This client does not include the streaming
-            <code> /agent/run</code> conversation API.
+            <code> {guidance.path}</code> conversation API.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3">

@@ -19,7 +19,7 @@ import {
 } from "./application-consumer";
 import type { installApplicationConsumer } from "./application-install";
 import {
-  INSPECTABLE_APPLICATION_RECIPE as recipe,
+  HISTORICAL_APPLICATION_RECIPE as recipe,
   INSPECTABLE_ORDER_OUTPUT as expectedToolOutput,
 } from "./application-recipe";
 import { runInstalledApplication } from "./application-runner";

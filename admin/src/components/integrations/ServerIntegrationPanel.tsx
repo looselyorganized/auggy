@@ -32,8 +32,8 @@ export function ServerIntegrationPanel({
   onCopy: CopyHandler;
 }) {
   const [example, setExample] = useState<ConversationExample>("typescript");
-  const serverRoutes = routes.filter(isServerCallableAppRoute);
-  const baseUrl = guidance.endpoint.replace(/\/agent\/run$/, "") || "Current origin";
+  const serverRoutes = routes.filter((route) => isServerCallableAppRoute(route, guidance.path));
+  const baseUrl = guidance.endpoint.slice(0, -guidance.path.length) || "Current origin";
   const routeCommands = `# Typed server client for app routes
 auggy routes ${agentName} --client ts --target server --out src/auggy-client.server.ts
 
@@ -87,7 +87,7 @@ auggy routes ${agentName} --json`;
                 { label: "Base URL", value: baseUrl },
                 {
                   label: "Conversation",
-                  value: "POST /agent/run",
+                  value: `POST ${guidance.path}`,
                   note: "Streams one agent run for the caller-provided thread ID.",
                 },
                 { label: "Health", value: "GET /health", note: "Liveness only; no agent run." },
@@ -123,7 +123,7 @@ auggy routes ${agentName} --json`;
         <CardHeader>
           <h4 className="font-semibold leading-none">Conversation API</h4>
           <CardDescription>
-            POST to <code>/agent/run</code> and consume the AG-UI event stream through completion.
+            POST to <code>{guidance.path}</code> and consume the AG-UI event stream through completion.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3">
@@ -170,7 +170,7 @@ auggy routes ${agentName} --json`;
           <h4 className="font-semibold leading-none">App routes</h4>
           <CardDescription>
             Generate clients and schemas for augment-defined app routes. These artifacts do not
-            include the streaming <code>/agent/run</code> conversation endpoint.
+            include the streaming <code>{guidance.path}</code> conversation endpoint.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3">

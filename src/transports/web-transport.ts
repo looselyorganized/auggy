@@ -1084,6 +1084,7 @@ function parseConsoleRunMetadata(
 export interface ManagedWebTransport {
   readonly augment: Augment;
   readonly http: ConfiguredWebHttp;
+  readonly agentRunPath: string;
   ownsListener(listener: ManagedHttpListener): boolean;
   selectListener(listener: ManagedHttpListener): void;
   closeAdmission(): void;
@@ -1527,11 +1528,13 @@ function createWebTransportInstance(
 
   function renderPublicPages(card: ReturnType<TransportKernel["getAgentCard"]>): void {
     if (validatedPublicFrontendUrl === undefined) {
-      infoPageHtml = renderInfoPage(card, { publicIntegration });
+      infoPageHtml = renderInfoPage(card, { publicIntegration, agentRunPath: router.agentRunPath });
       infoPageByteLength = new TextEncoder().encode(infoPageHtml).byteLength;
     }
     if (publicIntegration) {
-      agentIntegrationPageHtml = renderAgentIntegrationPage(card);
+      agentIntegrationPageHtml = renderAgentIntegrationPage(card, {
+        agentRunPath: router.agentRunPath,
+      });
       agentIntegrationPageByteLength = new TextEncoder().encode(
         agentIntegrationPageHtml,
       ).byteLength;
@@ -3838,6 +3841,7 @@ function createWebTransportInstance(
         actionRegistry,
         staticDir: adminStaticDir,
         selfPort: opts.port,
+        agentRunPath: router.agentRunPath,
         ...(consoleChatStore ? { consoleChat: consoleChatStore } : {}),
         ...(consoleInternalRunMarker
           ? { consoleChatInternalMarker: consoleInternalRunMarker }
@@ -4240,6 +4244,9 @@ function createWebTransportInstance(
   return Object.freeze({
     augment,
     http: router.http,
+    get agentRunPath(): string {
+      return router.agentRunPath;
+    },
     ownsListener: router.owns,
     selectListener: router.select,
     closeAdmission: router.closeAdmission,

@@ -98,3 +98,10 @@ describe("BrowserIntegrationPanel", () => {
     expect(html).not.toContain("/webhooks/stripe");
   });
 });
+
+
+it("renders the selected browser conversation endpoint", () => {
+  const html = renderBrowser(posture({ externalAuthEnabled: true, agentRunPath: "/support/chat" }));
+  expect(html).toContain("https://agent.example/support/chat");
+  expect(html).not.toContain("/agent/run");
+});

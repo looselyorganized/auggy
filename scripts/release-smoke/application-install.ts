@@ -7,6 +7,7 @@ import {
   inspectApplicationArtifact,
   prepareApplicationConsumer,
   type PackedArtifactInput,
+  type ApplicationRecipe,
 } from "./application-consumer";
 import { INSPECTABLE_APPLICATION_RECIPE } from "./application-recipe";
 
@@ -18,11 +19,14 @@ export interface ApplicationInstallOptions {
   core: PackedArtifactInput;
   provider: PackedArtifactInput;
   legacy?: boolean;
+  referenceDir?: string;
+  recipe?: ApplicationRecipe;
 }
 
 export async function installApplicationConsumer(options: ApplicationInstallOptions) {
   if (!/^[a-z][a-z0-9-]{0,50}$/.test(options.name)) throw new Error("Invalid consumer name");
   const consumer = join(options.workspace, options.name);
+  const referenceDir = options.referenceDir ?? join(options.repoRoot, "examples/inspectable-agent");
   const evidence = join(options.evidenceDirectory, options.name);
   mkdirSync(evidence, { recursive: true, mode: 0o700 });
   const core = inspectApplicationArtifact(options.core);
@@ -30,9 +34,7 @@ export async function installApplicationConsumer(options: ApplicationInstallOpti
   if (options.legacy) {
     mkdirSync(consumer, { mode: 0o700 });
     mkdirSync(join(consumer, ".application-artifacts"), { mode: 0o700 });
-    const reference = JSON.parse(
-      readFileSync(join(options.repoRoot, "examples/inspectable-agent/package.json"), "utf8"),
-    );
+    const reference = JSON.parse(readFileSync(join(referenceDir, "package.json"), "utf8"));
     const overrides = { ...reference.overrides } as Record<string, string>;
     for (const name of ["anthropic", "ollama", "openai", "openrouter"]) {
       const key = `@auggy/${name}`;
@@ -60,9 +62,9 @@ export async function installApplicationConsumer(options: ApplicationInstallOpti
   } else {
     prepareApplicationConsumer({
       repoRoot: options.repoRoot,
-      referenceDir: join(options.repoRoot, "examples/inspectable-agent"),
+      referenceDir,
       destination: consumer,
-      recipe: INSPECTABLE_APPLICATION_RECIPE,
+      recipe: options.recipe ?? INSPECTABLE_APPLICATION_RECIPE,
       core: options.core,
       provider: options.provider,
     });

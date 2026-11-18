@@ -4,6 +4,7 @@ import type { ApplicationRunner } from "../types";
 export declare const runApplication: ApplicationRunner;
 
 export type {
+  AgentExecutionOptions,
   AgentComposer,
   AgentComposition,
   ApplicationDirectLaunchOptions,
@@ -16,6 +17,13 @@ export type {
   HostCleanupFailureCode,
   HostStopResult,
   ManagedApplicationHost,
+  PhasedApplicationHost,
+  PreparedAgentConfiguration,
+  ManagedModel,
+  ManagedAugments,
+  ManagedAgent,
+  ManagedTransport,
+  AgentRunMount,
   ManagedHttpHandler,
   ManagedHttpListener,
   ManagedHttpRequest,

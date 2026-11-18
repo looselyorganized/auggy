@@ -5,7 +5,13 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { planApplicationScaffold } from "../../src/cli/scaffold-application";
 import { defaultTurnProgram } from "../../src/kernel/turn-program";
-import type { ManagedTurnSession, TurnCompletion, TurnProgramBinding } from "../../src/types";
+import type {
+  ApplicationLaunch,
+  ApplicationMain,
+  ManagedTurnSession,
+  TurnCompletion,
+  TurnProgramBinding,
+} from "../../src/types";
 
 const directories: string[] = [];
 function generate(configFileName = "agent.yaml") {
@@ -28,16 +34,16 @@ describe("owned application templates", () => {
   test("planning exposes the frozen consumer interface and conventional files", () => {
     const plan = planApplicationScaffold({ configFileName: "agent.yaml" });
     expect(Object.isFrozen(plan)).toBe(true);
-    expect(plan.application).toEqual({ entrypoint: "./src/index.ts", contractVersion: 1 });
+    expect(plan.application).toEqual({ entrypoint: "./src/main.ts", contractVersion: 2 });
     expect(plan.files.map((file) => file.relativePath)).toEqual([
-      "src/index.ts",
-      "src/agent.ts",
+      "src/main.ts",
       "src/http.ts",
       "src/turn.ts",
       "src/augments/README.md",
       "tests/application.test.ts",
       "tsconfig.json",
       "README.md",
+      "AGENTS.md",
     ]);
     for (const file of plan.files) expect(file.mode).toBe(0o644);
     const source = plan.files
@@ -49,7 +55,21 @@ describe("owned application templates", () => {
     );
     expect(source).toContain('from "auggy/application"');
     expect(source).toContain('path: "/agent/run"');
-    expect(source).toContain("configured.compose({ turnProgram })");
+    expect(source).toContain("const config = await runtime.prepareConfiguration();");
+    expect(source).toContain("const model = await runtime.createModel(config);");
+    expect(source).toContain("const augments = await runtime.createAugments(config);");
+    expect(source).toContain(
+      "runtime.createAgent({\n    config,\n    model,\n    augments,\n    turnProgram,",
+    );
+    expect(source).toContain("runtime.transportsFrom(augments)");
+    expect(source).toContain("runtime.bindTransport(transport, agent)");
+    expect(source).toContain("runtime.httpBindings(agent).map(configureHttp)");
+    expect(source).toContain("await runtime.start({ agent, http })");
+    expect(source).not.toContain("agentExecution");
+    expect(source).toContain(
+      "// onTurnFinalized: (result) => console.log(result.status, result.trace),",
+    );
+    expect(source).not.toContain("composeAgent");
     expect(source).toContain("turn.finishAtLimit()");
     expect(source).toContain("if (import.meta.main)");
   });
@@ -57,10 +77,15 @@ describe("owned application templates", () => {
   test("selected configuration is consistently encoded in direct startup and local CLI script", () => {
     const plan = planApplicationScaffold({ configFileName: "custom agent.yaml" });
     const index = Buffer.from(
-      plan.files.find((file) => file.relativePath === "src/index.ts")!.bytes,
+      plan.files.find((file) => file.relativePath === "src/main.ts")!.bytes,
     ).toString();
     expect(index).toContain('new URL("../custom%20agent.yaml", import.meta.url)');
     expect(plan.packageFields.scripts.cli).toBe("auggy dev --config 'custom agent.yaml'");
+    const guidance = Buffer.from(
+      plan.files.find((file) => file.relativePath === "AGENTS.md")!.bytes,
+    ).toString();
+    expect(guidance).toContain("`custom agent.yaml` owns provider selection");
+    expect(guidance).not.toContain("{{CONFIG_FILE}}");
   });
 
   for (const name of [
@@ -82,7 +107,7 @@ describe("owned application templates", () => {
   test("all source sensitivity anchors occur exactly once", () => {
     const plan = planApplicationScaffold({ configFileName: "agent.yaml" });
     for (const [path, anchor] of [
-      ["src/index.ts", "  const host = launch.createHost({ compose: composeAgent });"],
+      ["src/main.ts", "  const runtime = launch.createHost();"],
       [
         "src/http.ts",
         "          const response = await web.agentRun(request);\n          return response;",
@@ -109,6 +134,100 @@ describe("owned application templates", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stderr.toString()).toContain("10 pass");
+  });
+
+  test("generated main executes each assembly stage and binds every configured transport", async () => {
+    const { directory } = generate();
+    mkdirSync(join(directory, "node_modules"), { recursive: true });
+    symlinkSync(resolve(import.meta.dir, "../.."), join(directory, "node_modules", "auggy"), "dir");
+    const { main } = (await import(pathToFileURL(join(directory, "src/main.ts")).href)) as {
+      main: ApplicationMain;
+    };
+    const calls: string[] = [];
+    const config = {},
+      model = {},
+      augments = {},
+      agent = {},
+      listener = {};
+    const transports = [{ name: "http" }, { name: "polling" }];
+    const runtime = {
+      async prepareConfiguration() {
+        calls.push("configuration");
+        return config;
+      },
+      async createModel(input: unknown) {
+        expect(input).toBe(config);
+        calls.push("model");
+        return model;
+      },
+      async createAugments(input: unknown) {
+        expect(input).toBe(config);
+        calls.push("augments");
+        return augments;
+      },
+      createAgent(input: {
+        config: unknown;
+        model: unknown;
+        augments: unknown;
+        turnProgram: TurnProgramBinding;
+      }) {
+        expect(input.config).toBe(config);
+        expect(input.model).toBe(model);
+        expect(input.augments).toBe(augments);
+        expect(typeof input.turnProgram.run).toBe("function");
+        calls.push("agent");
+        return agent;
+      },
+      transportsFrom(input: unknown) {
+        expect(input).toBe(augments);
+        calls.push("transports");
+        return transports;
+      },
+      bindTransport(transport: (typeof transports)[number], input: unknown) {
+        expect(input).toBe(agent);
+        calls.push(`bind:${transport.name}`);
+      },
+      httpBindings(input: unknown) {
+        expect(input).toBe(agent);
+        calls.push("bindings");
+        return [
+          {
+            createListener(options: { routes: { path: string }[] }) {
+              expect(options.routes[0]?.path).toBe("/agent/run");
+              calls.push("listener");
+              return listener;
+            },
+          },
+        ];
+      },
+      async start(input: { agent: unknown; http: unknown[] }) {
+        expect(input.agent).toBe(agent);
+        expect(input.http).toEqual([listener]);
+        calls.push("start");
+      },
+    };
+    await main({ createHost: () => runtime } as unknown as ApplicationLaunch);
+    expect(calls).toEqual([
+      "configuration",
+      "model",
+      "augments",
+      "agent",
+      "transports",
+      "bind:http",
+      "bind:polling",
+      "bindings",
+      "listener",
+      "start",
+    ]);
+    calls.length = 0;
+    runtime.createAugments = async () => {
+      calls.push("augments-failed");
+      throw new Error("factory failed");
+    };
+    await expect(
+      main({ createHost: () => runtime } as unknown as ApplicationLaunch),
+    ).rejects.toThrow("factory failed");
+    expect(calls).toEqual(["configuration", "model", "augments-failed"]);
   });
 
   test("generated source and tests typecheck against public application declarations", () => {

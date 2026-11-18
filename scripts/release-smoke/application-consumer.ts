@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { lstatSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { parse } from "yaml";
 import type { TurnFinalizationObservation } from "../../src/index";
 import { APPLICATION_BOUNDS } from "./application-child";
 export { APPLICATION_BOUNDS, startApplicationChild } from "./application-child";
@@ -181,15 +182,15 @@ export function inspectApplicationArtifact(input: PackedArtifactInput): PackedAr
   };
 }
 
-export function assertApplicationCapability(manifest: Manifest): void {
+export function assertApplicationCapability(manifest: Manifest, contractVersion: 1 | 2 = 1): void {
   const capability = manifest.auggyRuntime;
   check(
     manifest.name === "auggy" &&
       capability?.schemaVersion === 1 &&
       capability.launcherProtocol === 1 &&
       Array.isArray(capability.applicationContracts) &&
-      capability.applicationContracts.includes(1),
-    "Application acceptance requires a contract-1 capable core artifact",
+      capability.applicationContracts.includes(contractVersion),
+    `Application acceptance requires a contract-${contractVersion} capable core artifact`,
   );
 }
 
@@ -335,7 +336,12 @@ export function prepareApplicationConsumer(options: {
   );
   const core = inspectApplicationArtifact(options.core),
     provider = inspectApplicationArtifact(options.provider);
-  assertApplicationCapability(core.manifest);
+  const declaration = parse(contents.get("agent.yaml")!.toString("utf8"))?.application;
+  check(
+    declaration?.contractVersion === 1 || declaration?.contractVersion === 2,
+    "Reference application must declare a supported contract",
+  );
+  assertApplicationCapability(core.manifest, declaration.contractVersion);
   check(
     provider.packageName === "@auggy/anthropic",
     "Application fixture uses the existing real Anthropic adapter",

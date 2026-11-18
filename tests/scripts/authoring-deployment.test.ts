@@ -28,8 +28,7 @@ let staged: string;
 const sourceFiles = [
   "agent.yaml",
   "package.json",
-  "src/index.ts",
-  "src/agent.ts",
+  "src/main.ts",
   "src/http.ts",
   "src/turn.ts",
   "skills/owned/SKILL.md",
@@ -72,7 +71,7 @@ describe("generated deployment verifier controls", () => {
     expect(() => assertGeneratedDeploymentBundle({ consumer, staged, sourceFiles })).toThrow(
       "changed owned source",
     );
-    rmSync(join(staged, "src/index.ts"));
+    rmSync(join(staged, "src/main.ts"));
     expect(() => assertGeneratedDeploymentBundle({ consumer, staged, sourceFiles })).toThrow();
   });
   test("private files and even dangling private symlinks cannot appear in staging", () => {

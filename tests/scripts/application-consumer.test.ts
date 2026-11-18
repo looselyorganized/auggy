@@ -56,7 +56,7 @@ function artifact(name = "auggy", variant = "A", capable = true): PackedArtifact
     bin: { auggy: "src/index.ts" },
     exports: { ".": "./src/index.ts", "./application": "./src/index.ts" },
     ...(capable && name === "auggy"
-      ? { auggyRuntime: { schemaVersion: 1, launcherProtocol: 1, applicationContracts: [1] } }
+      ? { auggyRuntime: { schemaVersion: 1, launcherProtocol: 1, applicationContracts: [1, 2] } }
       : {}),
   };
   write(join(staging, "package/package.json"), JSON.stringify(manifest));

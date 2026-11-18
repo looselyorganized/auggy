@@ -274,3 +274,9 @@ function dashboard(): DashboardData {
     },
   };
 }
+
+
+it("reports the selected conversation route in capability surfaces", () => {
+  const rows = buildConversationSurfaceRows({ web: { allowAnonymous: { value: false }, agentRunPath: "/support/chat" } });
+  expect(rows[0]?.title).toBe("/support/chat");
+});

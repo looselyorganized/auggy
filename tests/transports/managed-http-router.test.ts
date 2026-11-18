@@ -15,7 +15,7 @@ function setup() {
       calls.push({ request, address: connection.requestIP?.(request)?.address });
       return new Response("guarded");
     },
-    fallback: async () => new Response("fallback"),
+    fallback: async () => new Response("fallback", { status: 404 }),
   });
   return {
     router,
@@ -34,7 +34,7 @@ describe("managed HTTP ownership", () => {
       routes: [
         {
           method: "POST",
-          path: "/agent/run",
+          path: "/support/chat",
           handle: async (request) => {
             saved = request;
             expect(Object.isFrozen(request)).toBe(true);
@@ -51,13 +51,69 @@ describe("managed HTTP ownership", () => {
     });
     router.select(listener);
     router.seal();
-    const original = new Request("http://localhost/agent/run", { method: "POST", body: "raw" });
+    expect(router.agentRunPath).toBe("/support/chat");
+    expect(router.http.agentRunPath).toBe("/support/chat");
+    expect(
+      (await router.dispatch(new Request("http://localhost/agent/run", { method: "POST" }), {}))
+        .status,
+    ).toBe(404);
+    expect(calls).toHaveLength(0);
+    const original = new Request("http://localhost/support/chat", { method: "POST", body: "raw" });
     const response = await router.dispatch(original, {
       requestIP: () => ({ address: "127.0.0.9" }),
     });
     expect(response.headers.get("x-app")).toBe("edited");
     expect(calls).toEqual([{ request: original, address: "127.0.0.9" }]);
     expect(() => router.http.agentRun(saved!)).toThrow("receipt");
+  });
+
+  test("validates canonical literal mount paths before selecting a listener", () => {
+    for (const path of [
+      "",
+      "/",
+      "relative",
+      "//other/chat",
+      "/support//chat",
+      "/support/chat/",
+      "/support/../chat",
+      "/support/./chat",
+      "/support/%63hat",
+      "/support\\chat",
+      "/support/chat?mode=1",
+      "/support/chat#part",
+      "/support/:id",
+      "/support/*",
+      "/support/chat room",
+      "/support/\tchat",
+      "/support/\u0000chat",
+      "/support/\u007fchat",
+      "/agent",
+      "/agent/custom",
+      "/console",
+      "/console/custom",
+      "/health",
+      "/.well-known/agent-card.json",
+    ]) {
+      const { router } = setup();
+      expect(() =>
+        router.http.createListener({
+          routes: [{ method: "POST", path, handle: router.http.agentRun }],
+          fallback: router.http.fallback,
+        }),
+      ).toThrow();
+    }
+    for (const path of ["/agent/run", "/support/chat", "/support/chat-v2"]) {
+      const { router } = setup();
+      expect(router.http.agentRunPath).toBe("/agent/run");
+      router.select(
+        router.http.createListener({
+          routes: [{ method: "POST", path, handle: router.http.agentRun }],
+          fallback: router.http.fallback,
+        }),
+      );
+      expect(router.agentRunPath).toBe(path);
+      expect(router.http.agentRunPath).toBe(path);
+    }
   });
 
   test("rejects fabricated, cross-instance and mismatched descriptor authority", async () => {
@@ -162,7 +218,7 @@ describe("managed HTTP ownership", () => {
           routes: [
             {
               method: "POST",
-              path: "/agent/run",
+              path: "/support/chat",
               handle: (request) => {
                 void router.http.agentRun(request);
                 if (throws) throw new Error("application wrapper failed");
@@ -175,7 +231,7 @@ describe("managed HTTP ownership", () => {
       );
       router.seal();
       const response = router.dispatch(
-        new Request("http://localhost/agent/run", { method: "POST" }),
+        new Request("http://localhost/support/chat", { method: "POST" }),
         {},
       );
       if (throws) await expect(response).rejects.toThrow("wrapper failed");

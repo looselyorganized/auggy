@@ -93,11 +93,11 @@ export function assertGeneratedRecipeSources(options: {
 }): void {
   const { recipe } = options;
   check(
-    recipe.schemaVersion === 1 && recipe.entrypoint === "src/index.ts",
+    recipe.schemaVersion === 1 && recipe.entrypoint === "src/main.ts",
     "Unknown authoring recipe",
   );
   snapshotGeneratedAuthoringSources({ ...options, sourceFiles: recipe.sourceFiles });
-  const expected = { startup: "src/index.ts", http: "src/http.ts", turn: "src/turn.ts" };
+  const expected = { startup: "src/main.ts", http: "src/http.ts", turn: "src/turn.ts" };
   for (const kind of ["startup", "http", "turn"] as const) {
     const edit = recipe.edits[kind];
     check(edit.path === expected[kind], "Sensitivity edit targets the wrong owned source");
@@ -135,7 +135,7 @@ export function assertGeneratedApplicationTurn(options: {
   threadId: string;
   provider: ProviderFixtureEvidence;
   toolEffects: number;
-  mode: "lookup" | "application-stop" | "answer-only";
+  mode: "lookup" | "application-stop" | "answer-only" | "inference-limit";
   toolName: string;
   expectedOutput: string;
   expectedFinalText: string;
@@ -199,13 +199,14 @@ export function assertGeneratedApplicationTurn(options: {
       "Untouched answer marker is missing",
     );
   } else {
-    check(options.mode === "lookup", "Unknown generated turn observation mode");
+    const limited = options.mode === "inference-limit";
+    check(options.mode === "lookup" || limited, "Unknown generated turn observation mode");
     check(
       provider.scenario === "success" &&
-        provider.calls === 2 &&
+        provider.calls === (limited ? 1 : 2) &&
         provider.toolRequests === 1 &&
-        provider.validatedToolResults === 1 &&
-        provider.finalResponses === 1 &&
+        provider.validatedToolResults === (limited ? 0 : 1) &&
+        provider.finalResponses === (limited ? 0 : 1) &&
         provider.rejectedRequests === 0 &&
         options.toolEffects === 1,
       "Provider and tool counts do not prove a real lookup roundtrip",
@@ -226,7 +227,10 @@ export function assertGeneratedApplicationTurn(options: {
       .map((event) => event.delta)
       .join("");
     check(
-      options.expectedFinalText.length > 0 && text.includes(options.expectedFinalText),
+      limited
+        ? text.includes("I've completed the available actions.") &&
+            !text.includes(options.expectedFinalText)
+        : options.expectedFinalText.length > 0 && text.includes(options.expectedFinalText),
       "Final answer marker is missing",
     );
   }
@@ -235,6 +239,25 @@ export function assertGeneratedApplicationTurn(options: {
     threadId: options.threadId,
     bodySHA256: applicationHash(response.body),
   };
+}
+
+/** Observations must correlate with an independently journaled executed tool. */
+export function assertGeneratedFinalizationObservation(
+  record: Record<string, unknown>,
+  expected: { threadId: string; turnId: string },
+): void {
+  const trace = record.trace as Record<string, unknown> | undefined;
+  check(
+    record.threadId === expected.threadId &&
+      record.turnId === expected.turnId &&
+      record.outcome === "completed" &&
+      record.status === "completed" &&
+      record.disposition === "returned" &&
+      trace?.inferenceAttempts === 1 &&
+      trace.toolAttempts === 1 &&
+      trace.successfulToolCalls === 1,
+    "Owned agent execution options did not produce the correlated finalization observation",
+  );
 }
 
 export const AUTHORING_SAMPLE_OUTPUT = JSON.stringify({
@@ -305,7 +328,7 @@ export function generatedApplicationRecipe(
 ): GeneratedApplicationRecipe {
   return {
     schemaVersion: 1,
-    entrypoint: "src/index.ts",
+    entrypoint: "src/main.ts",
     sourceFiles,
     capability: {
       slug: "authoring-record",
@@ -320,10 +343,10 @@ export function generatedApplicationRecipe(
     },
     edits: {
       startup: {
-        path: "src/index.ts",
-        before: "  const host = launch.createHost({ compose: composeAgent });",
+        path: "src/main.ts",
+        before: "  const runtime = launch.createHost();",
         after:
-          '  throw new Error("authoring-startup-rejected");\n  const host = launch.createHost({ compose: composeAgent });',
+          '  throw new Error("authoring-startup-rejected");\n  const runtime = launch.createHost();',
       },
       http: {
         path: "src/http.ts",
@@ -528,12 +551,13 @@ export async function runGeneratedApplication(
       throw new AggregateError(failures, "Generated application scenario or cleanup failed");
     return value as T;
   };
+  let requestPath = "/agent/run";
   const request = (
     threadId: string,
     key: string,
     auth: "valid" | "missing" | "invalid" = "valid",
   ) =>
-    http.request("/agent/run", {
+    http.request(requestPath, {
       method: "POST",
       auth,
       idempotencyKey: key,
@@ -545,7 +569,7 @@ export async function runGeneratedApplication(
     });
   const turn = async (
     label: string,
-    mode: "lookup" | "application-stop" | "answer-only",
+    mode: "lookup" | "application-stop" | "answer-only" | "inference-limit",
     output = recipe.capability.expectedOutput,
   ) => {
     provider.setScenario(mode === "answer-only" ? "answer-only" : "success");
@@ -846,6 +870,120 @@ export async function runGeneratedApplication(
             });
           }
         }
+        const mountEdit = {
+          path: "src/http.ts",
+          before: 'path: "/agent/run",',
+          after: 'path: "/owned-agent/run",',
+        };
+        const executionEdit = {
+          path: "src/main.ts",
+          before: "    turnProgram,",
+          after: `    turnProgram: { ...turnProgram, maxInferences: 1 },
+    onTurnFinalized: async (observation) => {
+      await Bun.write(new URL("../data/authoring/finalization.jsonl", import.meta.url), JSON.stringify({
+        threadId: observation.threadId, turnId: observation.turnId,
+        outcome: observation.outcome, status: observation.status, disposition: observation.disposition,
+        trace: { inferenceAttempts: observation.trace.inferenceAttempts,
+          toolAttempts: observation.trace.toolAttempts, successfulToolCalls: observation.trace.successfulToolCalls },
+      }) + "\\n");
+    },`,
+        };
+        await withApplicationEdit(
+          consumer,
+          mountEdit,
+          async () => {
+            requestPath = "/owned-agent/run";
+            try {
+              for (const path of paths) {
+                await stopped(async () => {
+                  await start(path);
+                  const before = counts();
+                  const previousMount = await http.request("/agent/run", {
+                    method: "POST",
+                    json: { threadId: "old-mount", messages: [] },
+                  });
+                  check(
+                    previousMount.status === 404,
+                    "Previous mount still dispatches agent requests",
+                  );
+                  assertAuthoringEffectsUnchanged(before, counts());
+                  await deny();
+                  await turn(`${path.name}/renamed-mount`, "lookup");
+                });
+                await withApplicationEdit(
+                  consumer,
+                  executionEdit,
+                  async () => {
+                    if (path === paths[0]) {
+                      await runAuthoringBuild({
+                        workspace: join(options.home, ".."),
+                        consumer,
+                        evidenceDirectory: options.evidenceDirectory,
+                        label: "agent-execution-options-typecheck",
+                        command: [process.execPath, "run", "typecheck"],
+                      });
+                    }
+                    const hashes = snapshot(customFiles);
+                    assertOnlyApplicationEdits(baseline, hashes, ["src/http.ts", "src/main.ts"]);
+                    const limited = await stopped(async () => {
+                      await start(path);
+                      const result = await turn(
+                        `${path.name}/agent-inference-limit`,
+                        "inference-limit",
+                      );
+                      const observation = readApplicationJsonLines(
+                        consumer,
+                        "data/authoring/finalization.jsonl",
+                      );
+                      check(
+                        observation.length === 1,
+                        "Owned finalization observer did not write one bounded record",
+                      );
+                      const effect = effects().find(
+                        (item) => item.thread === applicationThreadRef(result.threadId),
+                      );
+                      check(
+                        typeof effect?.turn === "string",
+                        "Limited tool execution has no independent correlation",
+                      );
+                      assertGeneratedFinalizationObservation(observation[0]!, {
+                        threadId: result.threadId,
+                        turnId: effect.turn,
+                      });
+                      const before = counts();
+                      assertAuthoringReplay(
+                        result.response,
+                        await request(result.threadId, result.key),
+                        before,
+                        counts(),
+                      );
+                      scenarios[`${path.name}/agent-execution-options`] = {
+                        status: "passed",
+                        observation: observation[0],
+                        hashes,
+                      };
+                      return result;
+                    });
+                    await stopped(async () => {
+                      await start(path);
+                      const before = counts();
+                      assertAuthoringReplay(
+                        limited.response,
+                        await request(limited.threadId, limited.key),
+                        before,
+                        counts(),
+                      );
+                    });
+                  },
+                  () => owned.size === 0,
+                );
+              }
+            } finally {
+              requestPath = "/agent/run";
+            }
+          },
+          () => owned.size === 0,
+        );
       },
       () => owned.size === 0,
     );

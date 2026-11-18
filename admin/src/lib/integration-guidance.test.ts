@@ -259,3 +259,21 @@ describe("integration surface and route policy", () => {
     ).toBeFalse();
   });
 });
+
+
+describe("configured conversation mount", () => {
+  it("uses the runtime mount for browser and server URLs and examples", () => {
+    const web = posture({ agentRunPath: "/support/chat", externalAuthEnabled: true });
+    const browser = selectBrowserConnection("https://agent.example", web);
+    const server = selectServerConnection("https://agent.example", web.agentRunPath);
+    for (const guidance of [browser, server]) {
+      expect(guidance.path).toBe("/support/chat");
+      expect(guidance.endpoint).toBe("https://agent.example/support/chat");
+      expect(guidance.typescript).toContain("https://agent.example/support/chat");
+      expect(guidance.typescript).not.toContain("/agent/run");
+    }
+    expect(classifyIntegrationPath("/support/chat", web.agentRunPath)).toBe("agent-conversation");
+    expect(isBrowserCallableAppRoute({ path: "/support/chat", auth: "none" }, web)).toBeFalse();
+    expect(isServerCallableAppRoute({ path: "/support/chat", auth: "creator" }, web.agentRunPath)).toBeFalse();
+  });
+});

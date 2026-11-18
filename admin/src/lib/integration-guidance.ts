@@ -25,7 +25,7 @@ const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
 
 type BrowserPosture = Pick<
   WebDashboardState,
-  "allowAnonymous" | "visitorTokensEnabled" | "externalAuthEnabled" | "externalAuthHeader"
+  "allowAnonymous" | "visitorTokensEnabled" | "externalAuthEnabled" | "externalAuthHeader" | "agentRunPath"
 >;
 
 export type BrowserConnectionMode =
@@ -36,6 +36,7 @@ export type BrowserConnectionMode =
 
 export interface BrowserConnectionGuidance {
   endpoint: string;
+  path: string;
   protocol: "AG-UI over SSE";
   mode: BrowserConnectionMode;
   ready: boolean;
@@ -46,6 +47,7 @@ export interface BrowserConnectionGuidance {
 
 export interface ServerConnectionGuidance {
   endpoint: string;
+  path: string;
   protocol: "AG-UI over SSE";
   title: string;
   summary: string;
@@ -68,13 +70,15 @@ export function selectBrowserConnection(
   origin: string,
   web: BrowserPosture,
 ): BrowserConnectionGuidance {
-  const endpoint = endpointUrl(origin, "/agent/run");
+  const path = web.agentRunPath ?? "/agent/run";
+  const endpoint = endpointUrl(origin, path);
 
   if (web.externalAuthEnabled === true) {
     const header = resolveExternalAuthHeader(web.externalAuthHeader);
     if (!header) {
       return {
         endpoint,
+        path,
         protocol: "AG-UI over SSE",
         mode: "configuration-required",
         ready: false,
@@ -86,6 +90,7 @@ export function selectBrowserConnection(
     }
     return {
       endpoint,
+        path,
       protocol: "AG-UI over SSE",
       mode: "external-auth",
       ready: true,
@@ -101,6 +106,7 @@ export function selectBrowserConnection(
   if (web.allowAnonymous.value === true && web.visitorTokensEnabled === true) {
     return {
       endpoint,
+        path,
       protocol: "AG-UI over SSE",
       mode: "visitor-token",
       ready: true,
@@ -114,6 +120,7 @@ export function selectBrowserConnection(
   if (web.allowAnonymous.value === true) {
     return {
       endpoint,
+        path,
       protocol: "AG-UI over SSE",
       mode: "anonymous",
       ready: true,
@@ -125,23 +132,25 @@ export function selectBrowserConnection(
 
   return {
     endpoint,
+    path,
     protocol: "AG-UI over SSE",
     mode: "configuration-required",
     ready: false,
     title: "Browser connection not configured",
     summary:
       web.visitorTokensEnabled === true
-        ? "Visitor tokens cannot open /agent/run while anonymous access is disabled. Configure external auth for a browser application."
+        ? `Visitor tokens cannot open ${path} while anonymous access is disabled. Configure external auth for a browser application.`
         : "Configure external auth, or explicitly enable anonymous access and visitor tokens, before connecting a browser application.",
     typescript: null,
   };
 }
 
 /** Builds the server-only contract. The secret is read at runtime, never embedded. */
-export function selectServerConnection(origin: string): ServerConnectionGuidance {
-  const endpoint = endpointUrl(origin, "/agent/run");
+export function selectServerConnection(origin: string, path = "/agent/run"): ServerConnectionGuidance {
+  const endpoint = endpointUrl(origin, path);
   return {
     endpoint,
+    path,
     protocol: "AG-UI over SSE",
     title: "Trusted server connection",
     summary:
@@ -153,8 +162,8 @@ export function selectServerConnection(origin: string): ServerConnectionGuidance
 }
 
 /** Keeps generated app-route clients conceptually separate from AG-UI chat. */
-export function classifyIntegrationPath(path: string): IntegrationSurface {
-  if (path === "/agent/run") return "agent-conversation";
+export function classifyIntegrationPath(path: string, agentRunPath = "/agent/run"): IntegrationSurface {
+  if (path === agentRunPath || path === "/agent/run") return "agent-conversation";
   if (path === "/health") return "runtime-health";
   return "app-route";
 }
@@ -164,7 +173,7 @@ export function isBrowserCallableAppRoute(
   route: Pick<RouteManifestEntry, "path" | "auth" | "policy">,
   web: BrowserPosture,
 ): boolean {
-  if (classifyIntegrationPath(route.path) !== "app-route") return false;
+  if (classifyIntegrationPath(route.path, web.agentRunPath) !== "app-route") return false;
   if (route.policy?.kind === "webhook.signature") return false;
   if (route.auth === "none" || route.auth === "visitor.optional") return true;
   if (route.auth === "visitor.required") {
@@ -176,8 +185,9 @@ export function isBrowserCallableAppRoute(
 /** Custom routes a trusted server can call with the configured creator credential. */
 export function isServerCallableAppRoute(
   route: Pick<RouteManifestEntry, "path" | "auth" | "policy">,
+  agentRunPath = "/agent/run",
 ): boolean {
-  if (classifyIntegrationPath(route.path) !== "app-route") return false;
+  if (classifyIntegrationPath(route.path, agentRunPath) !== "app-route") return false;
   if (route.policy?.kind === "webhook.signature") return false;
   return route.auth === "none" || route.auth === "bearer" || route.auth === "creator";
 }

@@ -17,6 +17,7 @@ import {
   assertAuthoringCommandSucceeded,
   authoringCreateArguments,
   inspectGeneratedAuthoringTree,
+  installAuthoringCli,
   readAuthoringSource,
   runBoundedAuthoringCli,
   selectAuthoringArtifacts,
@@ -26,7 +27,7 @@ import {
 let root: string;
 let sequence = 0;
 const entry = fileURLToPath(new URL("./authoring-command-fixture.ts", import.meta.url));
-const sourceFiles = ["agent.yaml", "package.json", ...AUTHORING_EXECUTION_FILES];
+const sourceFiles = ["agent.yaml", "package.json", "AGENTS.md", ...AUTHORING_EXECUTION_FILES];
 
 function write(path: string, content: string | Uint8Array): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -42,7 +43,7 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 // Packaging helper fixtures only; these are never actual Auggy runtime evidence.
-function artifact(packageName: string): PackedArtifactInput {
+function artifact(packageName: string, applicationContracts = [1, 2]): PackedArtifactInput {
   const staging = join(root, `pack-${sequence++}`);
   write(
     join(staging, "package/package.json"),
@@ -51,7 +52,8 @@ function artifact(packageName: string): PackedArtifactInput {
       version: "0.5.0",
       ...(packageName === "auggy"
         ? {
-            auggyRuntime: { schemaVersion: 1, launcherProtocol: 1, applicationContracts: [1] },
+            auggyRuntime: { schemaVersion: 1, launcherProtocol: 1, applicationContracts },
+            exports: { "./cli": "./index.ts" },
           }
         : {}),
     }),
@@ -92,15 +94,15 @@ describe("authoring helper preparation, not installed CLI acceptance", () => {
   test("fresh-tree inventory rejects parallel legacy registries and hashes no private bytes", () => {
     const consumer = join(root, "consumer");
     const config = {
-      application: { entrypoint: "./src/index.ts", contractVersion: 1 },
+      application: { entrypoint: "./src/main.ts", contractVersion: 2 },
       augments: [{ name: "web", type: "webTransport", options: {} }],
     };
     write(join(consumer, "agent.yaml"), JSON.stringify(config));
     write(join(consumer, ".env"), "SECRET=private-canary-value");
     write(join(consumer, ".auggy/operations/receipt.json"), "private-canary-value");
     const inventory = inspectGeneratedAuthoringTree(consumer);
-    expect(inventory.find((item) => item.path === "src/index.ts")?.sha256).toBe(
-      applicationHash(readFileSync(join(consumer, "src/index.ts"))),
+    expect(inventory.find((item) => item.path === "src/main.ts")?.sha256).toBe(
+      applicationHash(readFileSync(join(consumer, "src/main.ts"))),
     );
     expect(inventory.find((item) => item.path === ".env")).toEqual({
       path: ".env",
@@ -111,6 +113,11 @@ describe("authoring helper preparation, not installed CLI acceptance", () => {
       inventory.find((item) => item.path === ".auggy/operations/receipt.json")?.sha256,
     ).toBeUndefined();
     expect(JSON.stringify(inventory)).not.toContain("private-canary-value");
+    for (const obsolete of ["src/index.ts", "src/agent.ts"]) {
+      write(join(consumer, obsolete), "obsolete generated execution source");
+      expect(() => inspectGeneratedAuthoringTree(consumer)).toThrow("unexpected executable source");
+      rmSync(join(consumer, obsolete));
+    }
     write(join(consumer, "augments/layeredMemory/augment.yaml"), "type: layeredMemory\n");
     expect(() => inspectGeneratedAuthoringTree(consumer)).toThrow("legacy");
     rmSync(join(consumer, "augments"), { recursive: true });
@@ -129,7 +136,7 @@ describe("authoring helper preparation, not installed CLI acceptance", () => {
     write(
       join(consumer, "agent.yaml"),
       JSON.stringify({
-        application: { entrypoint: "./src/index.ts", contractVersion: 1 },
+        application: { entrypoint: "./src/main.ts", contractVersion: 2 },
         augments: [{ name: "web", type: "webTransport" }],
       }),
     );
@@ -139,6 +146,24 @@ describe("authoring helper preparation, not installed CLI acceptance", () => {
     for (let index = 0; index < 129; index++)
       write(join(consumer, "skills", `file-${index}.md`), "bounded fixture");
     expect(() => inspectGeneratedAuthoringTree(consumer)).toThrow("bound");
+  });
+
+  test("a contract-1 global CLI can be installed explicitly while candidate creation still requires2", async () => {
+    const baseline = artifact("auggy", [1]);
+    const options = {
+      repoRoot: join(root, "checkout"),
+      workspace: root,
+      name: "baseline-cli",
+      evidenceDirectory: join(root, "cli-evidence"),
+      core: baseline,
+    };
+    await expect(installAuthoringCli(options)).rejects.toThrow("contract-2");
+    const installed = await installAuthoringCli({ ...options, applicationContract: 1 });
+    expect(installed.core.manifest.auggyRuntime?.applicationContracts).toEqual([1]);
+    expect(installed.entry).toBe(join(installed.packageRoot, "index.ts"));
+    expect(() =>
+      selectAuthoringArtifacts({ ...artifactSet(), core: baseline }, "anthropic"),
+    ).toThrow("contract-2");
   });
 
   test("selects exact OpenRouter prerequisite and rejects wrong package/hash evidence", () => {

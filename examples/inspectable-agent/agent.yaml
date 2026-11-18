@@ -3,8 +3,8 @@ name: inspectable-agent
 displayName: Inspectable agent
 purpose: Show how a managed agent executes a small, read-only business capability.
 application:
-  entrypoint: ./src/index.ts
-  contractVersion: 1
+  entrypoint: ./src/main.ts
+  contractVersion: 2
 engine:
   provider: anthropic
   model: claude-sonnet-4-6

@@ -261,12 +261,12 @@ describe("explicit application adoption", () => {
     expect(manifest.dependencies).toEqual(originalManifest.dependencies);
     expect(manifest.scripts.unrelated).toBe("echo owned");
     expect(manifest.type).toBe("module");
-    expect(manifest.scripts.start).toBe("bun src/index.ts");
+    expect(manifest.scripts.start).toBe("bun src/main.ts");
     expect(manifest.devDependencies.typescript).toBe("5.9.3");
     expect(readFileSync(join(project, "bun.lock"), "utf8")).toBe("untouched lock fixture");
     expect(parseYaml(readFileSync(config, "utf8")).application).toEqual({
-      entrypoint: "./src/index.ts",
-      contractVersion: 1,
+      entrypoint: "./src/main.ts",
+      contractVersion: 2,
     });
     for (const file of planApplicationScaffold({ configFileName: "agent.yaml" }).files)
       expect(readFileSync(join(project, file.relativePath))).toEqual(Buffer.from(file.bytes));
@@ -281,7 +281,7 @@ describe("explicit application adoption", () => {
       planMigration(readAuthoringDocument(custom), { application: true }),
     );
     expect(result.status).toBe("complete");
-    expect(readFileSync(join(project, "src/index.ts"), "utf8")).toContain("../custom%20agent.yaml");
+    expect(readFileSync(join(project, "src/main.ts"), "utf8")).toContain("../custom%20agent.yaml");
     expect(JSON.parse(readFileSync(join(project, "package.json"), "utf8")).scripts.cli).toBe(
       "auggy dev --config 'custom agent.yaml'",
     );
@@ -307,6 +307,7 @@ describe("explicit application adoption", () => {
   test.each([
     "missing-runtime",
     "unsupported-runtime",
+    "contract-1-runtime",
     "missing-export",
     "escaping-export",
     "runtime-fifo",
@@ -321,6 +322,14 @@ describe("explicit application adoption", () => {
     if (mode === "missing-runtime") rmSync(runtime, { recursive: true });
     if (mode === "unsupported-runtime")
       put(join(runtime, "package.json"), JSON.stringify({ ...manifest, auggyRuntime: undefined }));
+    if (mode === "contract-1-runtime")
+      put(
+        join(runtime, "package.json"),
+        JSON.stringify({
+          ...manifest,
+          auggyRuntime: { ...manifest.auggyRuntime, applicationContracts: [1] },
+        }),
+      );
     if (mode === "missing-export")
       put(join(runtime, "package.json"), JSON.stringify({ ...manifest, exports: {} }));
     if (mode === "escaping-export") {
@@ -356,6 +365,7 @@ describe("explicit application adoption", () => {
   test.each([
     "source",
     "readme",
+    "instructions",
     "typescript",
     "test",
     "script",
@@ -368,8 +378,9 @@ describe("explicit application adoption", () => {
     const { root, project, config } = fixture();
     installRuntime(project);
     const paths = {
-      source: "src/index.ts",
+      source: "src/main.ts",
       readme: "README.md",
+      instructions: "AGENTS.md",
       typescript: "tsconfig.json",
       test: "tests/application.test.ts",
     };
@@ -391,7 +402,7 @@ describe("explicit application adoption", () => {
       mkdirSync(join(root, "outside"));
       symlinkSync(join(root, "outside"), join(project, "src"));
     }
-    if (mode === "case-collision") put(join(project, "SRC/index.ts"), "owned-private-canary\n");
+    if (mode === "case-collision") put(join(project, "SRC/main.ts"), "owned-private-canary\n");
     if (mode === "existing-application")
       put(
         config,

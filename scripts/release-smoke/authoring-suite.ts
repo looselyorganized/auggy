@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   applicationArtifact,
-  buildApplicationBaseline,
+  buildSameVersionArtifact,
   buildDifferentVersionArtifact,
 } from "./application-artifacts";
 import { createAuthoringConsumer, installAuthoringCli } from "./authoring-consumer";
@@ -113,15 +113,16 @@ export async function runAuthoringSuite(options: AuthoringSuiteOptions) {
       evidenceDirectory: join(evidenceDirectory, "candidate-cli"),
       core,
     });
-    const baseline = options.globalCore
+    const globalCore = options.globalCore
       ? await applicationArtifact(options.globalCore, "auggy")
-      : (await buildApplicationBaseline(repoRoot, join(evidenceDirectory, "global-baseline"))).core;
+      : await buildSameVersionArtifact(core, join(evidenceDirectory, "same-version-global"));
     const global = await installAuthoringCli({
       repoRoot,
       workspace,
       name: "global-cli",
       evidenceDirectory: join(evidenceDirectory, "global-cli"),
-      core: baseline,
+      core: globalCore,
+      applicationContract: 2,
     });
     const consumers = {} as Record<AuthoringProvider, GeneratedAuthoringConsumer>;
     for (const provider of ["anthropic", "openai", "openrouter", "ollama"] as const) {
@@ -208,7 +209,7 @@ export async function runAuthoringSuite(options: AuthoringSuiteOptions) {
       evidenceDirectory: join(evidenceDirectory, "ownership"),
       consumer: ownershipConsumer,
       candidateCore: core,
-      baselineCore: baseline,
+      baselineCore: globalCore,
       provider: providers.anthropic,
     });
     const deploymentConsumer = await createAuthoringConsumer({

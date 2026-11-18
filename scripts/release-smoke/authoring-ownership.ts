@@ -166,7 +166,7 @@ export async function runGeneratedOwnershipUpdate(options: GeneratedOwnershipOpt
       consumer,
       sourceFiles: files,
     });
-    for (const file of ["src/index.ts", "src/agent.ts", "src/http.ts", "src/turn.ts"])
+    for (const file of ["src/main.ts", "src/http.ts", "src/turn.ts"])
       check(
         afterAuthoring[file] === original[file],
         "Custom creation changed generated execution source",

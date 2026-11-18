@@ -9,7 +9,7 @@ function report(): InspectionReport {
   const project = {
     ownership: "project" as const,
     status: "available" as const,
-    path: "/consumer/src/index.ts",
+    path: "/consumer/src/main.ts",
   };
   const packaged = {
     ownership: "package" as const,
@@ -28,8 +28,8 @@ function report(): InspectionReport {
     },
     application: {
       mode: "application",
-      entrypoint: "./src/index.ts",
-      contractVersion: 1,
+      entrypoint: "./src/main.ts",
+      contractVersion: 2,
       source: project,
     },
     runtime: {
@@ -67,7 +67,7 @@ test("installed inspection fails on plausible but wrong runtime, unavailable sou
   const expected = {
     packageRoot: "/consumer/node_modules/auggy",
     manifestSHA256: "local-manifest",
-    entrypoint: "/consumer/src/index.ts",
+    entrypoint: "/consumer/src/main.ts",
   };
   assertInstalledAuthoringInspection(report(), expected);
   expect(() =>
