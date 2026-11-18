@@ -195,7 +195,11 @@ minor releases such as `0.6.0`. Run it from a shell/profile that does not have a
 existing Auggy state directory. Do not skip the manual browser checks; this gate
 exists to catch first-run and packaging failures that unit tests miss.
 
-First run the automated release smoke:
+After 0.6.0 is available on npm, repeat the three README Quick Start commands
+from an empty directory with no global Auggy executable. Verify that chat opens
+and Ctrl-C stops the agent.
+
+Before publication, run the automated release smoke:
 
 ```bash
 bun run smoke:release

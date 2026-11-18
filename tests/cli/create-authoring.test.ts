@@ -95,7 +95,7 @@ describe("automated creation", () => {
       ).toHaveLength(1);
       expect(existsSync(join(project, "bun.lock"))).toBe(false);
       expect(existsSync(join(project, "augments"))).toBe(false);
-      expect(logs.join("\n")).toContain("dependencies not verified");
+      expect(logs.join("\n")).toContain("Project files created.");
       expect(logs.join("\n")).not.toContain("application runtime verified");
       expect(statSync(join(project, ".env")).mode & 0o777).toBe(0o600);
       expect(statSync(join(project, ".auggy/models.lock.json")).mode & 0o777).toBe(0o600);
@@ -231,6 +231,8 @@ describe("collision-safe initialization", () => {
     mkdirSync(join(directory, "src"));
     writeFileSync(join(directory, "src/unrelated.ts"), "export const owned = true;\n");
     await runInit({ ...automatic, name: "existing", cwd: directory });
+    expect(logs.join("\n")).toContain("1.  bun install");
+    expect(logs.join("\n")).not.toContain(".  cd ");
     expect(readFileSync(join(directory, "unrelated.txt"), "utf8")).toBe("keep");
     expect(readFileSync(join(directory, "src/unrelated.ts"), "utf8")).toBe(
       "export const owned = true;\n",
@@ -413,24 +415,25 @@ describe("installation readiness", () => {
           throw new Error("spawn failed");
         },
       }),
-    ).rejects.toThrow("dependencies are not ready");
+    ).rejects.toThrow("dependency installation failed");
     expect(existsSync(join(directory, "spawn-failed/agent.yaml"))).toBe(true);
-    expect(logs.join("\n")).toContain("Retry:");
   });
 
   test("failed installation preserves generated sources and returns a non-ready result", async () => {
+    const parent = join(directory, "parent with spaces");
+    mkdirSync(parent);
     await expect(
       runCreate("failed", {
         ...automatic,
         skipInstall: false,
-        cwd: directory,
+        cwd: parent,
         bunInstallSpawn: createStubBunInstallSpawn({ exitCode: 1 }),
       }),
-    ).rejects.toThrow("dependencies are not ready");
-    expect(existsSync(join(directory, "failed/agent.yaml"))).toBe(true);
-    expect(existsSync(join(directory, "failed/src/turn.ts"))).toBe(true);
-    expect(logs.join("\n")).toContain("not ready");
-    expect(logs.join("\n")).toContain("Retry:");
+    ).rejects.toThrow(
+      "Project files created; dependency installation failed (exit 1).\nfailed\n\n  1.  cd ./failed\n  2.  bun install\n  3.  Set ANTHROPIC_API_KEY in .env\n  4.  bun run auggy run",
+    );
+    expect(existsSync(join(parent, "failed/agent.yaml"))).toBe(true);
+    expect(existsSync(join(parent, "failed/src/turn.ts"))).toBe(true);
     expect(logs.join("\n")).not.toContain("application runtime verified");
   });
 
@@ -455,9 +458,10 @@ describe("installation readiness", () => {
         await operation;
         expect(logs.join("\n")).toContain("application runtime verified");
       } else {
-        await expect(operation).rejects.toThrow("dependencies are not ready");
+        await expect(operation).rejects.toThrow(
+          /application contract 2[\s\S]+package\.json[\s\S]+bun install[\s\S]+bun run auggy doctor/,
+        );
         expect(logs.join("\n")).not.toContain("application runtime verified");
-        expect(logs.join("\n")).toContain("application contract 2");
       }
       expect(existsSync(join(directory, "installed/src/main.ts"))).toBe(true);
     });

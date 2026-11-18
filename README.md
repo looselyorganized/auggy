@@ -26,32 +26,26 @@ preview software until `1.0.0`. Pin exact versions for production-like evaluatio
 
 ## Quick Start
 
-After the 0.6 package is published:
+Requires **Bun 1.3.14 or newer**. [Install Bun](https://bun.com/docs/installation).
+
+After Auggy 0.6 is published, run:
 
 ```bash
-bun add --global auggy@0.6.0
-auggy create my-agent
+bunx auggy@0.6.0 create my-agent
 cd my-agent
-auggy doctor
-auggy run
+bun run auggy run
 ```
 
 For evaluation before publication, use matching local core and provider candidate
 packages. The [release guide](docs/RELEASING.md) records publication state and
 packaged verification. The published 0.5 scaffold uses the previous layout.
 
+`bunx` runs the create wizard once. Inside the project, `bun run auggy run` uses
+the installed CLI to start your agent and open chat.
+
 `auggy create` walks through the model provider, model, and agent identity,
 adds the core augments, then installs the agent's local dependencies. Choose Anthropic, OpenAI,
 OpenRouter, or a local/remote Ollama instance.
-
-Generated agents own an audited root-level dependency override for
-`@hono/node-server` v2. Direct library consumers must copy the `overrides`
-block from Auggy's `package.json` into their application root because package
-managers do not inherit overrides from dependencies. This temporary boundary
-remains necessary until `@modelcontextprotocol/sdk` accepts the fixed v2 range.
-Provider adapters mark this peer optional only at the installer layer so a
-package manager cannot silently fetch the stale registry core. The local core
-is still a runtime requirement and must be installed explicitly.
 
 For a hosted model, enter the provider key during setup or add it to the
 generated `.env` afterward:
@@ -653,6 +647,10 @@ is unavailable, it opens the password screen and points to the applicable
 
 ## CLI Reference
 
+Inside an agent project, use `bun run auggy <command>`. For a persistent
+`auggy` command on your PATH, optionally install `bun add --global auggy@0.6.0`
+after publication.
+
 | Command | What it does |
 | --- | --- |
 | `auggy create <name>` | Scaffold inline configuration and owned execution source |
@@ -690,6 +688,17 @@ is unavailable, it opens the password screen and points to the applicable
 | `auggy start` / `stop` / `restart` | Manage a background local agent |
 | `auggy remove [name]` | Remove a local agent project, with an explicit cloud option |
 | `auggy eval` | Run eval suites when `@auggy/evals` is installed |
+
+## Direct library installation
+
+Generated agents own an audited root-level dependency override for
+`@hono/node-server` v2. Direct library consumers must copy the `overrides`
+block from Auggy's `package.json` into their application root because package
+managers do not inherit overrides from dependencies. This temporary boundary
+remains necessary until `@modelcontextprotocol/sdk` accepts the fixed v2 range.
+Provider adapters mark this peer optional only at the installer layer so a
+package manager cannot silently fetch the stale registry core. The local core
+is still a runtime requirement and must be installed explicitly.
 
 ## Requirements
 

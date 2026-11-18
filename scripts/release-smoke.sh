@@ -609,7 +609,9 @@ info "doctor"
   HOME="$SMOKE_HOME" "$CLI" doctor
 )
 
-info "run agent and check health"
+info "run project-local CLI and check health"
+mkdir -p "$SMOKE_DIR/launch-bin"
+ln -s "$(command -v bun)" "$SMOKE_DIR/launch-bin/bun"
 HEALTHY=""
 for attempt in {1..3}; do
   if (( attempt > 1 )); then
@@ -618,7 +620,7 @@ for attempt in {1..3}; do
 
   (
     cd "$AGENT_DIR"
-    HOME="$SMOKE_HOME" exec "$CLI" run --no-open >"$LOG_DIR/run.log" 2>&1
+    HOME="$SMOKE_HOME" PATH="$SMOKE_DIR/launch-bin:/usr/bin:/bin" exec bun run auggy run --no-open >"$LOG_DIR/run.log" 2>&1
   ) &
   SERVER_PID="$!"
 
