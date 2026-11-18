@@ -21,6 +21,8 @@ worktree test counts are not evidence about main.
 - The [v0.6 release candidate](https://github.com/looselyorganized/auggy/pull/232)
   targets main. After M6 merges, verify the candidate against accepted main,
   including artifact checks and registry admission for all six packages.
+- Certify a fresh v0.6 installation and selection of its project-local runtime.
+  The separate foundation rehearsal supplies candidate-bound workspace and Link evidence.
 - Run applicable trusted default-branch canaries after merge and before tagging,
   using protected credentials only as described in [RELEASING](../RELEASING.md).
 - The identity/learned-guidance design discussion, separate upgrade campaign

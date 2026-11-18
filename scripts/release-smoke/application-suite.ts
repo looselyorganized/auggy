@@ -8,7 +8,6 @@ import {
 } from "./accepted-main-artifacts";
 import {
   applicationArtifact,
-  buildApplicationBaseline,
   buildDifferentVersionArtifact,
   buildSameVersionArtifact,
 } from "./application-artifacts";
@@ -16,18 +15,15 @@ import {
   APPLICATION_ROWS,
   applicationHash,
   type PackedArtifactInput,
-  type ApplicationRecipe,
 } from "./application-consumer";
 import { installApplicationConsumer } from "./application-install";
 import { runApplicationCompatibility } from "./application-compatibility";
 import { runInstalledApplicationLaunchd } from "./application-launchd";
 import {
   INSPECTABLE_APPLICATION_RECIPE as recipe,
-  HISTORICAL_APPLICATION_RECIPE,
   INSPECTABLE_ORDER_OUTPUT as expectedToolOutput,
 } from "./application-recipe";
 import { runInstalledApplication } from "./application-runner";
-import { runRetainedApplicationUpgrade } from "./application-upgrade";
 import { runInstalledApplicationLifecycle } from "./application-lifecycle";
 import { verifyApplicationDeployment } from "./application-deployment";
 
@@ -58,8 +54,6 @@ export async function runApplicationSuite(options: {
     core: PackedArtifactInput,
     provider: PackedArtifactInput,
     legacy = false,
-    referenceDir?: string,
-    applicationRecipe?: ApplicationRecipe,
   ) =>
     installApplicationConsumer({
       repoRoot,
@@ -68,8 +62,6 @@ export async function runApplicationSuite(options: {
       core,
       provider,
       legacy,
-      referenceDir,
-      recipe: applicationRecipe,
       evidenceDirectory: join(evidence, "installs"),
     });
   const context = (name: string) => {
@@ -89,10 +81,6 @@ export async function runApplicationSuite(options: {
   try {
     const core = await applicationArtifact(options.candidateCore, "auggy");
     const provider = await applicationArtifact(options.candidateProvider, "@auggy/anthropic");
-    const baseline = await buildApplicationBaseline(
-      repoRoot,
-      join(evidence, "application-baseline"),
-    );
     const legacyBuild = await buildAcceptedMainArtifacts({
       repositoryRoot: repoRoot,
       outputDirectory: join(evidence, "accepted-legacy"),
@@ -113,17 +101,8 @@ export async function runApplicationSuite(options: {
     const legacy = await install("legacy", legacyCore, legacyProvider, true);
     const differentVersion = await install("different-version", unequalCore, provider);
     const launchd = await install("launchd", core, provider);
-    const retained = await install(
-      "retained",
-      baseline.core,
-      baseline.provider,
-      false,
-      baseline.referenceDir,
-      HISTORICAL_APPLICATION_RECIPE,
-    );
     results.artifacts = {
       candidate: { core, provider },
-      baseline,
       legacy: legacyBuild.source,
       differentVersion: unequalCore,
       sameVersionGlobal: sameVersionCore,
@@ -257,16 +236,6 @@ export async function runApplicationSuite(options: {
       evidence: ["compatibility/compatibility.json", "selector-browser-tests.log"],
       note: "Packed Link gate remains required",
     };
-    results.retained = await runRetainedApplicationUpgrade({
-      repoRoot,
-      workspace,
-      evidenceDirectory: join(evidence, "retained-upgrade"),
-      retained,
-      current: fresh,
-      global,
-      core,
-      provider,
-    });
     if (options.foundationUpgradeEvidence) {
       const foundationBytes = readFileSync(options.foundationUpgradeEvidence);
       const foundation = JSON.parse(foundationBytes.toString("utf8"));
@@ -284,18 +253,12 @@ export async function runApplicationSuite(options: {
         sha256: applicationHash(foundationBytes),
         coreSHA256: core.sha256,
       };
-      accept("L16-retained-upgrade", ["retained-upgrade", options.foundationUpgradeEvidence]);
       accept("L06-workspace-policy", [
         "compatibility/compatibility.json",
         "selector-browser-tests.log",
         options.foundationUpgradeEvidence,
       ]);
-    } else
-      rows["L16-retained-upgrade"] = {
-        status: "partial",
-        evidence: ["retained-upgrade"],
-        note: "Foundation retained-lock and packed Link gates remain required",
-      };
+    }
     passed = true;
   } catch (error) {
     failure = error instanceof Error ? error.message : "Application suite failed";

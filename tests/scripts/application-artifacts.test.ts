@@ -1,61 +1,25 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   applicationArtifact,
   buildDifferentVersionArtifact,
   buildSameVersionArtifact,
-  preserveApplicationBaselineReference,
 } from "../../scripts/release-smoke/application-artifacts";
-import {
-  applicationHash,
-  inspectApplicationArtifact,
-} from "../../scripts/release-smoke/application-consumer";
-import {
-  HISTORICAL_APPLICATION_RECIPE as recipe,
-  INSPECTABLE_APPLICATION_RECIPE,
-} from "../../scripts/release-smoke/application-recipe";
+import { inspectApplicationArtifact } from "../../scripts/release-smoke/application-consumer";
+import { INSPECTABLE_APPLICATION_RECIPE } from "../../scripts/release-smoke/application-recipe";
 
 let root: string;
-let source: string;
-let output: string;
-let verifiedFiles: Record<string, string>;
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "auggy-baseline-reference-"));
-  source = join(root, "source");
-  output = join(root, "output");
-  mkdirSync(output);
-  verifiedFiles = {};
-  for (const file of recipe.sourceFiles) {
-    const archivedPath = `examples/inspectable-agent/${file}`;
-    const path = join(source, archivedPath);
-    const bytes =
-      file === "agent.yaml"
-        ? "application: { entrypoint: ./src/index.ts, contractVersion: 1 }\n"
-        : `archived ${file}\n`;
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, bytes);
-    verifiedFiles[archivedPath] = applicationHash(bytes);
-  }
+  root = mkdtempSync(join(tmpdir(), "auggy-application-artifacts-"));
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-test("current and pinned reference recipes keep their distinct owned entrypoints", () => {
+test("the current reference recipe identifies its owned entrypoint and edits", () => {
   expect(INSPECTABLE_APPLICATION_RECIPE.entrypoint).toBe("src/main.ts");
   expect(INSPECTABLE_APPLICATION_RECIPE.sourceFiles).not.toContain("src/index.ts");
   expect(INSPECTABLE_APPLICATION_RECIPE.sourceFiles).not.toContain("src/agent.ts");
-  expect(recipe.entrypoint).toBe("src/index.ts");
-  expect(recipe.sourceFiles).toContain("src/agent.ts");
-  expect(recipe.sourceFiles).not.toContain("src/main.ts");
   for (const edit of Object.values(INSPECTABLE_APPLICATION_RECIPE.edits)) {
     const source = readFileSync(
       join(import.meta.dir, "../../examples/inspectable-agent", edit.path),
@@ -64,41 +28,6 @@ test("current and pinned reference recipes keep their distinct owned entrypoints
     expect(source.split(edit.before)).toHaveLength(2);
   }
 });
-
-test("retains only verified pinned reference files independently of the temporary build tree", () => {
-  const privatePath = join(source, "examples/inspectable-agent/node_modules/private.txt");
-  mkdirSync(dirname(privatePath), { recursive: true });
-  writeFileSync(privatePath, "installed bytes must stay behind");
-  writeFileSync(join(source, "examples/inspectable-agent/.env"), "PRIVATE=never-copy");
-  const retained = preserveApplicationBaselineReference(source, output, verifiedFiles);
-  expect(Object.keys(retained.referenceFiles)).toEqual([...recipe.sourceFiles]);
-  for (const file of recipe.sourceFiles) {
-    expect(applicationHash(readFileSync(join(retained.referenceDir, file)))).toBe(
-      verifiedFiles[`examples/inspectable-agent/${file}`]!,
-    );
-  }
-  rmSync(source, { recursive: true });
-  expect(readFileSync(join(retained.referenceDir, "agent.yaml"), "utf8")).toContain(
-    "contractVersion: 1",
-  );
-  expect(existsSync(join(retained.referenceDir, "node_modules"))).toBe(false);
-  expect(existsSync(join(retained.referenceDir, ".env"))).toBe(false);
-});
-
-test.each(["missing-hash", "changed-bytes", "linked-source"])(
-  "rejects unverified baseline reference %s before publishing",
-  (mode) => {
-    const file = "examples/inspectable-agent/src/index.ts";
-    if (mode === "missing-hash") delete verifiedFiles[file];
-    if (mode === "changed-bytes") writeFileSync(join(source, file), "changed");
-    if (mode === "linked-source") {
-      rmSync(join(source, file));
-      symlinkSync(join(source, "examples/inspectable-agent/src/agent.ts"), join(source, file));
-    }
-    expect(() => preserveApplicationBaselineReference(source, output, verifiedFiles)).toThrow();
-    expect(existsSync(join(output, "reference"))).toBe(false);
-  },
-);
 
 test.each(["same-version", "different-version"] as const)(
   "%s fixture changes only its declared manifest field and retains runtime source hashes",

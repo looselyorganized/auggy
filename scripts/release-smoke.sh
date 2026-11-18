@@ -1008,7 +1008,7 @@ bun "$ROOT/scripts/release-smoke/upgrade-consumer.ts" \
   >"$LOG_DIR/upgrade-consumer.log" 2>&1 \
   || fail "retained-lock upgrade or selected Link audit failed"
 
-info "verify inspectable application execution, compatibility and retained upgrade"
+info "verify fresh inspectable application execution and launcher selection"
 bun "$ROOT/scripts/release-smoke/application-suite.ts" \
   --candidate-core "$TARBALL" --candidate-anthropic "$ANTHROPIC_TARBALL" \
   --repo-root "$ROOT" --evidence-dir "$EVIDENCE_DIR/application" \

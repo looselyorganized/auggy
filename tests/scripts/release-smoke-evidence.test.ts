@@ -42,24 +42,19 @@ function exportFixture() {
 }
 
 describe("release evidence inventory", () => {
-  test("records provenance without traversing its retained baseline source", () => {
+  test("records application evidence in the release manifest", () => {
     const fixture = exportFixture();
-    const baseline = "application/application-baseline";
-    fixture.write(`${baseline}/application-baseline.json`, '{"status":"passed"}\n');
-    fixture.write(`${baseline}/reference/package.json`, '{"name":"historical-source"}\n');
-    fixture.write(`${baseline}/reference/src/augments/example/skill/SKILL.md`, "# Fixture\n");
     fixture.write("authoring/application/application.json", '{"state":"passed"}\n');
     const result = fixture.run();
     expect(result.exitCode).toBe(0);
     const manifest = JSON.parse(readFileSync(join(fixture.evidence, "release.json"), "utf8"));
     expect(manifest.exitCode).toBe(0);
     expect(Object.keys(manifest.records).sort()).toEqual([
-      `${baseline}/application-baseline.json`,
       "authoring/application/application.json",
     ]);
   });
 
-  test("still rejects excessive nesting outside the retained baseline source", () => {
+  test("rejects excessive evidence nesting", () => {
     const fixture = exportFixture();
     fixture.write("authoring/unexpected/a/b/c/record.json", "{}\n");
     const result = fixture.run();
