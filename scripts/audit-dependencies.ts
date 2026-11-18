@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
+import { stripVTControlCharacters } from "node:util";
+
 type AuditFailure =
   | "command-failed"
   | "timeout"
@@ -15,6 +17,7 @@ type AuditFailure =
 export interface AuditOptions {
   cwd: string;
   evidencePath?: string;
+  workspaceException?: boolean;
   timeoutMs?: number;
   maxOutputBytes?: number;
   /** Test seam; the CLI always executes this Bun binary with audit --json. */
@@ -65,6 +68,43 @@ export function inspectAuditOutput(stdout: string): {
   };
 }
 
+// These fingerprints cover the reviewed M6 and v0.6 release graphs, including
+// the sole picomatch resolution (4.0.5) and its console build dependency path.
+const reviewedWorkspaceLocks = new Set([
+  "cd4b421883d2874dba117e9410acae08207f352d99b74fcd6a9872d35afde3f7",
+  "d4549b87ba5f47d5caf350437635459eb61e5e8cf45ad1bdee1b1ba2cfa73160",
+]);
+const picomatchException = {
+  id: "GHSA-fc5q-39xc-vjpf",
+  expiresAt: "2026-12-01T23:59:00.000Z",
+};
+
+export function matchesWorkspaceException(stdout: string, lockHash: string, now: number): boolean {
+  if (!reviewedWorkspaceLocks.has(lockHash) || now >= Date.parse(picomatchException.expiresAt))
+    return false;
+  let report: unknown;
+  try {
+    report = JSON.parse(stdout);
+  } catch {
+    return false;
+  }
+  if (
+    !report ||
+    typeof report !== "object" ||
+    !("picomatch" in report) ||
+    Object.keys(report).length !== 1
+  )
+    return false;
+  const rows = report.picomatch;
+  if (!Array.isArray(rows) || rows.length !== 1) return false;
+  const row = rows[0];
+  return (
+    row?.url === `https://github.com/advisories/${picomatchException.id}` &&
+    row.severity === "high" &&
+    row.vulnerable_versions === "<=4.0.7"
+  );
+}
+
 /** Full dependency graph, all severities. Errors are failures, never clean audits. */
 export function runDependencyAudit(options: AuditOptions) {
   const timeoutMs = options.timeoutMs ?? 120_000;
@@ -111,12 +151,25 @@ export function runDependencyAudit(options: AuditOptions) {
           ? "command-failed"
           : inspection.failure;
   if (hash(readFileSync(lockPath)) !== lockfileSHA256) failure = "lockfile-changed";
+  const finishedAt = new Date();
+  const acceptedException =
+    options.workspaceException &&
+    resolve(options.cwd) === resolve(import.meta.dir, "..") &&
+    failure === "command-failed" &&
+    result.status === 1 &&
+    !result.signal &&
+    !result.error &&
+    // Bun 1.3.14 writes only its version banner to stderr on an advisory exit.
+    /^bun audit v1\.3\.14 \([a-f0-9]+\)$/.test(stripVTControlCharacters(stderr).trim()) &&
+    matchesWorkspaceException(stdout, lockfileSHA256, finishedAt.getTime());
+  if (acceptedException) failure = null;
   const evidence = {
+    ...(acceptedException ? { acceptedException: picomatchException } : {}),
     schema: 1,
     status: failure ? ("failed" as const) : ("passed" as const),
     failure,
     startedAt,
-    finishedAt: new Date().toISOString(),
+    finishedAt: finishedAt.toISOString(),
     sourceRevision: revision && /^[a-f0-9]{40}$/.test(revision) ? revision : null,
     helperSHA256: hash(readFileSync(import.meta.path)),
     lockfileSHA256,
@@ -145,9 +198,14 @@ if (import.meta.main) {
     const seen = new Set<string>();
     while (args.length) {
       const flag = args.shift()!;
+      if (flag === "--workspace-exception" && !seen.has(flag)) {
+        seen.add(flag);
+        options.workspaceException = true;
+        continue;
+      }
       const value = args.shift();
       if ((flag !== "--cwd" && flag !== "--evidence") || !value || seen.has(flag)) {
-        throw new Error("Expected optional --cwd and --evidence arguments");
+        throw new Error("Expected optional --workspace-exception, --cwd and --evidence arguments");
       }
       seen.add(flag);
       if (flag === "--cwd") options.cwd = resolve(value);

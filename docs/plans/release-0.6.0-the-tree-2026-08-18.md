@@ -15,16 +15,9 @@ worktree test counts are not evidence about main.
 
 ## Current release gates
 
-- M5's reviewed PR passed 28 checks before merge. A newly reviewed upstream
-  advisory now fails both resulting-main and M6 workspace audits:
-  [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf), high
-  severity ReDoS in picomatch. The lockfile selects 4.0.5 through the console's
-  Vite/fdir/tinyglobby build dependencies. On 2026-11-17 npm's latest is 4.0.7,
-  and the advisory affects versions through 4.0.7 with no patched release listed.
-  The same locked graph reproduces the finding locally. No audit exception,
-  dependency replacement or build-system change has been made.
-- Resolve that dependency gate before merging M6. Keep the existing complete
-  CI, CodeQL and packed-release checks; do not treat a failed audit as acceptance.
+- CI audits the full workspace and records the time-limited
+  [picomatch exception](#temporary-console-build-dependency-exception).
+  Installed-agent audits must pass with zero findings.
 - Rebase or merge the dedicated version/documentation branch onto accepted M6
   main, submit the release PR, and verify its exact artifacts and registry-version
   admission. Coordinate all six published package versions at 0.6.0.
@@ -252,3 +245,19 @@ locating the HTTP endpoint, following the executed turn program and making
 supported source edits against installed packages. The user reviews the actual
 generated project. No five-minute traceability result or external usability
 certification is claimed.
+
+## Temporary console build dependency exception
+
+The Auggy release maintainer owns the workspace-only acceptance of
+[GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf)
+for picomatch 4.0.5. An untrusted console build input could stall a developer
+build or CI. The inspected installed agent serves precompiled assets and its
+dependency graph excludes picomatch. npm and GitHub listed no patched release
+on November 17, 2026. The workspace audit retains the finding and raw exit code.
+
+Acceptance expires **December 1, 2026 at 23:59 UTC**. By then the release
+maintainer checks the advisory and npm. When a patch is available, update the
+lockfile, remove the exception, workflow opt-in and exception tests, then verify
+the resolved version, console build, strict workspace audit and installed-agent
+audit in the same PR. Record its version and PR here. If the finding persists
+at expiry, CI blocks and any renewal requires a fresh exposure review.
