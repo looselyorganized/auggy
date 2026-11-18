@@ -2,8 +2,8 @@
  * ALARA structural-omission ablation eval.
  *
  * Usage:
- *   bun run evals/alara/run.ts              # full pass^3 run
- *   bun run evals/alara/run.ts --pilot      # pilot: 2 sizes, 10 tasks, 1 trial
+ *   bun run packages/evals/src/alara/run.ts              # full pass^3 run
+ *   bun run packages/evals/src/alara/run.ts --pilot      # pilot: 2 sizes, 10 tasks, 1 trial
  *
  * Requires ANTHROPIC_API_KEY.
  */
@@ -14,8 +14,10 @@ import { runAblation } from "../harness/runner";
 import { exactToolMatch } from "./graders/exact-tool-match";
 import { generateTasks } from "./dataset";
 import { alaraDefinition, alaraPilotDefinition } from "./definition";
+import { parseEvalArgs, selectEvalModel } from "../harness/model-selection";
 
-const isPilot = process.argv.includes("--pilot");
+const { pilot: isPilot, model: override } = parseEvalArgs(process.argv.slice(2));
+const selection = selectEvalModel({ provider: "anthropic", model: "claude-sonnet-4-6" }, override);
 const definition = isPilot ? alaraPilotDefinition : alaraDefinition;
 const trials = isPilot ? 1 : 3;
 const runType = isPilot ? "pilot" : "full";
@@ -27,7 +29,7 @@ if (!apiKey) {
 }
 
 const model = createAnthropicEngine({
-  model: "claude-sonnet-4-6",
+  model: selection.model,
   apiKey,
   maxTokens: 1024,
 });
@@ -39,7 +41,7 @@ console.log(`  Catalog sizes: [${definition.sweep.join(", ")}]`);
 console.log(`  Tasks per size: ${definition.tasksPerSweepValue}`);
 console.log(`  Seeds: [${definition.seeds.join(", ")}]`);
 console.log(`  Trials (k): ${trials}`);
-console.log(`  Model: claude-sonnet-4-6`);
+console.log(`  Model: ${selection.model} (tool choice: ${selection.tool_choice})`);
 
 const expectedCalls = definition.sweep.length
   * definition.tasksPerSweepValue
@@ -48,7 +50,7 @@ const expectedCalls = definition.sweep.length
 console.log(`  Expected API calls: ~${expectedCalls}`);
 console.log();
 
-const scorecard = await runAblation({
+await runAblation({
   definition,
   model,
   grader: exactToolMatch,
@@ -57,8 +59,8 @@ const scorecard = await runAblation({
   treatmentConditionId: "all-tools-exposed",
   trials,
   frameworkVersion: "0.2.0",
-  modelName: "claude-sonnet-4-6",
-  modelVersion: "claude-sonnet-4-6",
+  selection,
+  modelVersion: selection.model,
   outputDir,
   runType: runType as "pilot" | "full",
   evalLabel: "ALARA Structural-Omission Ablation",

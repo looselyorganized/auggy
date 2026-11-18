@@ -10,7 +10,6 @@ engine:
 settings:
   compactionStrategy: truncate
   maxInferenceLoops: 1
-  toolChoice: any
 augments:
   - name: identity
     type: fileMemory

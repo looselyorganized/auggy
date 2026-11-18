@@ -1,6 +1,4 @@
-# Full agent — all non-external augments + manifest (6 augments, ~15 tools)
-# Used by modularity-accuracy eval to test loaded agent accuracy.
-# manifest uses a dummy URL — tools register but never execute (distractors).
+# Full agent — webFetch, two fileMemory instances, filesystem, and bash scripts.
 
 id: aug1_00000000-0000-4000-a000-000000000003
 name: eval-full
@@ -56,7 +54,3 @@ augments:
         - name: health_check
           description: "Run health checks against all services"
           command: "echo healthy"
-  - name: org
-    type: manifest
-    options:
-      baseUrl: http://localhost:0

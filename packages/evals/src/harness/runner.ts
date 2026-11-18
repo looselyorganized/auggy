@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { ModelClient, TurnTrigger } from "auggy/internal/types";
 import type {
   EvalDefinition,
+  EvalModelSelection,
   EvalTask,
   EvalTrialResult,
   Scorecard,
@@ -22,7 +23,7 @@ export interface RunOptions {
   treatmentConditionId: string;
   trials: number;
   frameworkVersion: string;
-  modelName: string;
+  selection: EvalModelSelection;
   modelVersion: string;
   outputDir: string;
   runType: "pilot" | "full";
@@ -69,13 +70,14 @@ export async function runAblation(opts: RunOptions): Promise<Scorecard> {
     model,
     grader,
     loadTasks,
+    selection,
     trials,
     outputDir,
     onProgress,
   } = opts;
 
   const runId = randomUUID();
-  const allTrials: EvalTrialResult[] = [];
+  const allTrials: (EvalTrialResult & EvalModelSelection)[] = [];
   const allTraces: TurnTrace[] = [];
   const log = onProgress ?? (() => {});
 
@@ -99,7 +101,7 @@ export async function runAblation(opts: RunOptions): Promise<Scorecard> {
             tasks[0]!.toolSpecs,
             condition.neverExpose(tasks[0]!),
             model,
-            { maxInferenceLoops: definition.maxInferenceLoops },
+            { maxInferenceLoops: definition.maxInferenceLoops, selection },
           );
           await batchedAgent.start();
         }
@@ -112,7 +114,7 @@ export async function runAblation(opts: RunOptions): Promise<Scorecard> {
                   task.toolSpecs,
                   condition.neverExpose(task),
                   model,
-                  { maxInferenceLoops: definition.maxInferenceLoops },
+                  { maxInferenceLoops: definition.maxInferenceLoops, selection },
                 );
 
             if (!condition.staticPerCohort) await agent.start();
@@ -144,6 +146,7 @@ export async function runAblation(opts: RunOptions): Promise<Scorecard> {
                   allTraces.push(result.trace);
                   const domains = [...new Set(task.toolSpecs.map((s) => s.domain))];
                   allTrials.push({
+                    ...selection,
                     run_id: runId,
                     eval_id: definition.eval_id,
                     eval_name: definition.eval_name,
@@ -152,7 +155,8 @@ export async function runAblation(opts: RunOptions): Promise<Scorecard> {
                     task_id: task.id,
                     seed: task.seed,
                     trial,
-                    passed: gradeResult.passed,
+                    passed: result.success && gradeResult.passed,
+                    ...(!result.success && { error: result.error?.message ?? result.errorResponse ?? result.status }),
                     expected_tool: task.expectedTool,
                     actual_tools: toolCallNames,
                     catalog_domains: domains,
@@ -162,10 +166,11 @@ export async function runAblation(opts: RunOptions): Promise<Scorecard> {
                     cost_usd: totalCost,
                   });
 
-                  process.stdout.write(gradeResult.passed ? "." : "x");
+                  process.stdout.write(result.success && gradeResult.passed ? "." : "x");
                 } catch (err) {
                   const elapsed = Date.now() - start;
                   allTrials.push({
+                    ...selection,
                     run_id: runId,
                     eval_id: definition.eval_id,
                     eval_name: definition.eval_name,
@@ -185,7 +190,7 @@ export async function runAblation(opts: RunOptions): Promise<Scorecard> {
                     error: err instanceof Error ? err.message : String(err),
                   });
                   const errMsg = err instanceof Error ? err.message : String(err);
-              process.stderr.write(`\n  ERROR [${task.id} trial ${trial}]: ${errMsg}\n`);
+                  process.stderr.write(`\n  ERROR [${task.id} trial ${trial}]: ${errMsg}\n`);
                 }
               }
             } finally {
@@ -209,7 +214,8 @@ export async function runAblation(opts: RunOptions): Promise<Scorecard> {
     treatmentConditionId: opts.treatmentConditionId,
     k: trials,
     frameworkVersion: opts.frameworkVersion,
-    model: opts.modelName,
+    model: selection.model,
+    toolChoice: selection.tool_choice,
     modelVersion: opts.modelVersion,
     datasetSnapshot,
     runType: opts.runType,

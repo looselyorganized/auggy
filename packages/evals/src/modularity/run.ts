@@ -2,30 +2,27 @@
  * Modularity-accuracy eval (Eval 1).
  *
  * Tests whether a focused agent outperforms a loaded agent on matched tasks.
- * Boots 3 real agents from YAML configs with different augment loads,
+ * Boots 4 real agents from YAML configs with different augment loads,
  * runs identical webFetch tasks on each, compares tool-selection accuracy.
  *
  * Usage:
- *   bun run evals/modularity/run.ts              # full pass^3
- *   bun run evals/modularity/run.ts --pilot      # pilot: 10 tasks, 1 seed, 1 trial
+ *   bun run packages/evals/src/modularity/run.ts              # full pass^3
+ *   bun run packages/evals/src/modularity/run.ts --pilot      # pilot: 10 tasks, 1 seed, 1 trial
  */
 
-import { resolve, dirname } from "node:path";
+import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { parseConfig } from "auggy/internal/cli/config-parser";
-import { resolveEngine } from "auggy/internal/cli/engine-resolver";
-import { resolveAugments } from "auggy/internal/cli/augment-resolver";
-import { defineAgent } from "auggy";
-import type { AgentConfig, AgentHandle, TurnTrigger, TurnTrace } from "auggy";
-import type { EvalTrialResult } from "../harness/types";
+import type { TurnTrigger, TurnTrace } from "auggy";
+import { bootModularityAgent } from "./boot-agent";
+import { parseEvalArgs } from "../harness/model-selection";
+import type { EvalTrialResult, EvalModelSelection } from "../harness/types";
 import { exactToolMatch } from "../alara/graders/exact-tool-match";
 import { generateModularityTasks } from "./tasks";
 import { modularityDefinition, modularityPilotDefinition } from "./definition";
-import { buildScorecard, formatScorecardYaml } from "../harness/scorecard";
 import { aggregateMetrics, printMetricsSummary } from "../harness/metrics";
 
-const isPilot = process.argv.includes("--pilot");
+const { pilot: isPilot, model: override } = parseEvalArgs(process.argv.slice(2));
 const definition = isPilot ? modularityPilotDefinition : modularityDefinition;
 const trials = isPilot ? 1 : 3;
 const seeds = definition.seeds;
@@ -48,34 +45,6 @@ console.log(`  Seeds: [${seeds.join(", ")}]`);
 console.log(`  Trials (k): ${trials}`);
 console.log();
 
-async function bootAgent(configPath: string): Promise<{
-  agent: AgentHandle;
-  modelId: string;
-  toolCount: number;
-}> {
-  const parsed = parseConfig(configPath);
-  const agentDir = dirname(resolve(configPath));
-  const headlessConfigs = parsed.augments.filter((a) => a.type !== "webTransport");
-  const model = await resolveEngine(parsed.engine, agentDir);
-  const augments = await resolveAugments(headlessConfigs, agentDir, { agentId: parsed.id });
-
-  const agentConfig: AgentConfig = {
-    name: parsed.name,
-    purpose: parsed.purpose,
-    model: parsed.engine.model,
-    augments,
-    compactionStrategy: parsed.settings.compactionStrategy,
-    maxInferenceLoops: 1,
-    toolChoice: "any",
-  };
-
-  const agent = defineAgent(agentConfig, model);
-  await agent.start();
-
-  const toolCount = agent.card().skills?.length ?? 0;
-  return { agent, modelId: parsed.engine.model, toolCount };
-}
-
 function makeTrigger(prompt: string): TurnTrigger {
   return {
     type: "message",
@@ -92,13 +61,14 @@ function makeTrigger(prompt: string): TurnTrigger {
 }
 
 const runId = randomUUID();
-const allTrials: EvalTrialResult[] = [];
+const allTrials: (EvalTrialResult & EvalModelSelection)[] = [];
 const allTraces: TurnTrace[] = [];
 const perConfigTraces: Record<string, TurnTrace[]> = {};
 
 for (const config of AGENT_CONFIGS) {
   console.log(`\n--- ${config.id} ---`);
-  const { agent, modelId, toolCount } = await bootAgent(config.path);
+  const { agent, selection, toolCount } = await bootModularityAgent(config.path, override);
+  console.log(`  Model: ${selection.provider}/${selection.model} (tool choice: ${selection.tool_choice})`);
   console.log(`  Tools exposed: ${toolCount}`);
   perConfigTraces[config.id] = [];
 
@@ -134,6 +104,7 @@ for (const config of AGENT_CONFIGS) {
             );
 
             allTrials.push({
+              ...selection,
               run_id: runId,
               eval_id: 1,
               eval_name: "modularity-accuracy",
@@ -142,7 +113,8 @@ for (const config of AGENT_CONFIGS) {
               task_id: task.id,
               seed: task.seed,
               trial,
-              passed: grade.passed,
+              passed: result.success && grade.passed,
+              ...(!result.success && { error: result.error?.message ?? result.errorResponse ?? result.status }),
               expected_tool: task.expectedTool,
               actual_tools: toolCallNames,
               latency_ms: elapsed,
@@ -151,12 +123,13 @@ for (const config of AGENT_CONFIGS) {
               cost_usd: totalCost,
             });
 
-            process.stdout.write(grade.passed ? "." : "x");
+            process.stdout.write(result.success && grade.passed ? "." : "x");
           } catch (err) {
             const elapsed = Date.now() - start;
             const errMsg = err instanceof Error ? err.message : String(err);
             process.stderr.write(`\n  ERROR [${task.id} trial ${trial}]: ${errMsg}\n`);
             allTrials.push({
+              ...selection,
               run_id: runId,
               eval_id: 1,
               eval_name: "modularity-accuracy",
