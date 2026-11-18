@@ -329,7 +329,7 @@ Caddy forwards headers by default, so no explicit header passthrough directive i
 **Bot does not respond to messages**
 
 - Verify `TELEGRAM_BOT_TOKEN` is set and correct (`auggy status` shows whether the agent is running).
-- In polling mode, check agent logs for `[telegram-transport.polling] getUpdates error` — this indicates the token is invalid or the Telegram API is unreachable.
+- In polling mode, check the HTTP status in the `[telegram-transport.polling] getUpdates error` warning. After a 502, Auggy retries the same pending update offset after five seconds by default. Shutdown interrupts the wait. If 502s persist, check upstream availability and connectivity.
 - Confirm your Telegram user ID is in `creatorUserIds` (or the appropriate list). Creator trust is granted only in private chats by default. If the ID is wrong, or the message arrives from a group/supergroup/channel, your messages are resolved as public and may be budget-capped or capability-restricted.
 - Confirm the bot has not been blocked or deleted via @BotFather.
 

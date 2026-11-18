@@ -8,8 +8,20 @@ import {
 
 // Standard global API USD per million tokens, verified against:
 // https://platform.claude.com/docs/en/about-claude/pricing
-// Cache rates: write = 1.25× input, read = 0.1× input (per Anthropic docs).
+// Listed write rates cover 5m. Read rates vary by model.
 const TABLE: Record<string, Pricing> = {
+  "claude-fable-5-2": {
+    inputUsdPerMtok: 8,
+    outputUsdPerMtok: 40,
+    cacheReadUsdPerMtok: 0.2,
+    cacheWriteUsdPerMtok: 10,
+  },
+  "claude-opus-5": {
+    inputUsdPerMtok: 5,
+    outputUsdPerMtok: 25,
+    cacheReadUsdPerMtok: 0.5,
+    cacheWriteUsdPerMtok: 6.25,
+  },
   "claude-fable-5": {
     inputUsdPerMtok: 10.0,
     outputUsdPerMtok: 50.0,
@@ -101,8 +113,10 @@ export function priceAnthropicResponse(
   override: Pricing | undefined,
   usage: AnthropicUsage,
 ): CostResult {
-  // Discriminator gate: TTL breakdown present → unpriced.
+  const splitWrites = model === "claude-fable-5-2" || model === "claude-opus-5";
+  // Older entries do not model distinct write lifetimes.
   if (
+    !splitWrites &&
     usage.cache_creation &&
     (usage.cache_creation.ephemeral_5m_input_tokens ||
       usage.cache_creation.ephemeral_1h_input_tokens)
@@ -126,6 +140,30 @@ export function priceAnthropicResponse(
     return { priced: false, reason: `anthropic: no pricing entry for model "${model}"` };
   }
 
+  if (splitWrites) {
+    const writes = usage.cache_creation_input_tokens ?? 0;
+    const reads = usage.cache_read_input_tokens ?? 0;
+    const short = usage.cache_creation?.ephemeral_5m_input_tokens ?? 0;
+    const long = usage.cache_creation?.ephemeral_1h_input_tokens ?? 0;
+    if (
+      ![usage.input_tokens, usage.output_tokens, writes, reads, short, long].every(
+        (value) => Number.isSafeInteger(value) && value >= 0,
+      ) ||
+      short + long !== writes ||
+      (writes && rates.cacheWriteUsdPerMtok === undefined) ||
+      (reads && rates.cacheReadUsdPerMtok === undefined)
+    ) {
+      return { priced: false, reason: "anthropic: incomplete cache usage or pricing" };
+    }
+    const cost = computeCostUsd(rates, {
+      inputTokens: usage.input_tokens,
+      outputTokens: usage.output_tokens,
+      cacheCreationTokens: short,
+      cacheReadTokens: reads,
+    });
+    const longRate = override ? (rates.cacheWriteUsdPerMtok ?? 0) : rates.inputUsdPerMtok * 2;
+    return { priced: true, costUsd: cost + (long * longRate) / 1_000_000 };
+  }
   const costUsd = computeCostUsd(rates, {
     inputTokens: usage.input_tokens,
     outputTokens: usage.output_tokens,

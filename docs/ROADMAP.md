@@ -123,12 +123,12 @@ at `f3db4a4f` after all 28 PR checks and independent hosted review passed. Its
 [execution plan](./plans/milestone-5-execution-2026-11-13.md),
 [task ledger](./plans/milestone-5-tasks.json) and
 [final review](./plans/milestone-5-final-review-2026-11-17.md) preserve the scope
-and evidence. Milestone 6 is implemented in
-[PR #231](https://github.com/looselyorganized/auggy/pull/231), with local acceptance
-recorded in the [execution/ownership map](./plans/milestone-6-execution-ownership-map-2026-11-17.md).
-A newly reviewed picomatch advisory now blocks the post-merge M5 and M6 workspace
-audits; the [release plan](./plans/release-0.6.0-the-tree-2026-08-18.md) records this
-external dependency gate. M6 is not merged and 0.6 is not published.
+and evidence. Milestone 6 merged at `980486ed` after all 28 checks passed.
+[PR #231](https://github.com/looselyorganized/auggy/pull/231) and the
+[execution/ownership map](./plans/milestone-6-execution-ownership-map-2026-11-17.md)
+document the supported edits. The v0.6 feature freeze includes the provider and
+eval fixes through main `cad5460b`. The [release plan](./plans/release-0.6.0-the-tree-2026-08-18.md)
+records the candidate gates and the time-limited workspace audit exception.
 
 | Milestone | Outcome | Exit gate |
 |---|---|---|

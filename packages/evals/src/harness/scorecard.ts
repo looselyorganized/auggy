@@ -70,6 +70,7 @@ export function buildScorecard(opts: {
   frameworkVersion: string;
   model: string;
   modelVersion: string;
+  toolChoice?: Scorecard["tool_choice"];
   datasetSnapshot: string;
   runType: "pilot" | "full";
 }): Scorecard {
@@ -119,6 +120,7 @@ export function buildScorecard(opts: {
     harness_version: "0.1.0",
     model: opts.model,
     model_version: opts.modelVersion,
+    ...(opts.toolChoice && { tool_choice: opts.toolChoice }),
     dataset: `alara-synthetic-${definition.sweep.join("-")}`,
     dataset_snapshot: opts.datasetSnapshot,
     seed: definition.seeds,
@@ -147,8 +149,9 @@ export function formatScorecardYaml(sc: Scorecard): string {
   add(`framework_version: ${sc.framework_version}`);
   add(`harness: ${sc.harness}`);
   add(`harness_version: ${sc.harness_version}`);
-  add(`model: ${sc.model}`);
-  add(`model_version: ${sc.model_version}`);
+  add(`model: ${JSON.stringify(sc.model)}`);
+  add(`model_version: ${JSON.stringify(sc.model_version)}`);
+  if (sc.tool_choice) add(`tool_choice: ${sc.tool_choice}`);
   add(`dataset: ${sc.dataset}`);
   add(`dataset_snapshot: ${sc.dataset_snapshot}`);
   add(`seed: [${sc.seed.join(", ")}]`);

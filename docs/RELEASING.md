@@ -39,8 +39,8 @@ the authority for release state.
 
 The next target is `0.6.0`, covering inspectable applications and portable
 self-hosting. Its current gates are recorded in the
-[0.6 release plan](./plans/release-0.6.0-the-tree-2026-08-18.md). M5 has merged;
-M6 and the dedicated release PR must pass their gates before publication. The release maintainer
+[0.6 release plan](./plans/release-0.6.0-the-tree-2026-08-18.md). M5 and M6 have merged.
+The release PR integrates frozen main `cad5460b` for candidate verification. The release maintainer
 owns the temporary workspace exception for GHSA-fc5q-39xc-vjpf (picomatch
 4.0.5), expiring December 1, 2026 at 23:59 UTC. Check npm and the advisory by
 expiry. Remove the exception when the fixed dependency passes the console build

@@ -102,6 +102,7 @@ export type {
   KernelEventHandler,
   // Model
   ModelClient,
+  ModelToolExchange,
   ModelResponse,
   ModelResponseLimits,
   ModelDelta,

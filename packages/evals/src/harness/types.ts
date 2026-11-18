@@ -1,4 +1,8 @@
-import type { TaskState } from "auggy/internal/types";
+export interface EvalModelSelection {
+  provider: string;
+  model: string;
+  tool_choice: "any" | "auto";
+}
 
 export interface ToolSpec {
   name: string;
@@ -35,7 +39,8 @@ export interface EvalDefinition {
   maxInferenceLoops: number;
 }
 
-export interface EvalTrialResult {
+/** Historical rows predate selection metadata. New runs record all three fields. */
+export interface EvalTrialResult extends Partial<EvalModelSelection> {
   run_id: string;
   eval_id: number;
   eval_name: string;
@@ -78,6 +83,7 @@ export interface Scorecard {
   harness_version: string;
   model: string;
   model_version: string;
+  tool_choice?: EvalModelSelection["tool_choice"];
   dataset: string;
   dataset_snapshot: string;
   seed: number[];

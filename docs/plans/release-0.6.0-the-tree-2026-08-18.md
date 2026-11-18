@@ -1,12 +1,12 @@
 # Release 0.6.0 — inspectable agent applications
 
-Status: milestones 1–5 are merged. M5 merged as `f3db4a4f` through
-[PR #230](https://github.com/looselyorganized/auggy/pull/230). M6 is implemented
-and locally verified in [PR #231](https://github.com/looselyorganized/auggy/pull/231),
-awaiting its merge gates. Version/documentation preparation is isolated on
-`release/0.6.0`; no 0.6 package or tag has been published.
+Milestones 1–6 have merged. M5 landed at `f3db4a4f` and M6 at `980486ed`.
+[PR #230](https://github.com/looselyorganized/auggy/pull/230) and
+[PR #231](https://github.com/looselyorganized/auggy/pull/231) record their acceptance.
+The v0.6 release branch integrates frozen main `cad5460b`, including the
+AgentMail, Telegram, provider, and eval patches.
 Worktree retirement remains deferred for preservation review.
-Revised: 2026-11-17. Governing direction: [Roadmap](../ROADMAP.md).
+Revised: 2026-11-18. Governing direction: [Roadmap](../ROADMAP.md).
 Keep the exception record through patch verification, including after 0.6.0 ships.
 
 This replaces the earlier instruction to merge Central YAML worktree B. Both
@@ -19,7 +19,7 @@ worktree test counts are not evidence about main.
   [picomatch exception](#temporary-console-build-dependency-exception).
   Installed-agent audits must pass with zero findings.
 - The [v0.6 release candidate](https://github.com/looselyorganized/auggy/pull/232)
-  targets main. After M6 merges, verify the candidate against accepted main,
+  targets main. Verify the candidate against the frozen main revision,
   including artifact checks and registry admission for all six packages.
 - Certify a fresh v0.6 installation and selection of its project-local runtime.
   The separate foundation rehearsal supplies candidate-bound workspace and Link evidence.

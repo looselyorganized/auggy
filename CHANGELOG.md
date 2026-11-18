@@ -7,13 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-11-17
+## [0.6.0] - 2026-11-18
 
 Inspectable agent applications: own startup, request handling and turn
 orchestration while Auggy maintains guarded execution and lifecycle operations.
 
 ### Added
 
+- **Direct provider models.** The CLI supports GPT-6.2 Astra and Sol through
+  OpenAI and Claude Fable 5.2 and Opus 5 through Anthropic, including tool
+  turns and cache-aware pricing. ALARA and modularity evals accept
+  `--model claude-fable-5-2` and record automatic tool selection.
 - **Visible execution.** Generated `src/main.ts` performs configuration, model,
   augment and agent assembly before binding transports and starting the host.
   `src/http.ts` exposes the conversation endpoint; `src/turn.ts` contains the
@@ -41,6 +45,17 @@ orchestration while Auggy maintains guarded execution and lifecycle operations.
 
 ### Fixed
 
+- **AgentMail recovery status.** Successful inbound catch-up clears its prior
+  degraded warning without hiding unresolved processing or notification failures.
+  Late responses after shutdown and older catch-up attempts cannot overwrite
+  newer health state.
+- **AgentMail diagnostics.** Inbound failure and recovery logs include bounded,
+  sanitized operation and provider metadata without logging credentials or mail
+  content. Provider error classifications and retry policies are unchanged.
+- **Telegram polling.** HTTP 502 responses enter the polling retry path before
+  the adapter attempts to decode updates.
+- **OpenRouter selection.** The model picker, scaffold, and pricing lookup
+  use published router IDs.
 - **Managed lifecycle.** Assembly stages enforce ordering, host ownership and
   cleanup after startup failures. Selected HTTP mounts reject conflicting
   augment routes before registration.

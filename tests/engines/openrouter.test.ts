@@ -606,10 +606,10 @@ describe("createOpenRouterEngine — costUsd", () => {
   });
 
   test("routes-to-anthropic slug populates costUsd", async () => {
-    // anthropic/claude-sonnet-4-6 → lookupPricing("anthropic", "claude-sonnet-4-6")
+    // anthropic/claude-sonnet-4.6 → lookupPricing("anthropic", "claude-sonnet-4-6")
     // $3.00/Mtok in, $15.00/Mtok out; 200 in + 100 out → 0.0006 + 0.0015 = 0.0021 USD
-    nextResponse = mockCompletionWithTokens(200, 100, "anthropic/claude-sonnet-4-6");
-    const engine = createOpenRouterEngine({ model: "anthropic/claude-sonnet-4-6" });
+    nextResponse = mockCompletionWithTokens(200, 100, "anthropic/claude-sonnet-4.6");
+    const engine = createOpenRouterEngine({ model: "anthropic/claude-sonnet-4.6" });
     const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(result.costUsd).toBeGreaterThan(0);
     expect(result.costUsd).toBeCloseTo(0.0021, 8);
@@ -653,11 +653,11 @@ describe("createOpenRouterEngine — costUsd", () => {
   });
 
   test("costOverride takes precedence over slug-routed pricing-table entry", async () => {
-    // anthropic/claude-sonnet-4-6 resolves to $3/$15 in the table; costOverride wins ($2/$6)
+    // anthropic/claude-sonnet-4.6 resolves to $3/$15 in the table; costOverride wins ($2/$6)
     // 600 input + 300 output → (600/1e6)*2 + (300/1e6)*6 = 0.0012 + 0.0018 = 0.003
-    nextResponse = mockCompletionWithTokens(600, 300, "anthropic/claude-sonnet-4-6");
+    nextResponse = mockCompletionWithTokens(600, 300, "anthropic/claude-sonnet-4.6");
     const engine = createOpenRouterEngine({
-      model: "anthropic/claude-sonnet-4-6",
+      model: "anthropic/claude-sonnet-4.6",
       costOverride: { inputUsdPerMtok: 2, outputUsdPerMtok: 6 },
     });
     const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));

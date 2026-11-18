@@ -8,7 +8,7 @@ import type {
   ModelClient,
   Tool,
 } from "auggy/internal/types";
-import type { ToolSpec } from "./types";
+import type { EvalModelSelection, ToolSpec } from "./types";
 
 function specToTool(spec: ToolSpec): Tool<unknown> {
   return {
@@ -27,7 +27,7 @@ export function buildEvalAgent(
   toolSpecs: ToolSpec[],
   neverExpose: string[],
   model: ModelClient,
-  opts?: { maxInferenceLoops?: number },
+  opts?: { maxInferenceLoops?: number; selection?: EvalModelSelection },
 ): AgentHandle {
   const tools = toolSpecs.map(specToTool);
 
@@ -45,10 +45,10 @@ export function buildEvalAgent(
   const config: AgentConfig = {
     name: "alara-eval-agent",
     purpose: "ALARA structural-omission ablation eval",
-    model: "eval",
+    model: opts?.selection?.model ?? "eval",
     augments: [evalAugment],
     maxInferenceLoops: opts?.maxInferenceLoops ?? 1,
-    toolChoice: "any",
+    toolChoice: opts?.selection?.tool_choice ?? "any",
   };
 
   return defineAgent(config, model);
