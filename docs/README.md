@@ -153,6 +153,7 @@ current reference document explicitly promotes a behavior.
 
 ## Operations
 
+- [M6 Execution and Ownership Map](./plans/milestone-6-execution-ownership-map-2026-11-17.md)
 - [OSS Production Release Plan](./plans/production-readiness-roadmap-2026-07-24.md)
 - [Telegram Latency and Cross-Channel Context Plan](./plans/telegram-latency-and-cross-channel-context-2026-08-13.md)
 - [Activity Index Architecture](./plans/activity-index-architecture-2026-08-13.md)

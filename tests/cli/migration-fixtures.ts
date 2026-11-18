@@ -45,7 +45,7 @@ export function installRuntime(project: string) {
     engines: { bun: ">=1.3.14" },
     bin: { auggy: "src/cli/index.ts" },
     exports: { "./application": "./src/application/index.ts" },
-    auggyRuntime: { schemaVersion: 1, launcherProtocol: 1, applicationContracts: [1] },
+    auggyRuntime: { schemaVersion: 1, launcherProtocol: 1, applicationContracts: [1, 2] },
   };
   put(
     join(project, "package.json"),

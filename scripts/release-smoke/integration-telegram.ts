@@ -396,10 +396,10 @@ export async function runTelegramIntegration(options: TelegramIntegrationOptions
     checks.push("missing-overlay-rejected-before-launch");
     overlay = prepareTelegramFixtureOverlay(consumer);
     changes.push(...overlay.changes);
-    const startupSource = readIntegrationFile(consumer, "src/index.ts", 32_768).toString("utf8");
+    const startupSource = readIntegrationFile(consumer, "src/main.ts", 32_768).toString("utf8");
     writeSource(
       consumer,
-      "src/index.ts",
+      "src/main.ts",
       startupSource.replace(TELEGRAM_FIXTURE_INSTALL_MARKER, "wrong-fixture-marker"),
     );
     let markerRejected = false;
@@ -408,7 +408,7 @@ export async function runTelegramIntegration(options: TelegramIntegrationOptions
     } catch {
       markerRejected = true;
     }
-    writeSource(consumer, "src/index.ts", startupSource);
+    writeSource(consumer, "src/main.ts", startupSource);
     check(markerRejected && events().length === 0, "Wrong fixture marker did not fail closed");
     checks.push("wrong-overlay-marker-rejected-before-launch");
 

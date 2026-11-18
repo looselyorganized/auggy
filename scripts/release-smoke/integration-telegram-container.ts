@@ -140,14 +140,14 @@ export function prepareTelegramContainerFixtures(consumer: string) {
     target: "src/augments/telegram-proof/index.ts",
     targetSHA256: applicationHash(lifecycle),
   });
-  const before = readIntegrationFile(consumer, "src/index.ts", 32_768);
+  const before = readIntegrationFile(consumer, "src/main.ts", 32_768);
   const main = before.toString("utf8");
   check(
     main.split(MAIN).length === 2 && !main.includes("TelegramFixture"),
     "Unexpected generated Telegram entrypoint",
   );
   put(
-    "src/index.ts",
+    "src/main.ts",
     `import { installTelegramFixtureNetwork } from "./fixtures/telegram-network";\nimport { startContainerTelegramFixture } from "./fixtures/telegram-container-startup";\n${main.replace(MAIN, `${MAIN}\n${INSTALL}`)}`,
     "fixture-overlay",
     before,
@@ -166,7 +166,7 @@ export function assertTelegramContainerFixtures(consumer: string, files: readonl
       applicationHash(readIntegrationFile(consumer, file.path, 256 * 1024)) === file.sha256,
       "Container fixture source hash changed",
     );
-  const startup = readIntegrationFile(consumer, "src/index.ts", 32_768).toString("utf8");
+  const startup = readIntegrationFile(consumer, "src/main.ts", 32_768).toString("utf8");
   check(
     startup.includes(`${MAIN}\n${INSTALL}\n`) && startup.split(INSTALL).length === 2,
     "Container fixture installation must be first in generated main",

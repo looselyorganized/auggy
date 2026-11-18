@@ -22,7 +22,7 @@ export const INTEGRATION_LIMITS = Object.freeze({
 /** Only these explicit fixture overlays may change the generated inputs. */
 export const INTEGRATION_OVERLAYS = Object.freeze({
   telegramNetwork: "src/fixtures/telegram-network.ts",
-  telegramStartup: "src/index.ts",
+  telegramStartup: "src/main.ts",
   applicationSessionAdapter: "src/server/session-adapter.ts",
 } as const);
 

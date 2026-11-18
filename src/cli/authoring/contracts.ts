@@ -103,7 +103,7 @@ export interface MutationPlan extends MutationPlanInput {
 
 export interface ApplicationDeclaration {
   readonly entrypoint: string;
-  readonly contractVersion: 1;
+  readonly contractVersion: 1 | 2;
 }
 
 export type DocumentEdit =
@@ -266,8 +266,8 @@ export interface GeneratedApplicationFile {
 
 export interface ApplicationScaffoldPlan {
   readonly application: {
-    readonly entrypoint: "./src/index.ts";
-    readonly contractVersion: 1;
+    readonly entrypoint: "./src/main.ts";
+    readonly contractVersion: 2;
   };
   readonly files: readonly GeneratedApplicationFile[];
   readonly packageFields: {

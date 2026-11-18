@@ -23,7 +23,11 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000) {
   }
 }
 
-async function checkRunner(scenario: string, hook: "complete" | "reject" | "pending") {
+async function checkRunner(
+  scenario: string,
+  hook: "complete" | "reject" | "pending",
+  assembly = "adapter",
+) {
   const project = mkdtempSync(join(tmpdir(), "auggy-runner-test-"));
   const id = `aug1_${crypto.randomUUID()}`;
   const registry = { auggyDir: join(project, "registry") };
@@ -47,13 +51,19 @@ export default () => ({ name: "resource", onBoot: async () => {}, onShutdown: as
     stringify({
       id,
       name: "runner-test",
-      application: { entrypoint: "./entry.ts", contractVersion: 1 },
+      application: { entrypoint: "./entry.ts", contractVersion: assembly === "phased" ? 2 : 1 },
       engine: { provider: "anthropic", model: "fixture" },
       augments: [{ name: "resource", type: "custom", source: "./resource.ts" }],
     }),
   );
   const child = Bun.spawn(
-    [process.execPath, join(repo, "tests/fixtures/application-runner-child.ts"), project, scenario],
+    [
+      process.execPath,
+      join(repo, "tests/fixtures/application-runner-child.ts"),
+      project,
+      scenario,
+      assembly,
+    ],
     {
       cwd: project,
       env: { PATH: process.env.PATH, HOME: project, ANTHROPIC_API_KEY: "test-only-never-sent" },
@@ -124,4 +134,15 @@ test(
   "runner's 15 second observation limit retains live cleanup claims before forcing exit one",
   () => checkRunner("until-shutdown", "pending"),
   25000,
+);
+
+test(
+  "phased launch remains owned by the runner through managed signal cleanup",
+  () => checkRunner("until-shutdown", "complete", "phased"),
+  10000,
+);
+test(
+  "phased launch startup failure closes its assembled runtime and exits one",
+  () => checkRunner("startup-throw", "complete", "phased"),
+  10000,
 );

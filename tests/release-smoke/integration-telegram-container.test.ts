@@ -24,9 +24,9 @@ const project = () => {
   directories.push(directory);
   mkdirSync(join(directory, "src"));
   writeFileSync(
-    join(directory, "src/index.ts"),
+    join(directory, "src/main.ts"),
     readFileSync(
-      new URL("../../src/scaffold-templates/application/src/index.ts.template", import.meta.url),
+      new URL("../../src/scaffold-templates/application/src/main.ts.template", import.meta.url),
     ),
   );
   return directory;
@@ -43,7 +43,7 @@ const poll = (offset: number | null, updateIds: number[]): TelegramJournalEvent 
 describe("polling container fixture preparation - not Docker acceptance", () => {
   test("preserves generated host and records exact copied fixture source hashes", () => {
     const root = project();
-    const original = readFileSync(join(root, "src/index.ts"), "utf8");
+    const original = readFileSync(join(root, "src/main.ts"), "utf8");
     const fixture = prepareTelegramContainerFixtures(root);
     expect(fixture.files).toHaveLength(7);
     expect(fixture.copies).toHaveLength(5);
@@ -55,7 +55,7 @@ describe("polling container fixture preparation - not Docker acceptance", () => 
       (copy) => copy.target === "src/fixtures/telegram-provider.ts",
     )!;
     expect(provider.sourceSHA256).toBe(provider.targetSHA256);
-    const changed = readFileSync(join(root, "src/index.ts"), "utf8");
+    const changed = readFileSync(join(root, "src/main.ts"), "utf8");
     expect(changed).toContain(original.slice(original.indexOf("  // The managed runner")));
     expect(changed).toContain(
       'async (launch) => {\n  installTelegramFixtureNetwork("auggy-telegram-fixture-network-v1", await startContainerTelegramFixture());',

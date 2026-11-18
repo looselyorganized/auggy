@@ -11,7 +11,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { inspectProjectRuntime, parseRuntimeCapabilities } from "../../src/cli/project-runtime";
+import {
+  inspectProjectRuntime,
+  inspectProjectRuntimeMetadata,
+  parseRuntimeCapabilities,
+} from "../../src/cli/project-runtime";
 
 let directory: string;
 let project: string;
@@ -166,8 +170,15 @@ describe("explicit project runtime selection", () => {
     expect(() => inspectProjectRuntime(project, { applicationContract: 1 })).toThrow(
       /does not support application contract 1/,
     );
+    expect(
+      inspectProjectRuntime(project, { applicationContract: 2 }).capabilities?.applicationContracts,
+    ).toEqual([2]);
+    expect(() => inspectProjectRuntime(project, { applicationContract: 3 })).toThrow(
+      /does not support application contract 3/,
+    );
+    updateManifest({ auggyRuntime: { ...capabilities, applicationContracts: [1] } });
     expect(() => inspectProjectRuntime(project, { applicationContract: 2 })).toThrow(
-      /does not support application contract 1/,
+      /does not support application contract 2/,
     );
   });
 
@@ -280,6 +291,21 @@ describe("explicit project runtime selection", () => {
     expect(() => inspectProjectRuntime(project, { applicationContract: 1 })).toThrow(
       /CLI or application export/,
     );
+  });
+
+  test("passive metadata validates a contract-2-only application export without executing it", () => {
+    updateManifest({ auggyRuntime: { ...capabilities, applicationContracts: [2] } });
+    expect(inspectProjectRuntimeMetadata(project).applicationPath).toBe(
+      realpathSync(join(runtime, "src/application.ts")),
+    );
+    updateManifest({ exports: undefined });
+    expect(() => inspectProjectRuntimeMetadata(project)).toThrow(/CLI or application export/);
+    const outside = join(directory, "outside.ts");
+    writeFileSync(outside, "throw new Error('must not execute');\n");
+    symlinkSync(outside, join(runtime, "src/outside.ts"));
+    updateManifest({ exports: { "./application": "./src/outside.ts" } });
+    expect(() => inspectProjectRuntimeMetadata(project)).toThrow(/CLI or application export/);
+    expect(existsSync(join(directory, "executed"))).toBe(false);
   });
 
   test("rejects a package manifest symlink outside the canonical package", () => {

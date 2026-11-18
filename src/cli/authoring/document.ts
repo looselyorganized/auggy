@@ -682,7 +682,7 @@ export function editAuthoringDocument(
       case "set-application": {
         const { entrypoint, contractVersion } = edit.application;
         if (
-          contractVersion !== 1 ||
+          (contractVersion !== 1 && contractVersion !== 2) ||
           typeof entrypoint !== "string" ||
           !entrypoint.startsWith("./") ||
           entrypoint.trim() !== entrypoint ||
@@ -697,7 +697,7 @@ export function editAuthoringDocument(
         )
           fail(
             "invalid-application",
-            "Application contract 1 requires a contained literal project entrypoint.",
+            "Application contracts require a contained literal project entrypoint.",
           );
         const existing = ast.get("application", true);
         if (existing !== undefined) {

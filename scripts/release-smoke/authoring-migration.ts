@@ -560,7 +560,7 @@ export async function runInstalledAuthoringMigration(options: {
         "Migration installed dependencies or changed the lock",
       );
       check(
-        parse(readFileSync(configPath, "utf8")).application?.entrypoint === "./src/index.ts",
+        parse(readFileSync(configPath, "utf8")).application?.entrypoint === "./src/main.ts",
         "Application adoption did not activate owned source",
       );
       await runAuthoringBuild({

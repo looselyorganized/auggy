@@ -5,16 +5,25 @@
 ## Managed applications
 
 For a project with `application.entrypoint`, open that file first. The
-[reference `src/index.ts`](../examples/inspectable-agent/src/index.ts) exports
-`main`, creates a host through `launch.createHost`, awaits `host.prepare()`,
-configures the returned HTTP bindings, then awaits `host.start()`. Its direct
+[reference `src/main.ts`](../examples/inspectable-agent/src/main.ts) exports
+`main` and creates a host through `launch.createHost()`. It awaits
+`prepareConfiguration()`, `createModel(config)` and `createAugments(config)`,
+then calls `createAgent` with those handles, `turnProgram`, and an optional
+`onTurnFinalized` callback.
+It discovers transports with `transportsFrom(augments)`, binds each through
+`bindTransport(transport, agent)`, configures `httpBindings(agent)`, then awaits
+`start({ agent, http })`. These contract-2 calls perform real stages and reject
+handles from another host or invalid ordering. Its direct
 execution guard invokes `runApplication` from the project's `auggy/application`
 dependency; CLI launches import the same named `main`.
 
 The runner registers host cleanup before preparation acquires runtime claims or
-constructs augments. Preparation resolves the YAML graph and invokes the
-application composer. Readiness follows boot, transport registration and listener
-startup. Shutdown closes admission, drains accepted turns, jobs, route handlers
+constructs augments. Configuration preparation resolves the YAML graph and
+admits configured storage; model and augment construction happen only in their
+explicit stages. `main.ts` binds the local turn program and optional
+finalization observer at `createAgent`. Existing contract-1
+`createHost({ compose })` applications keep their compatible `prepare()` entry
+point. Readiness follows boot, transport registration and listener startup. Shutdown closes admission, drains accepted turns, jobs, route handlers
 and response bodies, then closes resources and releases ownership. A deadline
 does not prove cleanup: unresolved work or an incomplete factory with unknown
 resources retains ownership and produces an unsuccessful stop result.

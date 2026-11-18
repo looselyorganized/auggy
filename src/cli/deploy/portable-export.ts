@@ -154,7 +154,7 @@ export function inspectDeploymentSources(document: AuthoringDocument): Deploymen
   if (document.value.application !== undefined) {
     const application = record(document.value.application);
     if (
-      application.contractVersion !== 1 ||
+      (application.contractVersion !== 1 && application.contractVersion !== 2) ||
       Object.keys(application).some((key) => !["contractVersion", "entrypoint"].includes(key))
     )
       fail("Portable export requires a supported application declaration.");

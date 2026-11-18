@@ -194,3 +194,18 @@ describe("renderInfoPage — fallbacks and edge cases", () => {
     expect(html).toContain('<meta name="description" content="Concierge &lt;demo&gt; &amp; co">');
   });
 });
+
+describe("configured conversation mount", () => {
+  it("renders the selected mount consistently on both public pages", () => {
+    for (const render of [renderInfoPage, renderAgentIntegrationPage]) {
+      const html = render(mockCard(), { agentRunPath: "/support/chat" });
+      expect(html).toContain("POST /support/chat");
+      expect(html).not.toContain("/agent/run");
+    }
+  });
+  it("escapes endpoint text supplied to the renderer", () => {
+    expect(renderAgentIntegrationPage(mockCard(), { agentRunPath: "/<script>" })).not.toContain(
+      "/<script>",
+    );
+  });
+});

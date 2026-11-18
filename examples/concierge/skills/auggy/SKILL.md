@@ -309,11 +309,13 @@ are clear. Do not require these scripts when shell access is unavailable.
 ## Project Map
 
 - `agent.yaml`: sole enabled-augment/configuration graph, including inline options
-  and `application.entrypoint: ./src/index.ts`.
-- `src/index.ts`: actual managed startup; start tracing here.
-- `src/agent.ts`: composition using the central declarations and local turn recipe.
+  and `application.entrypoint: ./src/main.ts`.
+- `src/main.ts`: actual managed startup: prepare configuration, create model and
+  augments, call `createAgent` with `turnProgram` and an optional `onTurnFinalized`
+  callback, bind transports, configure HTTP, then start. YAML owns the enabled graph.
 - `src/http.ts`: visible `POST /agent/run`, delegating the original request to the
-  maintained authentication, validation and durable-delivery adapter.
+  maintained authentication, validation and durable-delivery adapter. Its literal
+  mount path is editable; console and metadata follow the selected mount.
 - `src/turn.ts`: prompt, inference, tools, refresh, final answer and exhaustion.
 - `src/augments/<name>/{index.ts,schemas.ts,service.ts}`: project-owned custom
   interfaces and business adapters; tests live in `tests/augments/`.
@@ -326,6 +328,7 @@ are clear. Do not require these scripts when shell access is unavailable.
 - `.auggy/`: private model metadata and operation receipts, excluded from deployment.
 
 Use `auggy inspect` for passive navigation; partial output does not prove readiness.
+Inspection does not execute TypeScript or infer custom HTTP mount paths.
 The `auggy` executable disables Bun environment loading, automatic installation
 and local configuration preloads during inspection. `auggy routes` loads configuration and augment implementations.
 

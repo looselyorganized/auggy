@@ -20,8 +20,7 @@ agent/
   agent.yaml
   package.json
   src/
-    index.ts
-    agent.ts
+    main.ts
     http.ts
     turn.ts
     augments/

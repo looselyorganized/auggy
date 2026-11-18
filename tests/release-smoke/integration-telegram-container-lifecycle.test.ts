@@ -38,9 +38,9 @@ async function fixture(
   const root = mkdtempSync(join(tmpdir(), "m5-telegram-seal-"));
   mkdirSync(join(root, "src"));
   writeFileSync(
-    join(root, "src/index.ts"),
+    join(root, "src/main.ts"),
     readFileSync(
-      new URL("../../src/scaffold-templates/application/src/index.ts.template", import.meta.url),
+      new URL("../../src/scaffold-templates/application/src/main.ts.template", import.meta.url),
     ),
   );
   prepareTelegramContainerFixtures(root);

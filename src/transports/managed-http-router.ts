@@ -1,3 +1,5 @@
+import { RESERVED_PATHS, RESERVED_PREFIXES } from "../kernel/route-collector";
+import { validateLiteralRoutePath } from "../kernel/route-pattern";
 import type {
   ConfiguredWebHttp,
   ManagedHttpHandler,
@@ -27,7 +29,11 @@ export function createManagedHttpRouter(options: {
   fallback(request: Request, connection: HttpConnection): Promise<Response>;
 }) {
   const invocations = new WeakMap<ManagedHttpRequest, Invocation>();
-  const descriptors = new WeakMap<ManagedHttpListener, ManagedHttpHandler>();
+  const descriptors = new WeakMap<
+    ManagedHttpListener,
+    { path: string; handle: ManagedHttpHandler }
+  >();
+  let agentRunPath = "/agent/run";
   let selected: ManagedHttpHandler | undefined;
   let created = false;
   let sealed = false;
@@ -53,14 +59,14 @@ export function createManagedHttpRouter(options: {
       invocation.consumed = true;
       const { request, connection } = invocation;
       if (run) {
-        if (request.method !== "POST" || new URL(request.url).pathname !== "/agent/run") {
+        if (request.method !== "POST" || new URL(request.url).pathname !== agentRunPath) {
           throw new Error("[application-http] agent-run receipt has the wrong route");
         }
         // Application code may discard this promise or throw after delegation.
         // The guarded ingress remains owned until it has actually settled.
         return track(Promise.resolve().then(() => options.agentRun(request, connection)));
       }
-      if (request.method === "POST" && new URL(request.url).pathname === "/agent/run") {
+      if (request.method === "POST" && new URL(request.url).pathname === agentRunPath) {
         return new Response("Not Found", { status: 404 });
       }
       return track(Promise.resolve().then(() => options.fallback(request, connection)));
@@ -69,6 +75,9 @@ export function createManagedHttpRouter(options: {
   const fallback = delegate(false);
   const http: ConfiguredWebHttp = Object.freeze({
     name: options.name,
+    get agentRunPath(): string {
+      return agentRunPath;
+    },
     agentRun,
     fallback,
     createListener(input: Parameters<ConfiguredWebHttp["createListener"]>[0]) {
@@ -80,13 +89,22 @@ export function createManagedHttpRouter(options: {
         !Array.isArray(input.routes) ||
         input.routes.length !== 1 ||
         input.routes[0]?.method !== "POST" ||
-        input.routes[0]?.path !== "/agent/run" ||
         typeof input.routes[0]?.handle !== "function"
       ) {
         throw new Error("[application-http] invalid canonical route or fallback");
       }
+      const route = input.routes[0]!;
+      const pathError = validateLiteralRoutePath(route.path);
+      if (pathError) throw new Error(`[application-http] invalid agent-run path: ${pathError}`);
+      if (
+        route.path !== "/agent/run" &&
+        (RESERVED_PATHS.includes(route.path) ||
+          RESERVED_PREFIXES.some((prefix) => route.path.startsWith(prefix)))
+      ) {
+        throw new Error("[application-http] agent-run path is reserved by webTransport");
+      }
       const listener = Object.freeze({}) as ManagedHttpListener;
-      descriptors.set(listener, input.routes[0].handle);
+      descriptors.set(listener, { path: route.path, handle: route.handle });
       created = true;
       return listener;
     },
@@ -96,6 +114,9 @@ export function createManagedHttpRouter(options: {
 
   return {
     http,
+    get agentRunPath(): string {
+      return agentRunPath;
+    },
     owns(listener: ManagedHttpListener): boolean {
       return descriptors.has(listener);
     },
@@ -109,11 +130,12 @@ export function createManagedHttpRouter(options: {
       draining = false;
     },
     select(listener: ManagedHttpListener): void {
-      const handler = descriptors.get(listener);
-      if (!options.external || sealed || selected || draining || !handler) {
+      const descriptor = descriptors.get(listener);
+      if (!options.external || sealed || selected || draining || !descriptor) {
         throw new Error("[application-http] listener ownership conflict");
       }
-      selected = handler;
+      selected = descriptor.handle;
+      agentRunPath = descriptor.path;
     },
     seal(): void {
       if (!selected || draining) throw new Error("[application-http] missing listener binding");
@@ -148,7 +170,7 @@ export function createManagedHttpRouter(options: {
         invocations.set(receipt, invocation);
         try {
           const handler =
-            request.method === "POST" && new URL(request.url).pathname === "/agent/run"
+            request.method === "POST" && new URL(request.url).pathname === agentRunPath
               ? selected!
               : fallback;
           return await handler(receipt);

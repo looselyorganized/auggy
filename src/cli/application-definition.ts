@@ -20,8 +20,8 @@ export function parseApplicationDeclaration(value: unknown): ApplicationConfig |
   if (Object.keys(block).some((key) => key !== "entrypoint" && key !== "contractVersion")) {
     throw new Error("application: only entrypoint and contractVersion are supported");
   }
-  if (block.contractVersion !== 1) {
-    throw new Error("application.contractVersion: this runtime supports integer contract 1");
+  if (block.contractVersion !== 1 && block.contractVersion !== 2) {
+    throw new Error("application.contractVersion: this runtime supports integer contracts 1 and 2");
   }
   const entrypoint = block.entrypoint;
   if (
@@ -37,7 +37,7 @@ export function parseApplicationDeclaration(value: unknown): ApplicationConfig |
   ) {
     throw new Error("application.entrypoint: must be a literal relative filesystem path");
   }
-  return Object.freeze({ entrypoint, contractVersion: 1 });
+  return Object.freeze({ entrypoint, contractVersion: block.contractVersion });
 }
 
 /**

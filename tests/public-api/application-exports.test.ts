@@ -19,6 +19,6 @@ test("public application and compatibility exports do not expose host admission 
   expect(pkg.auggyRuntime).toEqual({
     schemaVersion: 1,
     launcherProtocol: 1,
-    applicationContracts: [1],
+    applicationContracts: [1, 2],
   });
 });

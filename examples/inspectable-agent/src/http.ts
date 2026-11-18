@@ -7,6 +7,7 @@ export function configureHttp(web: ConfiguredWebHttp) {
     routes: [
       {
         method: "POST",
+        // Change this mount here; authentication and delivery remain in the adapter.
         path: "/agent/run",
         handle: async (request) => {
           // This delegate retains original request identity, auth, limits and SSE.

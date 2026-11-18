@@ -22,12 +22,7 @@ export const AUTHORING_BOUNDS = Object.freeze({
   argumentCharacters: 4_096,
 });
 
-export const AUTHORING_EXECUTION_FILES = [
-  "src/index.ts",
-  "src/agent.ts",
-  "src/http.ts",
-  "src/turn.ts",
-] as const;
+export const AUTHORING_EXECUTION_FILES = ["src/main.ts", "src/http.ts", "src/turn.ts"] as const;
 
 export interface AuthoringArtifactSet {
   core: PackedArtifactInput;
@@ -72,7 +67,7 @@ export interface GeneratedAuthoringConsumer {
 
 export interface GeneratedApplicationRecipe {
   schemaVersion: 1;
-  entrypoint: "src/index.ts";
+  entrypoint: "src/main.ts";
   sourceFiles: readonly string[];
   capability: {
     slug: string;

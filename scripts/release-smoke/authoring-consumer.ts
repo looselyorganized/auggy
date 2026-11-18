@@ -74,7 +74,7 @@ export function selectAuthoringArtifacts(
     specifiers[name] = specifier;
     return artifact;
   });
-  assertApplicationCapability(inspected[0]!.manifest);
+  assertApplicationCapability(inspected[0]!.manifest, 2);
   const specifiersJSON = JSON.stringify(specifiers);
   check(
     Buffer.byteLength(specifiersJSON) <= AUTHORING_BOUNDS.specifiersBytes,
@@ -311,6 +311,7 @@ export const GENERATED_AUTHORING_SOURCE_FILES = [
   "identity.md",
   "learned-behaviors.md",
   "README.md",
+  "AGENTS.md",
   "tsconfig.json",
   "tests/application.test.ts",
   ...AUTHORING_EXECUTION_FILES,
@@ -328,8 +329,8 @@ export function inspectGeneratedAuthoringTree(consumer: string) {
   check(
     record(config) &&
       record(config.application) &&
-      config.application.entrypoint === "./src/index.ts" &&
-      config.application.contractVersion === 1,
+      config.application.entrypoint === "./src/main.ts" &&
+      config.application.contractVersion === 2,
     "Fresh project lacks the owned application declaration",
   );
   check(
@@ -452,11 +453,12 @@ export async function installAuthoringCli(options: {
   name: string;
   evidenceDirectory: string;
   core: AuthoringArtifactSet["core"];
+  applicationContract?: 1 | 2;
 }): Promise<InstalledAuthoringCli & { consumer: string }> {
   check(/^[a-z][a-z0-9-]{0,50}$/.test(options.name), "Invalid CLI carrier name");
   prepareAuthoringWorkspace(options.workspace);
   const core = inspectApplicationArtifact(options.core);
-  assertApplicationCapability(core.manifest);
+  assertApplicationCapability(core.manifest, options.applicationContract ?? 2);
   const consumer = join(options.workspace, options.name);
   mkdirSync(consumer, { mode: 0o700 });
   const raw = core.manifest.overrides;

@@ -160,7 +160,9 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
   const configPath = resolveConfigPath(name, opts.config, { cwd: opts.cwd });
   const definition = readApplicationDefinition(configPath);
   if (definition) {
-    const selected = inspectProjectRuntime(definition.projectDir, { applicationContract: 1 });
+    const selected = inspectProjectRuntime(definition.projectDir, {
+      applicationContract: definition.application.contractVersion,
+    });
     const executingPackage = realpathSync(fileURLToPath(new URL("../../../", import.meta.url)));
     if (selected.packageRoot !== executingPackage) {
       throw new Error(

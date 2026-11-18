@@ -29,9 +29,9 @@ const project = () => {
   temporary.push(root);
   mkdirSync(join(root, "src"));
   writeFileSync(
-    join(root, "src/index.ts"),
+    join(root, "src/main.ts"),
     readFileSync(
-      new URL("../../src/scaffold-templates/application/src/index.ts.template", import.meta.url),
+      new URL("../../src/scaffold-templates/application/src/main.ts.template", import.meta.url),
     ),
   );
   return root;
@@ -49,19 +49,19 @@ describe("Telegram fixture preparation only - not installed acceptance", () => {
     const overlay = prepareTelegramFixtureOverlay(root);
     expect(overlay.changes.map((change) => change.path)).toEqual([
       "src/fixtures/telegram-network.ts",
-      "src/index.ts",
+      "src/main.ts",
     ]);
     expect(() => assertTelegramFixtureOverlay(root, overlay.identity)).not.toThrow();
-    const startup = readFileSync(join(root, "src/index.ts"), "utf8");
+    const startup = readFileSync(join(root, "src/main.ts"), "utf8");
     expect(startup).toContain(
       `async (launch) => {\n  installTelegramFixtureNetwork("${TELEGRAM_FIXTURE_INSTALL_MARKER}");`,
     );
     writeFileSync(
-      join(root, "src/index.ts"),
+      join(root, "src/main.ts"),
       startup.replace("auggy-telegram-fixture-network-v1", "wrong-marker"),
     );
     expect(() => assertTelegramFixtureOverlay(root, overlay.identity)).toThrow();
-    writeFileSync(join(root, "src/index.ts"), startup);
+    writeFileSync(join(root, "src/main.ts"), startup);
     writeFileSync(join(root, "src/fixtures/telegram-network.ts"), "throw new Error('tampered')");
     expect(() => assertTelegramFixtureOverlay(root, overlay.identity)).toThrow();
   });
