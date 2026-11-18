@@ -7,7 +7,7 @@ awaiting its merge gates. Version/documentation preparation is isolated on
 `release/0.6.0`; no 0.6 package or tag has been published.
 Worktree retirement remains deferred for preservation review.
 Revised: 2026-11-17. Governing direction: [Roadmap](../ROADMAP.md).
-Delete this implementation plan when 0.6.0 ships; retain accepted ADRs.
+Keep the exception record through patch verification, including after 0.6.0 ships.
 
 This replaces the earlier instruction to merge Central YAML worktree B. Both
 experimental authoring implementations are salvage sources only. Historical
@@ -18,9 +18,9 @@ worktree test counts are not evidence about main.
 - CI audits the full workspace and records the time-limited
   [picomatch exception](#temporary-console-build-dependency-exception).
   Installed-agent audits must pass with zero findings.
-- Rebase or merge the dedicated version/documentation branch onto accepted M6
-  main, submit the release PR, and verify its exact artifacts and registry-version
-  admission. Coordinate all six published package versions at 0.6.0.
+- The [v0.6 release candidate](https://github.com/looselyorganized/auggy/pull/232)
+  targets main. After M6 merges, verify the candidate against accepted main,
+  including artifact checks and registry admission for all six packages.
 - Run applicable trusted default-branch canaries after merge and before tagging,
   using protected credentials only as described in [RELEASING](../RELEASING.md).
 - The identity/learned-guidance design discussion, separate upgrade campaign
