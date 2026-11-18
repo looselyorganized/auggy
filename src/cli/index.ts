@@ -1,4 +1,8 @@
-#!/usr/bin/env -S bun --no-env-file --no-install --config=/dev/null
+#!/bin/sh
+true || //; exec bun --no-env-file --no-install --config=/dev/null "$0" "$@"
+  false;
+// sh skips the // command and replaces itself with Bun before project config can load.
+// Direct Bun callers see only the boolean expression and enter the same TypeScript module.
 import { createRequire } from "node:module";
 import { dispatchAuthoringCommand } from "./authoring-bootstrap";
 import { authoringCommandHandlers } from "./authoring-command-handlers";
