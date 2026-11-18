@@ -1,6 +1,6 @@
 {
   "name": "@auggy/evals",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Security and memory evaluation suites for Auggy agents, with red-team fixtures, reusable harness primitives, and layered-memory graders.",
   "keywords": [
     "auggy",
@@ -46,7 +46,7 @@
   },
   "private": false,
   "peerDependencies": {
-    "auggy": "^0.6.0"
+    "auggy": "^0.6.1"
   },
   "peerDependenciesMeta": {
     "auggy": {

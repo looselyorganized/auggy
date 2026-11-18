@@ -106,6 +106,28 @@ export function matchesWorkspaceException(stdout: string, lockHash: string, now:
 }
 
 /** Full dependency graph, all severities. Errors are failures, never clean audits. */
+export function acceptsWorkspaceAudit(
+  options: Pick<AuditOptions, "cwd" | "workspaceException">,
+  result: { status: number | null; signal: NodeJS.Signals | null; error?: Error },
+  failure: AuditFailure | null,
+  stdout: string,
+  stderr: string,
+  lockHash: string,
+  now: number,
+): boolean {
+  return (
+    options.workspaceException === true &&
+    resolve(options.cwd) === resolve(import.meta.dir, "..") &&
+    failure === "command-failed" &&
+    result.status === 1 &&
+    !result.signal &&
+    !result.error &&
+    // Bun 1.3.14 writes only its version banner to stderr on an advisory exit.
+    /^bun audit v1\.3\.14 \([a-f0-9]+\)$/.test(stripVTControlCharacters(stderr).trim()) &&
+    matchesWorkspaceException(stdout, lockHash, now)
+  );
+}
+
 export function runDependencyAudit(options: AuditOptions) {
   const timeoutMs = options.timeoutMs ?? 120_000;
   const maxOutputBytes = options.maxOutputBytes ?? 4 * 1024 * 1024;
@@ -152,16 +174,15 @@ export function runDependencyAudit(options: AuditOptions) {
           : inspection.failure;
   if (hash(readFileSync(lockPath)) !== lockfileSHA256) failure = "lockfile-changed";
   const finishedAt = new Date();
-  const acceptedException =
-    options.workspaceException &&
-    resolve(options.cwd) === resolve(import.meta.dir, "..") &&
-    failure === "command-failed" &&
-    result.status === 1 &&
-    !result.signal &&
-    !result.error &&
-    // Bun 1.3.14 writes only its version banner to stderr on an advisory exit.
-    /^bun audit v1\.3\.14 \([a-f0-9]+\)$/.test(stripVTControlCharacters(stderr).trim()) &&
-    matchesWorkspaceException(stdout, lockfileSHA256, finishedAt.getTime());
+  const acceptedException = acceptsWorkspaceAudit(
+    options,
+    result,
+    failure,
+    stdout,
+    stderr,
+    lockfileSHA256,
+    finishedAt.getTime(),
+  );
   if (acceptedException) failure = null;
   const evidence = {
     ...(acceptedException ? { acceptedException: picomatchException } : {}),

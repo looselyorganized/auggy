@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-18
+
+### Fixed
+
+- The published `auggy` CLI now starts on stock Alpine with BusyBox. The launcher
+  passes the existing startup isolation flags to Bun and forwards command arguments.
+
 ## [0.6.0] - 2026-11-18
 
 Inspectable agent applications: own startup, request handling and turn
@@ -964,7 +971,9 @@ Initial tagged release. The kernel and built-in augments described in `docs/02-a
 - **CLI** — `aug1 create / add / dev / start / stop / restart / status` with launchd installation on macOS and PID-manifest tracking under `~/.auggy/`.
 - **Reference documentation** — `docs/01-philosophy.md` through `docs/11-skills.md`.
 
-[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/looselyorganized/auggy/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/looselyorganized/auggy/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/looselyorganized/auggy/compare/v0.4.4...v0.5.0
 [0.5.0-rc.12]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.11...v0.5.0-rc.12
 [0.5.0-rc.11]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.10...v0.5.0-rc.11

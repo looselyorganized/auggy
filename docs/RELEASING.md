@@ -31,16 +31,10 @@ git push origin vX.Y.Z
 
 ## Current release state
 
-Verified on 2026-11-17: npm's `latest` version is `0.5.0` for all six public
-packages; `next` remains `0.5.0-rc.12`. Version `0.6.0` is not published for any
-of them. A release-branch manifest version is preparation, not publication.
-Registry metadata, the corresponding Git tag and the publish workflow remain
-the authority for release state.
-
-The next target is `0.6.0`, covering inspectable applications and portable
-self-hosting. Its current gates are recorded in the
-[0.6 release plan](./plans/release-0.6.0-the-tree-2026-08-18.md). M5 and M6 have merged.
-The release PR integrates frozen main `cad5460b` for candidate verification. The release maintainer
+Read the current stable version from [npm](https://www.npmjs.com/package/auggy)
+and its verified artifacts from [GitHub Releases](https://github.com/looselyorganized/auggy/releases).
+The [0.6.0 release record](https://github.com/looselyorganized/auggy/pull/232)
+covers inspectable applications and portable self-hosting. The release maintainer
 owns the temporary workspace exception for GHSA-fc5q-39xc-vjpf (picomatch
 4.0.5), expiring December 1, 2026 at 23:59 UTC. Check npm and the advisory by
 expiry. Remove the exception when the fixed dependency passes the console build
@@ -195,7 +189,7 @@ minor releases such as `0.6.0`. Run it from a shell/profile that does not have a
 existing Auggy state directory. Do not skip the manual browser checks; this gate
 exists to catch first-run and packaging failures that unit tests miss.
 
-After 0.6.0 is available on npm, repeat the three README Quick Start commands
+After the release is available on npm, repeat the three README Quick Start commands
 from an empty directory with no global Auggy executable. Verify that chat opens
 and Ctrl-C stops the agent.
 

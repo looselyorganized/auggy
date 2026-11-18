@@ -5,8 +5,8 @@ is for, what `1.0.0` means, and the releases between here and there. When any
 other document — plan, ADR, skill, `CLAUDE.md`, changelog prose — disagrees
 with this page, this page wins and the other document is stale.
 
-Status snapshot: latest stable is `0.5.0`, published 2026-08-19 (promoted from
-`0.5.0-rc.12` plus the Railway console fix, #222).
+The 0.6 application layout shipped in [v0.6.0](https://github.com/looselyorganized/auggy/releases/tag/v0.6.0).
+See [GitHub Releases](https://github.com/looselyorganized/auggy/releases) for the latest stable patch.
 `docs/todos.md` remains the operational backlog for bugs and small polish;
 `docs/FEATURES.md` remains the feature/status matrix.
 

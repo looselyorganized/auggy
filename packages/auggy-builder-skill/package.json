@@ -1,6 +1,6 @@
 {
   "name": "@auggy/builder-skill",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Portable Auggy builder skill for coding agents.",
   "license": "Apache-2.0",
   "type": "module",
