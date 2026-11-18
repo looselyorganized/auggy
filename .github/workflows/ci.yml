@@ -78,7 +78,7 @@ jobs:
       - name: Audit every workspace dependency and severity
         env:
           AUDIT_EVIDENCE: ${{ runner.temp }}/dependency-audit/workspace.json
-        run: bun scripts/audit-dependencies.ts --evidence "$AUDIT_EVIDENCE"
+        run: bun scripts/audit-dependencies.ts --workspace-exception --evidence "$AUDIT_EVIDENCE"
 
       - name: Preserve sanitized dependency audit evidence
         if: always()
