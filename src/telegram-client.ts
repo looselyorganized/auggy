@@ -141,10 +141,8 @@ export function createTelegramBotClient(opts: CreateTelegramBotClientOptions): T
         `Telegram bot API ${method} ended without a trustworthy response after dispatch`,
       );
     }
-    // Telegram uses HTTP 409 to report an exclusive getUpdates ownership
-    // conflict. Status is authoritative even when a proxy strips, corrupts, or
-    // contradicts the JSON envelope.
-    if (method === "getUpdates" && res.status === 409) {
+    // Polling quarantines a 409 and retries a 502, even if the body claims success.
+    if (method === "getUpdates" && (res.status === 409 || res.status === 502)) {
       throw new TelegramBotApiError(method, res.status);
     }
     let parsed: unknown;

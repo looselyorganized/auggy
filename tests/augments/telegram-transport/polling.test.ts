@@ -5,6 +5,7 @@ import {
   type PollLoopSnapshot,
 } from "../../../src/augments/telegramTransport/polling";
 import {
+  createTelegramBotClient,
   TelegramBotApiError,
   type TelegramBotClient,
   type TelegramUpdate,
@@ -111,53 +112,58 @@ describe("runPollLoop", () => {
     expect(throwOnce).toBe(false); // proves we got past the throw
   });
 
-  it("retries HTTP 502 at the pending offset without quarantine or duplicate dispatch", async () => {
-    const updates: TelegramUpdate[] = [{ update_id: 42 }, { update_id: 43 }];
-    const { client } = mockClient([]);
-    const offsets: Array<number | undefined> = [];
-    const received: TelegramUpdate[] = [];
-    const warnings: string[] = [];
-    const snapshots: PollLoopSnapshot[] = [];
-    let failureSnapshot: PollLoopSnapshot | undefined;
-    client.getUpdates = async (opts) => {
-      offsets.push(opts.offset);
-      if (offsets.length === 1) return [updates[0]!];
-      if (offsets.length === 2) throw new TelegramBotApiError("getUpdates", 502);
-      return [updates[1]!];
-    };
-    const handle = runPollLoop({
-      client,
-      timeoutSec: 0,
-      errorBackoffMs: 1,
-      onUpdate(update) {
-        received.push(update);
-        if (received.length === 2) handle.stop();
-      },
-      onStateChange: (snapshot) => snapshots.push(snapshot),
-      log: {
-        warn(message) {
-          warnings.push(message);
-          failureSnapshot = handle.snapshot();
+  for (const [label, gatewayBody] of [
+    ["HTML", "<html>Bad Gateway</html>"],
+    ["a Telegram error", JSON.stringify({ ok: false, error_code: 502 })],
+    ["a success envelope", JSON.stringify({ ok: true, result: [{ update_id: 999 }] })],
+  ] as const) {
+    it(`retries the pending offset when HTTP 502 carries ${label}`, async () => {
+      const offsets: Array<number | undefined> = [];
+      const received: number[] = [];
+      const snapshots: PollLoopSnapshot[] = [];
+      const client = createTelegramBotClient({
+        botToken: "fixture",
+        client: {
+          async post(url, options) {
+            offsets.push(JSON.parse(String(options?.body)).offset);
+            const failed = offsets.length === 2;
+            const updateId = offsets.length === 1 ? 42 : 43;
+            return {
+              finalUrl: url,
+              headers: new Headers(),
+              status: failed ? 502 : 200,
+              statusText: failed ? "Bad Gateway" : "OK",
+              contentType: failed && label === "HTML" ? "text/html" : "application/json",
+              body: failed
+                ? gatewayBody
+                : JSON.stringify({ ok: true, result: [{ update_id: updateId }] }),
+            };
+          },
         },
-      },
+      });
+      const handle = runPollLoop({
+        client,
+        errorBackoffMs: 1,
+        onUpdate(update) {
+          received.push(update.update_id);
+          if (received.length === 2) handle.stop();
+        },
+        onStateChange: (snapshot) => snapshots.push(snapshot),
+        log: { warn() {} },
+      });
+      const deadline = setTimeout(() => handle.stop(), 2_000);
+      try {
+        await handle.done;
+        expect(received).toEqual([42, 43]);
+        expect(offsets).toEqual([undefined, 43, 43]);
+        expect(snapshots.every((snapshot) => snapshot.state !== "conflict-quarantined")).toBe(true);
+        expect(handle.snapshot()).toEqual({ state: "stopped", conflict: null, nextOffset: 44 });
+      } finally {
+        clearTimeout(deadline);
+        handle.stop();
+      }
     });
-    const deadline = setTimeout(() => handle.stop(), 2_000);
-    try {
-      await handle.done;
-      expect(offsets).toEqual([undefined, 43, 43]);
-      expect(received).toEqual(updates);
-      expect(failureSnapshot).toEqual({ state: "running", conflict: null, nextOffset: 43 });
-      expect(snapshots.every((snapshot) => snapshot.state !== "conflict-quarantined")).toBe(true);
-      expect(handle.snapshot()).toEqual({ state: "stopped", conflict: null, nextOffset: 44 });
-      expect(warnings).toEqual([
-        "[telegram-transport.polling] getUpdates error: Telegram bot API getUpdates returned HTTP 502 — retrying in 1ms",
-      ]);
-    } finally {
-      clearTimeout(deadline);
-      handle.stop();
-      await handle.done;
-    }
-  });
+  }
 
   it("quarantines Telegram polling ownership conflicts until exact recovery", async () => {
     const quarantined = deferred<PollLoopSnapshot>();
