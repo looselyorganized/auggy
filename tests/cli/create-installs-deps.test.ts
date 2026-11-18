@@ -425,7 +425,7 @@ describe("runCreate invokes bun install in agent dir", () => {
           stderrText: "error: network unreachable\n",
         }),
       }),
-    ).rejects.toThrow("dependencies are not ready");
+    ).rejects.toThrow("dependency installation failed");
 
     const dir = agentDirFor("demo-failsoft");
     expect(existsSync(dir)).toBe(true);
@@ -496,12 +496,14 @@ describe("runCreate scaffolding integration", () => {
       console.log = originalLog;
     }
 
-    expect(logs.join("\n")).toContain("cd demo-output");
+    expect(logs.join("\n")).toContain("1.  cd ./demo-output");
     expect(logs.join("\n")).toContain("Turn business operations into agent-ready capabilities.");
     expect(logs.join("\n")).toContain("Adding core augments");
     expect(logs.join("\n")).not.toContain("small runtime for self-hosted agents");
-    expect(logs.join("\n")).toContain("Set .env");
-    expect(logs.join("\n")).toContain("auggy doctor");
+    expect(logs.join("\n")).toContain(
+      "2.  bun install\n  3.  Set ANTHROPIC_API_KEY in .env\n  4.  bun run auggy run",
+    );
+    expect(logs.join("\n")).not.toContain("auggy doctor");
     expect(logs.join("\n")).toContain("auggy run");
     expect(logs.join("\n")).not.toContain("auggy run demo-output");
     expect(logs.join("\n")).not.toContain("auggy dev demo-output --open");
@@ -522,7 +524,6 @@ describe("runCreate scaffolding integration", () => {
     try {
       await runCreate("demo-key", {
         cwd: projectParent,
-        skipInstall: true,
         runtimeInstallCheck: () => ({ ok: true }),
         bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
       });
@@ -539,9 +540,10 @@ describe("runCreate scaffolding integration", () => {
     if (process.platform !== "win32") {
       expect(statSync(join(dir, ".env")).mode & 0o777).toBe(0o600);
     }
-    expect(logs.join("\n")).not.toContain("Set .env");
+    expect(logs.join("\n")).not.toContain("in .env");
+    expect(logs.join("\n")).toContain("1.  cd ./demo-key\n  2.  bun run auggy run");
     expect(logs.join("\n")).not.toContain("Open in your editor");
-    expect(logs.join("\n")).toContain("auggy doctor");
+    expect(logs.join("\n")).not.toContain("auggy doctor");
     expect(logs.join("\n")).toContain("auggy run");
   });
 

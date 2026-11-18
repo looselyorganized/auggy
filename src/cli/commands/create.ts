@@ -7,7 +7,7 @@
  */
 
 import { lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { confirm, input, password, select } from "@inquirer/prompts";
 import { stringify } from "yaml";
@@ -775,104 +775,53 @@ async function runCreateIntoDir(
   for (const entry of augments)
     console.log(`   ${green("✓")} ${cream(entry.defaultName)} ${dim(`(${entry.type})`)}`);
 
-  // bun install — populates <finalDir>/node_modules so `auggy dev` can resolve
-  // the engine + augment packages. Fail-soft: a failed install leaves the
-  // scaffolded dir intact and surfaces a clear retry command.
-  let installOk = true;
-  let runtimeInstallOk = true;
-  if (!opts.skipInstall) {
-    console.log();
-    console.log(dim(" Installing dependencies..."));
-    console.log();
-    let result: Awaited<ReturnType<typeof runBunInstall>>;
-    try {
-      result = await runBunInstall(finalDir, opts.bunInstallSpawn);
-    } catch {
-      result = { ok: false, code: 1, stderr: "" };
-    }
-    installOk = result.ok;
-    if (!installOk) {
-      console.log();
-      console.log(
-        `⚠ bun install failed in ${displayPath(finalDir, opts.cwd)} (exit ${result.code}).`,
-      );
-      console.log(`  Scaffolding is on disk.`);
-      console.log(`  Retry:  cd ${displayPath(finalDir, opts.cwd)} && bun install`);
-      console.log(
-        `  Then:   ${mode === "init" ? "auggy run" : `cd ${displayPath(finalDir, opts.cwd)} && auggy run`}`,
-      );
-      console.log();
+  // The validated slug is shell-safe, including when its parent contains spaces.
+  const steps = mode === "create" ? [`cd ./${name}`] : [];
+  let summary = "Project files created.";
+  let failure: "install" | "runtime" | undefined;
+  if (opts.skipInstall) {
+    steps.push("bun install");
+  } else {
+    console.log(dim("\n Installing dependencies...\n"));
+    const install = await runBunInstall(finalDir, opts.bunInstallSpawn).catch(() => ({
+      ok: false,
+      code: null,
+    }));
+    if (!install.ok) {
+      summary =
+        install.code === null
+          ? "Project files created; dependency installation failed to start or finish."
+          : `Project files created; dependency installation failed (exit ${install.code}).`;
+      failure = "install";
+      steps.push("bun install");
     } else {
-      const runtimeCheck = (opts.runtimeInstallCheck ?? checkApplicationRuntimeInstall)(finalDir);
-      runtimeInstallOk = runtimeCheck.ok;
-      if (!runtimeInstallOk) {
-        console.log();
-        console.log(
-          `⚠ ${runtimeCheck.message ?? "Agent installed an incompatible Auggy runtime."}`,
+      const runtime = (opts.runtimeInstallCheck ?? checkApplicationRuntimeInstall)(finalDir);
+      if (runtime.ok) {
+        summary = `${green("✓")} Agent "${name}" created (application runtime verified).`;
+      } else {
+        summary = runtime.message ?? "The installed Auggy runtime is incompatible.";
+        failure = "runtime";
+        steps.push(
+          `Set the auggy dependency in package.json to the matching ${getAuggyVersion()} release or its candidate tarball.`,
+          "bun install",
         );
-        if (runtimeCheck.fix) console.log(`  ${runtimeCheck.fix}`);
-        console.log();
       }
     }
   }
+  if (placeholderEnvVars.length > 0) {
+    steps.push(`Set ${placeholderEnvVars.join(", ")} in .env`);
+  }
+  if (failure === "runtime") steps.push("bun run auggy doctor");
+  steps.push("bun run auggy run");
 
-  console.log();
-  console.log(signal(" ─────────────────────────────────────────────"));
-  console.log();
-  const state = opts.skipInstall
-    ? "files created (dependencies not verified)"
-    : installOk && runtimeInstallOk
-      ? "created (application runtime verified)"
-      : "files created (not ready)";
-  console.log(` ${green("✓")} ${bold(cream(`Agent "${name}" ${state}`))}`);
-  console.log(`   ${dim(displayPath(finalDir, opts.cwd))}`);
-  console.log();
-  console.log(` ${bold("Next steps:")}`);
-  console.log();
-  let step = 1;
-  if (mode === "create") {
-    console.log(`   ${cream(`${step++}.`)}  cd ${relativeCreatePath(finalDir, opts.cwd)}`);
-  }
-  if (opts.skipInstall) {
-    console.log(`   ${cream(`${step++}.`)}  bun install`);
-    console.log(
-      `   ${cream(`${step++}.`)}  bun run typecheck   ${dim("(check public application API)")}`,
-    );
-  } else if (!installOk) {
-    console.log(
-      `   ${cream(`${step++}.`)}  bun install   ${dim("(retry — earlier attempt failed)")}`,
-    );
-  } else if (!runtimeInstallOk) {
-    console.log(
-      `   ${cream(`${step++}.`)}  Fix package.json   ${dim("(auggy dependency mismatch)")}`,
-    );
-    console.log(`   ${cream(`${step++}.`)}  bun install`);
-  }
-  const envVarsForNextSteps = collectEnvVars(augments, provider).filter(
-    (v) => !AUTO_GENERATED_ENV_VARS.has(v) && !providedEnv[v],
-  );
-  if (ollamaNeedsBearer && !providedEnv.OLLAMA_API_KEY) envVarsForNextSteps.push("OLLAMA_API_KEY");
-  if (envVarsForNextSteps.length > 0) {
-    console.log(
-      `   ${cream(`${step++}.`)}  Set .env   ${dim(`(${envVarsForNextSteps.join(", ")})`)}`,
-    );
-  }
-  console.log(`   ${cream(`${step++}.`)}  auggy doctor`);
-  console.log(
-    `   ${cream(`${step++}.`)}  auggy run${opts.skipInstall ? "   (verifies installed application contract 2)" : ""}`,
-  );
-  console.log();
-  if (!installOk || !runtimeInstallOk) {
-    throw new Error(
-      "Application files are intact, but dependencies are not ready. Correct the package selection and retry bun install, then bun run typecheck and auggy run.",
-    );
-  }
-}
-
-function relativeCreatePath(finalDir: string, cwd: string | undefined): string {
-  const baseDir = realpathSync(cwd ?? process.cwd());
-  if (dirname(finalDir) === baseDir) return basename(finalDir);
-  return finalDir;
+  const output = [
+    summary,
+    dim(displayPath(finalDir, opts.cwd)),
+    "",
+    ...steps.map((step, index) => `  ${index + 1}.  ${step}`),
+  ].join("\n");
+  if (failure) throw new Error(output);
+  console.log(`\n${output}\n`);
 }
 
 function shellArgument(value: string): string {
@@ -929,7 +878,6 @@ const checkApplicationRuntimeInstall: RuntimeInstallCheck = (projectDir) => {
       ok: false,
       message:
         "Installed Auggy does not expose a valid project-local application contract 2 runtime.",
-      fix: "Select an application-capable Auggy dependency or the exact candidate tarball in package.json, run bun install, then bun run typecheck and auggy run.",
     };
   }
 };

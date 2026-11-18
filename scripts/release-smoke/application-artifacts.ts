@@ -6,8 +6,6 @@ import {
   acceptedBuildEnvironment,
   runAcceptedBuildCommand,
   validateAcceptedPackInventory,
-  verifyAcceptedArchive,
-  verifyAcceptedSourceFiles,
 } from "./accepted-main-artifacts";
 import {
   applicationHash,
@@ -16,13 +14,6 @@ import {
   type PackedArtifactInput,
 } from "./application-consumer";
 import { readBoundedRegularFile } from "./bounded-file";
-import { HISTORICAL_APPLICATION_RECIPE } from "./application-recipe";
-
-// First reviewed application-capable runtime. This is an artifact experiment,
-// never a claim that two different 0.5.0 artifacts were published releases.
-export const APPLICATION_BASELINE = "73233db23bb1dc17d9a795b19881c79a09266a18";
-const BASELINE_LOCK = "cd4b421883d2874dba117e9410acae08207f352d99b74fcd6a9872d35afde3f7";
-
 export async function applicationArtifact(
   path: string,
   packageName: string,
@@ -98,169 +89,6 @@ export async function applicationArtifact(
   };
   inspectApplicationArtifact(input);
   return input;
-}
-
-/** Retain only the reviewed reference files from the already verified pinned archive. */
-export function preserveApplicationBaselineReference(
-  source: string,
-  outputDirectory: string,
-  verifiedFiles: Readonly<Record<string, string>>,
-) {
-  const selected = HISTORICAL_APPLICATION_RECIPE.sourceFiles.map((file) => {
-    const archivedPath = `examples/inspectable-agent/${file}`;
-    const expected = verifiedFiles[archivedPath];
-    if (!expected)
-      throw new Error(`Baseline reference is absent from the verified archive: ${file}`);
-    return { file, archivedPath, expected };
-  });
-  verifyAcceptedSourceFiles(
-    source,
-    Object.fromEntries(selected.map(({ archivedPath, expected }) => [archivedPath, expected])),
-  );
-  const contents = selected.map(({ file, archivedPath, expected }) => {
-    const bytes = readBoundedRegularFile(
-      join(source, archivedPath),
-      APPLICATION_BOUNDS.sourceBytes,
-    ).bytes;
-    if (applicationHash(bytes) !== expected) throw new Error(`Baseline reference changed: ${file}`);
-    return { file, bytes, sha256: expected };
-  });
-  const referenceDir = join(outputDirectory, "reference");
-  mkdirSync(referenceDir, { mode: 0o700 });
-  for (const { file, bytes } of contents) {
-    const destination = join(referenceDir, file);
-    mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
-    writeFileSync(destination, bytes, { flag: "wx", mode: 0o600 });
-  }
-  return {
-    referenceDir,
-    referenceFiles: Object.fromEntries(contents.map(({ file, sha256 }) => [file, sha256])),
-  };
-}
-
-export async function buildApplicationBaseline(repositoryRoot: string, outputDirectory: string) {
-  const repo = realpathSync(repositoryRoot);
-  const output = resolve(outputDirectory);
-  mkdirSync(output, { recursive: false, mode: 0o700 });
-  const workspace = mkdtempSync(join(tmpdir(), "auggy-application-baseline-"));
-  const source = join(workspace, "source");
-  for (const name of ["source", "home", "tmp", "npm-cache"])
-    mkdirSync(join(workspace, name), { mode: 0o700 });
-  const env = acceptedBuildEnvironment(workspace);
-  const commands: object[] = [];
-  let cleanupUnknown = false;
-  let passed = false;
-  let provenance: object | undefined;
-  let built:
-    | {
-        core: PackedArtifactInput;
-        provider: PackedArtifactInput;
-        commit: string;
-        tree: string;
-        lockSHA256: string;
-        referenceDir: string;
-      }
-    | undefined;
-  const run = async (label: string, command: string[], cwd = source) => {
-    const result = await runAcceptedBuildCommand({ command, cwd, env });
-    const { stdout, stderr, ...record } = result;
-    cleanupUnknown ||= result.cleanupUnknown;
-    commands.push({ label, ...record });
-    writeFileSync(join(output, `${label}.log`), `${stdout}\n${stderr}`, { mode: 0o600 });
-    if (result.status !== "passed") throw new Error(`Application baseline build failed: ${label}`);
-    return stdout.trim();
-  };
-  try {
-    const toolchain = {
-      bun: await run("bun-version", [process.execPath, "--version"]),
-      node: await run("node-version", ["node", "--version"]),
-      npm: await run("npm-version", ["npm", "--version"]),
-      platform: process.platform,
-      architecture: process.arch,
-    };
-    if (toolchain.bun !== "1.3.14") throw new Error("Application baseline requires Bun1.3.14");
-    const tree = await run("tree", ["git", "rev-parse", `${APPLICATION_BASELINE}^{tree}`], repo);
-    const listing = await run(
-      "source-inventory",
-      ["git", "ls-tree", "-r", APPLICATION_BASELINE],
-      repo,
-    );
-    const archive = join(workspace, "source.tar");
-    await run(
-      "archive",
-      ["git", "archive", "--format=tar", `--output=${archive}`, APPLICATION_BASELINE],
-      repo,
-    );
-    await run("extract", ["tar", "-xf", archive, "-C", source]);
-    const files = verifyAcceptedArchive(source, listing);
-    if (files["bun.lock"] !== BASELINE_LOCK) throw new Error("Application baseline lock changed");
-    await run("install", [process.execPath, "install", "--frozen-lockfile", "--ignore-scripts"]);
-    const coreName = await run("pack-core", [
-      "npm",
-      "pack",
-      "--silent",
-      "--pack-destination",
-      output,
-    ]);
-    const providerName = await run(
-      "pack-provider",
-      ["npm", "pack", "--silent", "--pack-destination", output],
-      join(source, "packages/anthropic"),
-    );
-    verifyAcceptedSourceFiles(source, files);
-    for (const name of [coreName, providerName]) {
-      if (!/^[a-z0-9.-]+\.tgz$/.test(name))
-        throw new Error("Unexpected baseline artifact filename");
-    }
-    const core = await applicationArtifact(join(output, coreName), "auggy");
-    const provider = await applicationArtifact(join(output, providerName), "@auggy/anthropic");
-    const reference = preserveApplicationBaselineReference(source, output, files);
-    provenance = {
-      ...reference,
-      core,
-      provider,
-      commit: APPLICATION_BASELINE,
-      tree,
-      lockSHA256: BASELINE_LOCK,
-      toolchain,
-    };
-    passed = true;
-    built = {
-      core,
-      provider,
-      commit: APPLICATION_BASELINE,
-      tree,
-      lockSHA256: BASELINE_LOCK,
-      referenceDir: reference.referenceDir,
-    };
-  } finally {
-    if (passed && !cleanupUnknown) {
-      try {
-        rmSync(workspace, { recursive: true });
-      } catch {
-        cleanupUnknown = true;
-      }
-    }
-    writeFileSync(
-      join(output, "application-baseline.json"),
-      `${JSON.stringify(
-        {
-          status: passed && !cleanupUnknown ? "passed" : "failed",
-          commit: APPLICATION_BASELINE,
-          provenance,
-          commands,
-          cleanupUnknown,
-          retainedWorkspace: passed && !cleanupUnknown ? null : workspace,
-        },
-        null,
-        2,
-      )}\n`,
-      { mode: 0o600 },
-    );
-  }
-  if (cleanupUnknown || !built)
-    throw new Error("Application baseline build or cleanup failed; see final evidence");
-  return built;
 }
 
 /** Unpublished compatibility fixture; only the npm version field changes. */

@@ -22,7 +22,6 @@ import {
   assertApplicationTurn,
   assertInstalledApplicationArtifact,
   assertOnlyApplicationEdits,
-  classifyApplicationUpgrade,
   inspectApplicationArtifact,
   parseApplicationStream,
   prepareApplicationConsumer,
@@ -273,7 +272,6 @@ describe("application fixture materialization (not runtime acceptance)", () => {
   test("equal versions cannot substitute a different artifact's installed source", () => {
     const a = inspectApplicationArtifact(artifact("auggy", "A"));
     const b = inspectApplicationArtifact(artifact("auggy", "B"));
-    expect(classifyApplicationUpgrade(a, b)).toBe("same-version-artifact-experiment");
     const consumer = join(root, "installed");
     write(join(consumer, "package.json"), "{}");
     write(join(consumer, "node_modules/auggy/package.json"), JSON.stringify(a.manifest));
@@ -288,9 +286,6 @@ describe("application fixture materialization (not runtime acceptance)", () => {
     expect(() =>
       assertInstalledApplicationArtifact(consumer, join(root, "repo"), b, "auggy/application"),
     ).toThrow("differ from");
-    expect(() =>
-      classifyApplicationUpgrade(inspectApplicationArtifact(artifact("auggy", "old", false)), b),
-    ).toThrow("contract-1");
   });
 
   test("installed checks reject workspace links instead of presenting them as packed evidence", () => {

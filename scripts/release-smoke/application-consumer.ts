@@ -31,7 +31,6 @@ export const APPLICATION_ROWS = [
   "L13-linux-generated",
   "L14-deploy-artifact",
   "L15-options-env",
-  "L16-retained-upgrade",
 ] as const;
 
 type Manifest = {
@@ -470,18 +469,6 @@ export function assertInstalledApplicationArtifact(
   const entry = realpathSync(createRequire(join(root, "package.json")).resolve(specifier));
   check(inside(entry, packageRoot), "Selected import resolved to a different package");
   return { packageRoot, entry, artifactSHA256: artifact.sha256, fileHashes: actual };
-}
-
-export function classifyApplicationUpgrade(
-  baseline: PackedArtifactEvidence,
-  candidate: PackedArtifactEvidence,
-) {
-  assertApplicationCapability(baseline.manifest);
-  assertApplicationCapability(candidate.manifest);
-  check(baseline.sha256 !== candidate.sha256, "Upgrade requires distinct actual artifacts");
-  return baseline.version === candidate.version
-    ? ("same-version-artifact-experiment" as const)
-    : ("application-capable-upgrade" as const);
 }
 
 export function applicationEnvironment(
