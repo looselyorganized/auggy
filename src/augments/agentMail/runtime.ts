@@ -3198,7 +3198,8 @@ export function createAgentMailRuntime(
     const inboundState = config.inbound.mode === "none" ? "idle" : (status?.state ?? "idle");
     const isStarting = store === undefined || verifiedEmailAddress === undefined;
     const lastErrorCode = runtimeErrorCode ?? status?.lastErrorCode;
-    const statusLevel = lastErrorCode ? "warn" : isStarting ? "warn" : "ok";
+    const statusLevel =
+      lastErrorCode || isStarting || inboundState === "connecting" ? "warn" : "ok";
     const statusMessage = lastErrorCode
       ? `Mail degraded (${lastErrorCode})`
       : isStarting

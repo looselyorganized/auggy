@@ -1,4 +1,4 @@
-import { inboundStatusErrorCode } from "./diagnostics";
+import { inboundStatusErrorCode, isInboundSubscriptionError } from "./diagnostics";
 import { hashAgentMailOrchestrationValue, type AgentMailOrchestrationStore } from "./store";
 import type {
   AgentMailMessageSummary,
@@ -95,13 +95,15 @@ export function createAgentMailInboundCoordinator(
   let currentState: AgentMailInboundStatus = "idle";
   let lastCatchUpAt: number | undefined;
   let lastEventAt: number | undefined;
-  let lastErrorCode: string | undefined;
+  let subscriptionErrorCode: string | undefined;
+  let repairErrorCode: string | undefined;
   let lastError: AgentMailProviderError | Error | undefined;
   let errorGeneration = 0;
   let subscription: AgentMailProviderSubscription | undefined;
   let repairTimer: ReturnType<typeof setInterval> | undefined;
   let stopped = false;
-  let initialConnect = true;
+  let subscribed = false;
+  let subscriptionGeneration = 0;
   let catchUpPromise: Promise<void> | undefined;
   const scheduledMessageIds = new Set<string>();
   const abortController = new AbortController();
@@ -111,7 +113,7 @@ export function createAgentMailInboundCoordinator(
     errorGeneration += 1;
     lastError = error;
     currentState = "degraded";
-    lastErrorCode = inboundStatusErrorCode(error);
+    repairErrorCode = inboundStatusErrorCode(error);
     options.onError?.(error);
   }
 
@@ -149,10 +151,11 @@ export function createAgentMailInboundCoordinator(
 
   async function catchUp(): Promise<void> {
     if (catchUpPromise) return catchUpPromise;
+    const startedSubscription = subscriptionGeneration;
+    const startedGeneration = errorGeneration;
     catchUpPromise = (async () => {
       if (stopped) return;
-      const startedGeneration = errorGeneration;
-      currentState = "catching_up";
+      if (subscribed) currentState = "catching_up";
       for (const messageId of scheduledMessageIds) {
         const state = options.store.getMessage(messageId)?.state;
         if (state !== "processing" && (lastCatchUpAt !== undefined || state !== "pending")) {
@@ -186,19 +189,38 @@ export function createAgentMailInboundCoordinator(
       lastCatchUpAt = clock();
       // A live event or work callback may report a newer failure while this
       // catch-up is in flight. Only recover the episode this pass observed.
-      if (errorGeneration !== startedGeneration) return;
+      if (errorGeneration !== startedGeneration || subscriptionGeneration !== startedSubscription)
+        return;
+      repairErrorCode = undefined;
+      if (!subscribed) {
+        currentState = "connecting";
+        return;
+      }
       const previousError = lastError;
       lastError = undefined;
-      lastErrorCode = undefined;
+      subscriptionErrorCode = undefined;
       currentState = "ready";
       if (previousError !== undefined) options.onRecovered?.(previousError);
     })()
       .catch((error) => {
-        report(error as Error);
+        if (!stopped) {
+          if (
+            subscriptionGeneration === startedSubscription &&
+            errorGeneration === startedGeneration
+          ) {
+            report(error as Error);
+          } else {
+            options.onError?.(error as Error);
+          }
+        }
         throw error;
       })
       .finally(() => {
         catchUpPromise = undefined;
+        // Reconnects during this pass share a single follow-up for the latest subscription.
+        if (!stopped && subscribed && subscriptionGeneration !== startedSubscription) {
+          void catchUp().catch(() => undefined);
+        }
       });
     return catchUpPromise;
   }
@@ -242,13 +264,27 @@ export function createAgentMailInboundCoordinator(
         {
           onEvent: onProviderEvent,
           onOpen: () => {
-            if (initialConnect) return;
-            void catchUp().catch(() => undefined);
+            if (stopped) return;
+            subscribed = true;
+            subscriptionGeneration++;
+            if (subscription) void catchUp().catch(() => undefined);
           },
           onClose: () => {
-            if (!stopped) currentState = "connecting";
+            if (stopped) return;
+            subscribed = false;
+            subscriptionGeneration++;
+            currentState = "connecting";
           },
-          onError: report,
+          onError(error) {
+            if (stopped) return;
+            if (!isInboundSubscriptionError(error)) return report(error);
+            subscribed = false;
+            subscriptionGeneration++;
+            subscriptionErrorCode = inboundStatusErrorCode(error);
+            lastError = error;
+            currentState = "degraded";
+            options.onError?.(error);
+          },
         },
         abortController.signal,
       );
@@ -257,9 +293,7 @@ export function createAgentMailInboundCoordinator(
         return;
       }
       subscription = connected;
-      initialConnect = false;
-      // connect() resolves only after subscription; catch-up therefore closes
-      // both the startup gap and any overlap with live delivery.
+      // REST can fetch pending mail even while the socket is waiting to subscribe.
       await catchUp();
       if (stopped) return;
       repairTimer = setInterval(() => {
@@ -283,6 +317,9 @@ export function createAgentMailInboundCoordinator(
       await catchUp();
     },
     status() {
+      const lastErrorCode = subscribed
+        ? (repairErrorCode ?? subscriptionErrorCode)
+        : (subscriptionErrorCode ?? repairErrorCode);
       return {
         state: currentState,
         ...(lastCatchUpAt === undefined ? {} : { lastCatchUpAt }),

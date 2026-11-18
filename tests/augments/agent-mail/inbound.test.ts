@@ -165,6 +165,97 @@ function permissionFailure(): AgentMailProviderError {
 }
 
 describe("AgentMail inbound wake and recovery coordinator", () => {
+  test("processes pending mail without declaring an offline stream recovered", async () => {
+    const provider = new FakeProvider();
+    const recovered: Error[] = [];
+    const f = fixture(provider, { onRecovered: (error) => recovered.push(error) });
+    try {
+      await f.coordinator.start();
+      const socketError = new AgentMailProviderError({
+        code: "provider_unavailable",
+        operation: "receive_websocket",
+        phase: "live_stream",
+        retryable: true,
+        nextAction: "Reconnect",
+      });
+      provider.handlers!.onError!(socketError);
+      provider.handlers!.onClose!({ code: 1006 });
+      provider.pages = [{ messages: [message("offline", 1000)] }];
+      await f.coordinator.repair();
+      expect(f.woken).toEqual(["offline"]);
+      expect({ state: f.coordinator.status().state, recoveries: recovered.length }).toEqual({
+        state: "connecting",
+        recoveries: 0,
+      });
+    } finally {
+      await f.coordinator.stop();
+      f.store.close();
+    }
+  });
+
+  test("a late REST rejection preserves the newer live-stream error and logs both", async () => {
+    const provider = new FakeProvider();
+    const errors: Error[] = [];
+    const f = fixture(provider, { onError: (error) => errors.push(error) });
+    try {
+      await f.coordinator.start();
+      let fail!: (err: Error) => void;
+      provider.listMessages = () =>
+        new Promise((_, reject) => {
+          fail = reject;
+        });
+      const repair = f.coordinator.repair();
+      provider.handlers!.onError!(
+        new AgentMailProviderError({
+          code: "provider_unavailable",
+          operation: "receive_websocket",
+          phase: "live_stream",
+          retryable: true,
+          nextAction: "Reconnect",
+        }),
+      );
+      const error = permissionFailure();
+      fail(error);
+      await expect(repair).rejects.toBe(error);
+      expect(f.coordinator.status().lastErrorCode).toBe("provider_unavailable");
+      expect(errors).toHaveLength(2);
+      expect(errors[1]).toBe(error);
+    } finally {
+      await f.coordinator.stop();
+      f.store.close();
+    }
+  });
+
+  test("coalesces reconnects during a repair and waits for catch-up on the current subscription", async () => {
+    const provider = new FakeProvider();
+    const f = fixture(provider);
+    const older = deferred<Awaited<ReturnType<FakeProvider["listMessages"]>>>();
+    const current = deferred<Awaited<ReturnType<FakeProvider["listMessages"]>>>();
+    let requests = 0;
+    try {
+      await f.coordinator.start();
+      provider.listMessages = () => (++requests === 1 ? older.promise : current.promise);
+      const previousRepair = f.coordinator.repair();
+      provider.reconnect();
+      provider.reconnect();
+      expect(requests).toBe(1);
+      older.resolve({ messages: [] });
+      await previousRepair;
+      expect(requests).toBe(2);
+      expect(f.coordinator.status().state).toBe("catching_up");
+      const currentRepair = f.coordinator.repair();
+      current.resolve({ messages: [] });
+      await currentRepair;
+      expect(f.coordinator.status().state).toBe("ready");
+      expect(requests).toBe(2);
+    } finally {
+      older.resolve({ messages: [] });
+      current.resolve({ messages: [] });
+      await f.coordinator.stop();
+      f.store.close();
+    }
+  });
+
   test("keeps unrecognized provider details out of the Console health code", async () => {
     const provider = new FakeProvider();
     const f = fixture(provider);

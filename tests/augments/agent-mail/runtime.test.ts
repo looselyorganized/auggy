@@ -317,6 +317,7 @@ class FakeProvider implements AgentMailProvider {
   async connect(handlers: Parameters<AgentMailProvider["connect"]>[0]) {
     this.sequence.push("connect");
     this.handlers = handlers;
+    handlers.onOpen?.();
     return { close() {} };
   }
 }
@@ -537,6 +538,47 @@ function creatorTurn(turnId: string, threadId: string, text: string): TurnState 
 }
 
 describe("AgentMail provider-native runtime", () => {
+  test("keeps the Console degraded through offline catch-up and logs recovery on subscription", async () => {
+    const f = fixture({ inbound: true });
+    const info = spyOn(console, "info").mockImplementation(() => {});
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    const failure = new AgentMailProviderError({
+      ...catchUpPermissionFailure().details,
+      operation: "subscribe_websocket",
+      phase: "live_subscribe",
+    });
+    f.provider.connect = async (handlers) => {
+      f.provider.handlers = handlers;
+      handlers.onError?.(failure);
+      return { close() {} };
+    };
+    try {
+      await f.augment.onBoot?.();
+      await f.augment.transport?.register(
+        kernel(async () => "[NO_REPLY]"),
+        "agentMail",
+      );
+      await f.augment.transport?.ready?.();
+      await waitForMailStatus(f.augment, "connecting", "permission_missing");
+      expect(info).not.toHaveBeenCalled();
+      f.provider.handlers?.onOpen?.();
+      await waitForMailStatus(f.augment, "ready");
+      expect(info.mock.calls).toHaveLength(1);
+      expect(info.mock.calls[0]?.[0]).toContain("inbound recovered code=permission_missing");
+      f.provider.handlers?.onError?.(failure);
+      f.provider.handlers?.onClose?.({ code: 1006 });
+      await waitForMailStatus(f.augment, "connecting", "permission_missing");
+      expect(info).toHaveBeenCalledTimes(1);
+      f.provider.handlers?.onOpen?.();
+      await waitForMailStatus(f.augment, "ready");
+      expect(info).toHaveBeenCalledTimes(2);
+    } finally {
+      await f.augment.onShutdown?.();
+      f.store.close();
+      info.mockRestore();
+      warn.mockRestore();
+    }
+  });
   test("clears status after two catch-up failures and logs exactly one recovery", async () => {
     let now = Date.parse("2026-10-04T12:34:56.000Z");
     const f = fixture({ inbound: true, clock: () => now });

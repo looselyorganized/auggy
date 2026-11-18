@@ -364,10 +364,13 @@ press Ctrl-C and run `auggy run` again.
 
 ## Recovery and limits
 
-Inbound status reflects the current catch-up error. A successful catch-up clears
-that warning without a restart, unless a newer inbound failure occurred while
-the catch-up was running. An unresolved message-processing, draft, or creator
-notification failure remains visible even after inbound catch-up recovers.
+Inbound becomes ready after the WebSocket subscription opens and a REST
+catch-up started on that subscription succeeds. While disconnected, periodic
+REST repair continues to fetch and schedule pending mail. The Console shows
+the connection state and any outstanding subscription error. Reconnecting
+during a repair schedules one catch-up for the latest subscription. An
+unresolved message-processing, draft, or creator notification failure remains
+visible after inbound recovers.
 
 Inbound failure logs retain the `inbound degraded code=...` prefix and append
 bounded JSON diagnostics. For example:
@@ -377,7 +380,7 @@ bounded JSON diagnostics. For example:
 [agentMail] inbound recovered code=permission_missing {"timestamp":"2026-10-04T12:35:56.000Z","category":"permission_missing","operation":"list_messages","phase":"catch_up","httpStatus":403,"retryable":false,"providerCode":"missing_permission"}
 ```
 
-Each actual failure is logged; successful catch-up emits one recovery event for
+Each actual failure is logged. Returning to ready emits one recovery event for
 the failed episode. Its timestamp records recovery, while the remaining fields
 describe the previous failure. Healthy startup and healthy periodic checks emit
 neither event. The current catch-up repair interval remains 60 seconds, including

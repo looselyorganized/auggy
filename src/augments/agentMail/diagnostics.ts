@@ -66,6 +66,15 @@ export function inboundStatusErrorCode(error: unknown): string {
   return typeof code === "string" && CATEGORIES.has(code) ? code : "inbound_failure";
 }
 
+export function isInboundSubscriptionError(error: unknown): boolean {
+  const operation = ownValue(ownValue(error, "details"), "operation");
+  return (
+    operation === "connect_websocket" ||
+    operation === "subscribe_websocket" ||
+    operation === "receive_websocket"
+  );
+}
+
 /** Private log format: only bounded, validated primitives cross this boundary. */
 export function formatAgentMailInboundDiagnostic(
   event: "degraded" | "recovered",
