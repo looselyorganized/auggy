@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type AuditOptions,
+  acceptsWorkspaceAudit,
   inspectAuditOutput,
   matchesWorkspaceException,
   runDependencyAudit,
@@ -173,7 +174,37 @@ describe("temporary workspace picomatch exception", () => {
     expect(matchesWorkspaceException(JSON.stringify(report), lock, before)).toBe(true);
   });
 
-  test("only an opted-in root audit with an ordinary advisory exit accepts the finding", () => {
+  test("accepts ordinary advisory exits only on opted-in reviewed workspace snapshots", () => {
+    const opts = { cwd: join(import.meta.dir, "../.."), workspaceException: true };
+    const result = { status: 1, signal: null };
+    const banner = "bun audit v1.3.14 (0d9b296a)";
+    const accepts = (options = opts, child = result, stderr = banner, lockHash = lock) =>
+      acceptsWorkspaceAudit(
+        options,
+        child,
+        "command-failed",
+        JSON.stringify(report),
+        stderr,
+        lockHash,
+        before,
+      );
+    expect(accepts()).toBe(true);
+    expect(
+      accepts(
+        opts,
+        result,
+        banner,
+        "d4549b87ba5f47d5caf350437635459eb61e5e8cf45ad1bdee1b1ba2cfa73160",
+      ),
+    ).toBe(true);
+    expect(accepts(opts, result, banner, "unreviewed")).toBe(false);
+    expect(accepts({ ...opts, workspaceException: false })).toBe(false);
+    expect(accepts({ ...opts, cwd: tmpdir() })).toBe(false);
+    expect(accepts(opts, { ...result, status: 2 })).toBe(false);
+    expect(accepts(opts, result, `${banner}\nregistry error`)).toBe(false);
+  });
+
+  test("binds the subprocess audit evidence to the current lockfile", () => {
     setSystemTime(new Date(before));
     try {
       const code = `console.log(${JSON.stringify(JSON.stringify(report))}); console.error("bun audit v1.3.14 (0d9b296a)");`;
@@ -181,11 +212,16 @@ describe("temporary workspace picomatch exception", () => {
         cwd: join(import.meta.dir, "../.."),
         command: [process.execPath, "-e", `${code}process.exit(1)`] as const,
       };
-      const accepted = runDependencyAudit({ ...options, workspaceException: true });
-      expect(accepted.status).toBe("passed");
-      expect(accepted.exitCode).toBe(1);
-      expect(accepted.advisories).toHaveLength(1);
-      expect(accepted.acceptedException?.id).toBe("GHSA-fc5q-39xc-vjpf");
+      const audited = runDependencyAudit({ ...options, workspaceException: true });
+      const lockHash = new Bun.CryptoHasher("sha256")
+        .update(readFileSync(join(options.cwd, "bun.lock")))
+        .digest("hex");
+      expect(audited.lockfileSHA256).toBe(lockHash);
+      const reviewed = matchesWorkspaceException(JSON.stringify(report), lockHash, before);
+      expect(audited.status).toBe(reviewed ? "passed" : "failed");
+      expect(audited.exitCode).toBe(1);
+      expect(audited.advisories).toHaveLength(1);
+      expect(audited.acceptedException?.id).toBe(reviewed ? "GHSA-fc5q-39xc-vjpf" : undefined);
       expect(runDependencyAudit(options).status).toBe("failed");
       expect(fixture(`${code}process.exit(1)`, { workspaceException: true }).result.status).toBe(
         "failed",
