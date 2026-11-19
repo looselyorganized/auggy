@@ -31,9 +31,9 @@ Keep the browser and server generated clients separate.
 
 For copyable starter files, inspect:
 
-- `skills/auggy/assets/templates/nextjs-browser-client/`
-- `skills/auggy/assets/templates/nextjs-server-client/`
-- `skills/auggy/assets/templates/app-auth-bridge/`
+- `assets/templates/nextjs-browser-client/`
+- `assets/templates/nextjs-server-client/`
+- `assets/templates/app-auth-bridge/`
 
 ## Browser Components
 
@@ -111,9 +111,9 @@ ordering.
 After route changes:
 
 ```bash
-auggy routes
-auggy routes --client ts --target browser --out src/auggy-client.ts
-auggy routes --client ts --target server --out src/auggy-client.server.ts
+bun run auggy routes
+bun run auggy routes --client ts --target browser --out src/auggy-client.ts
+bun run auggy routes --client ts --target server --out src/auggy-client.server.ts
 ```
 
 Commit generated clients only when they are part of app source or examples.

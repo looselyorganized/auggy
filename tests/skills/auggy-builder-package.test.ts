@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { relative, join } from "node:path";
+import { parse as parseYaml } from "yaml";
+import { isSkillAllowedForTrust, readSkillFrontmatter } from "../../src/cli/skill-frontmatter";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const CANONICAL_SKILL = join(ROOT, "src", "scaffold-starter-skills", "auggy");
@@ -20,7 +22,11 @@ describe("auggy builder skill mirrors", () => {
       for (const file of canonicalFiles) {
         const expected = readFileSync(join(CANONICAL_SKILL, file), "utf-8");
         const actual = readFileSync(join(mirrorDir, file), "utf-8");
-        expect(actual, `${label}:${file}`).toBe(expected);
+        const portable = label === "portable package" && file === "SKILL.md";
+        const content = portable
+          ? expected.replace("allowedTrustLevels:\n  - creator\n", "")
+          : expected;
+        expect(actual, `${label}:${file}`).toBe(content);
       }
     }
   });
@@ -30,6 +36,8 @@ describe("auggy builder skill mirrors", () => {
       readFileSync(join(ROOT, "packages", "auggy-builder-skill", "package.json"), "utf-8"),
     ) as { files?: unknown; private?: unknown };
 
+    const metadata = readFileSync(join(MIRRORS[0][1], "SKILL.md"), "utf8").split("---")[1]!;
+    expect(Object.keys(parseYaml(metadata)).sort()).toEqual(["description", "name"]);
     expect(manifest.private).toBe(true);
     expect(manifest.files).toEqual(["auggy", "evals"]);
     expect(existsSync(join(ROOT, "packages", "auggy-builder-skill", "auggy", "SKILL.md"))).toBe(
@@ -50,7 +58,6 @@ describe("auggy builder skill mirrors", () => {
   });
 
   test("custom augment guidance pins layout, modern APIs, and all authorization boundaries", () => {
-    const skill = readFileSync(join(CANONICAL_SKILL, "SKILL.md"), "utf-8");
     const reference = readFileSync(
       join(CANONICAL_SKILL, "references", "routes-tools-augments.md"),
       "utf-8",
@@ -60,9 +67,6 @@ describe("auggy builder skill mirrors", () => {
       "utf-8",
     );
 
-    expect(skill.replace(/\s+/g, " ")).toContain(
-      "Do not give custom-augment file structure or code until that reference read succeeds",
-    );
     expect(reference).toContain("skills/<name>/");
     expect(reference).toContain("optional usage guidance, not augment source");
     for (const api of ["defineAugment", "defineRoute", "defineTool"]) {
@@ -84,23 +88,23 @@ describe("auggy builder skill mirrors", () => {
     expect(reference).not.toContain("augments/<name>/\n  SKILL.md");
   });
 
-  test("skill frontmatter advertises implicit builder triggers", () => {
-    const skill = readFileSync(join(CANONICAL_SKILL, "SKILL.md"), "utf-8");
-    const frontmatter = skill.split("---")[1] ?? "";
+  test("the scaffold restricts builder guidance to creators", () => {
+    const metadata = readSkillFrontmatter(join(CANONICAL_SKILL, "SKILL.md"));
+    expect(metadata?.name).toBe("auggy");
+    expect(isSkillAllowedForTrust(metadata!, "creator")).toBe(true);
+    expect(isSkillAllowedForTrust(metadata!, "public")).toBe(false);
+    expect(isSkillAllowedForTrust(metadata!, "agent")).toBe(false);
+  });
 
-    for (const trigger of [
-      "self-hosted Auggy agents",
-      "custom augments",
-      "tools",
-      "memory",
-      "transports",
-      "skills",
-      "MCP",
-      "deployment",
-      "app-integration routes",
-      "troubleshoot",
-    ]) {
-      expect(frontmatter, trigger).toContain(trigger);
+  test("the builder points to the release it scaffolds", () => {
+    const { version } = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    const skill = readFileSync(join(CANONICAL_SKILL, "SKILL.md"), "utf8");
+    const release = `references/release-${version}.md`;
+    expect(skill).toContain(release);
+    for (const path of [release, "references/cli-workflows.md"]) {
+      expect(readFileSync(join(CANONICAL_SKILL, path), "utf8")).toContain(
+        `bunx auggy@${version} create my-agent`,
+      );
     }
   });
 
@@ -127,10 +131,9 @@ describe("auggy builder skill mirrors", () => {
     const compactSkill = skill.replace(/\s+/g, " ");
     const compactWorkflows = workflows.replace(/\s+/g, " ");
 
-    expect(compactSkill).toContain("stores the same key as `AGENTMAIL_API_KEY`");
+    expect(compactWorkflows).toContain("uses the selected key unchanged");
     for (const mode of ["signup", "existing", "manual", "env"]) {
       expect(compactWorkflows, mode).toContain(`| \`${mode}\` |`);
-      expect(compactSkill, mode).toContain(`\`${mode}\``);
     }
     expect(compactWorkflows).toContain("`connect` remains an alias for `manual`");
     expect(compactWorkflows).toContain("requires an interactive terminal for email verification");
@@ -144,20 +147,15 @@ describe("auggy builder skill mirrors", () => {
   });
 
   test("AgentMail guidance separates Auggy lifecycle policy from optional provider tools", () => {
-    const skill = readFileSync(join(CANONICAL_SKILL, "SKILL.md"), "utf-8");
     const workflows = readFileSync(
       join(CANONICAL_SKILL, "references", "cli-workflows.md"),
       "utf-8",
     );
 
-    for (const source of [skill, workflows]) {
-      const compact = source.replace(/\s+/g, " ");
-      expect(compact).toContain("official AgentMail skill");
-      expect(compact).toContain("MCP");
-      expect(compact).toMatch(/do not|neither/i);
-      expect(compact).toMatch(/wake/i);
-      expect(compact).toMatch(/catch-up/i);
-    }
+    expect(workflows).toContain("official AgentMail skill");
+    expect(workflows).toContain("MCP");
+    expect(workflows).toMatch(/wake/i);
+    expect(workflows).toMatch(/catch-up/i);
     expect(workflows).toContain("provider-native draft");
     expect(workflows).toContain("`send it`");
     expect(workflows).toContain("`send draft <draftId>`");

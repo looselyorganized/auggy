@@ -16,7 +16,7 @@ version_for() {
 printf "cwd: %s\n" "$(pwd)"
 printf "bun: %s\n" "$(version_for bun)"
 printf "node: %s\n" "$(version_for node)"
-printf "auggy: %s\n" "$(version_for auggy)"
+printf "auggy: %s\n" "$(version_for ./node_modules/.bin/auggy)"
 
 if [ -f package.json ]; then
   if grep -Eq '"auggy"[[:space:]]*:' package.json; then
@@ -44,9 +44,9 @@ fi
 printf "\nnext:\n"
 if [ -f agent.yaml ]; then
   printf "%s\n" "- passive: bash skills/auggy/scripts/summarize-auggy-project.sh ."
-  printf "%s\n" "- executable checks: auggy doctor"
-  printf "%s\n" "- executable route inventory: auggy routes"
+  printf "%s\n" "- executable checks: bun run auggy doctor"
+  printf "%s\n" "- executable route inventory: bun run auggy routes"
 else
-  printf "%s\n" "- create: auggy create <name>"
+  printf "%s\n" "- create: bunx auggy@0.6.1 create <name>"
   printf "%s\n" "- or enter an existing Auggy agent directory"
 fi

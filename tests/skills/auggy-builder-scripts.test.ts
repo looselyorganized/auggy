@@ -48,7 +48,7 @@ describe("auggy builder skill helper scripts", () => {
     expect(result.stdout).toContain(
       "passive: bash skills/auggy/scripts/summarize-auggy-project.sh",
     );
-    expect(result.stdout).toContain("executable route inventory: auggy routes");
+    expect(result.stdout).toContain("executable route inventory: bun run auggy routes");
   });
 
   test("summary invokes the real local CLI without executing application or custom source", async () => {
@@ -142,24 +142,27 @@ describe("auggy builder skill helper scripts", () => {
 
   test("doctor and client scripts call auggy with expected arguments", async () => {
     const dir = temporaryProject("auggy-skill-fake-cli-");
-    const bin = join(dir, "bin");
+    const bin = join(dir, "node_modules", ".bin");
+    const globalBin = join(dir, "bin");
     mkdirSync(bin, { recursive: true });
+    mkdirSync(globalBin);
+    writeFileSync(join(globalBin, "auggy"), "#!/bin/sh\nexit 88\n");
+    chmodSync(join(globalBin, "auggy"), 0o755);
+    const callLog = join(dir, "calls.log");
+    const env = { ...process.env, PATH: `${globalBin}:/usr/bin:/bin`, AUGGY_CALL_LOG: callLog };
+    for (const helper of ["doctor-and-routes.sh", "generate-route-clients.sh"]) {
+      const missing = await runScript(join(SCRIPTS, helper), [], { cwd: dir, env });
+      expect(missing.exitCode).toBe(127);
+      expect(missing.stderr).toContain("Missing project-local Auggy");
+    }
+
     writeFileSync(
       join(bin, "auggy"),
-      [
-        "#!/usr/bin/env bash",
-        'printf "%s\\n" "$*" >> "$AUGGY_CALL_LOG"',
-        'if [ "$1" = "--version" ]; then printf "0.5.0\\n"; fi',
-      ].join("\n"),
+      '#!/bin/sh\necho "$*" >> "$AUGGY_CALL_LOG"\nif [ "$1" = "--version" ]; then echo "local-version"; fi\n',
     );
     chmodSync(join(bin, "auggy"), 0o755);
-
-    const callLog = join(dir, "calls.log");
-    const env = {
-      ...process.env,
-      PATH: `${bin}:${process.env.PATH ?? ""}`,
-      AUGGY_CALL_LOG: callLog,
-    };
+    const detected = await runScript(join(SCRIPTS, "detect-auggy-env.sh"), [], { cwd: dir, env });
+    expect(detected.stdout).toContain("auggy: local-version");
 
     const doctor = await runScript(join(SCRIPTS, "doctor-and-routes.sh"), ["demo"], {
       cwd: dir,

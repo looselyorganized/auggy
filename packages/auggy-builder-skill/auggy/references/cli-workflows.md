@@ -2,58 +2,45 @@
 
 Use CLI commands before hand-editing generated or scaffolded state.
 
-Optional helper scripts for coding-agent workspaces live under
-`skills/auggy/scripts/`. They wrap the commands below; they are conveniences,
-not a separate Auggy interface.
+Shell helpers live in the skill’s `scripts/` directory. Run them with the
+agent project as the working directory.
 
 ## Install And Create
 
-For a new project, use the package manager the creator prefers. Common path:
+Install Bun 1.3.14 or newer. Use a hosted provider with a privately supplied
+API key, or connect to a running Ollama instance. From the parent directory:
 
 ```bash
-bunx auggy create my-agent
+bunx auggy@0.6.1 create my-agent
 cd my-agent
+bun run auggy run
 ```
 
-If Auggy is already installed locally:
-
-```bash
-auggy create my-agent
-```
-
-If the creator is inside an existing agent project, prefer project-local
-commands such as:
-
-```bash
-auggy doctor
-auggy run
-```
+This opens the local operator chat. For troubleshooting, run `bun run auggy doctor`
+from the generated project.
 
 The generated application owns `src/main.ts`, `src/http.ts` and `src/turn.ts`. Startup explicitly prepares configuration, creates the model
 and augments, creates the agent, binds transports, configures HTTP, then starts.
 `main.ts` binds `turnProgram` and an optional `onTurnFinalized` callback at
 `createAgent`; `http.ts` owns an editable mount path.
 `agent.yaml` is the sole enabled graph. Existing contract-1 applications stay
-compatible and keep their owned source. The global CLI is a
-convenience; execution selects the project-local Auggy dependency. Pin matching
-core/provider versions and verify the installed package supports application
-contract 2. These authoring changes are unreleased; a published 0.5 package
-with the same version number is not this development implementation.
+compatible and keep their owned source. Auggy v0.6.1 ships application contract 2.
+Use matching core and provider versions in the project.
 
 For files-only automated creation, provide both provider and model:
 
 ```bash
-auggy create my-agent --provider anthropic --model claude-sonnet-4-6 --yes --skip-install
+bunx auggy@0.6.1 create my-agent --provider anthropic --model claude-sonnet-4-6 --yes --skip-install
 ```
 
 This does not discover or pull models. An unpriced selection also needs explicit
-`--allow-unpriced-model`; `--yes` is not that acknowledgement. `auggy init` uses
+`--allow-unpriced-model`; `--yes` is not that acknowledgement. `bunx auggy@0.6.1 init` uses
 the same contract in the current directory and fails on generated-file collisions.
 Install the selected dependencies and configure private secrets before execution.
 
 ## Inspect And Migrate
 
-`auggy inspect` reports declared entrypoints and installed built-in source paths
+`./node_modules/.bin/auggy inspect` reports declared entrypoints and installed built-in source paths
 without importing project code. A partial result is not a readiness check and
 custom path hints are not a proven TypeScript call graph. Use the project-local binary explicitly to disable Bun environment loading,
 automatic installation and local configuration preloads:
@@ -63,8 +50,8 @@ automatic installation and local configuration preloads:
 ```
 
 Legacy run and read commands remain supported. Graph-changing commands require
-inline configuration. Preview conversion with `auggy migrate`, then use
-`auggy migrate --apply` after reviewing the result. Add `--application` separately
+inline configuration. Preview conversion with `bun run auggy migrate`, then use
+`bun run auggy migrate --apply` after reviewing the result. Add `--application` separately
 to preview or adopt the owned source layout. Adoption requires a compatible local
 runtime already installed, refuses output collisions, and introduces the default
 15-minute managed application deadline. Config-only conversion retains legacy
@@ -73,7 +60,7 @@ or hot-reload a running process; changes take effect on the next launch.
 
 Private recovery records under `.auggy/operations/` may include original inline
 secrets. Keep them ignored and out of deployment/model-visible content. Preview
-recovery with `auggy migrate --project-dir . --rollback <operation-id>`, then add
+recovery with `bun run auggy migrate --project-dir . --rollback <operation-id>`, then add
 `--apply`; changed outputs are not overwritten. This recovery selector works even
 when `agent.yaml` is absent. Dependency upgrades update managed runtime/built-ins
 without regenerating owned source or skills.
@@ -87,7 +74,7 @@ messages.
 Typical local checks:
 
 ```bash
-auggy doctor
+bun run auggy doctor
 ```
 
 If `doctor` reports a missing provider key, help the creator identify the env
@@ -99,8 +86,8 @@ Install the canonical augment, then let its interactive setup menu select the
 appropriate provider operation:
 
 ```bash
-auggy augment add agentMail
-auggy augment setup agentMail
+bun run auggy augment add agentMail
+bun run auggy augment setup agentMail
 ```
 
 AgentMail setup supports these modes:
@@ -116,19 +103,19 @@ AgentMail setup supports these modes:
 confirmation. `signup` requires an interactive terminal for email verification;
 never collect verification codes or API keys in chat. The operator enters those
 directly into the CLI. Automated provider creation uses the dedicated
-`auggy agentmail setup` command; the generic `auggy augment setup` wrapper does
+`bun run auggy agentmail setup` command; the generic `bun run auggy augment setup` wrapper does
 not expose `--username` or `--yes`. With an account key supplied through the
 private `AGENTMAIL_API_KEY` environment variable:
 
 ```bash
-auggy agentmail setup agentMail --mode existing --username my-agent --yes
+bun run auggy agentmail setup agentMail --mode existing --username my-agent --yes
 ```
 
 Choose `--yes` only after the operator authorizes inbox creation. Manual
 connection can use the canonical environment variables:
 
 ```bash
-auggy augment setup agentMail --mode manual
+bun run auggy augment setup agentMail --mode manual
 ```
 
 Supply `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` through the operator's
@@ -151,7 +138,7 @@ canonical augments are being added interactively, one command coordinates the
 connection regardless of selection order:
 
 ```bash
-auggy augment add agentMail visitorAuth
+bun run auggy augment add agentMail visitorAuth
 ```
 
 The CLI uses one shared confirmation and credential flow, connects `agentMail`,
@@ -160,8 +147,8 @@ and attaches `visitorAuth` through environment reuse without asking twice.
 setup, or recovery, preserve the same boundary with this sequence:
 
 ```bash
-auggy augment setup agentMail --mode connect
-auggy augment setup visitorAuth --mode env
+bun run auggy augment setup agentMail --mode connect
+bun run auggy augment setup visitorAuth --mode env
 ```
 
 The second command verifies and reuses the same stored values without changing
@@ -182,7 +169,7 @@ the `agentMail` entry in `agent.yaml`, confirm that the same runtime key has the
 reported permissions, and restart:
 
 ```bash
-auggy restart <agent-name>
+bun run auggy restart <agent-name>
 ```
 
 With `inbound.mode: websocket`, a live AgentMail event wakes a running Auggy.
@@ -216,34 +203,33 @@ before removing its local value. Auggy never revokes it for you.
 ## Run Locally
 
 ```bash
-auggy run
+bun run auggy run
 ```
 
-The CLI opens the Console chat already signed in. If automatic sign-in is
-unavailable, use `AUGGY_WEB_TOKEN` from the agent's `.env` on the password
-screen.
+The CLI opens the local operator Console chat.
 
-If the agent is a named project outside the current directory:
+From a project with Auggy installed, select another registered agent by name:
 
 ```bash
-auggy run <name>
+bun run auggy run <name>
 ```
 
-To open an already-running local agent or its saved Railway deployment without
-starting it:
+To open a running local agent by name:
 
 ```bash
-auggy console <name>
+bun run auggy console <name>
 ```
+
+From the deployed project, use `bun run auggy console --cloud` for the hosted Console.
 
 ## Inspect Routes
 
 Run this after route-owning augment changes:
 
 ```bash
-auggy routes
-auggy routes --json
-auggy routes --openapi
+bun run auggy routes
+bun run auggy routes --json
+bun run auggy routes --openapi
 ```
 
 Use route reports to confirm:
@@ -258,8 +244,8 @@ Use route reports to confirm:
 ## Generate Route Clients
 
 ```bash
-auggy routes --client ts --target browser --out src/auggy-client.ts
-auggy routes --client ts --target server --out src/auggy-client.server.ts
+bun run auggy routes --client ts --target browser --out src/auggy-client.ts
+bun run auggy routes --client ts --target server --out src/auggy-client.server.ts
 ```
 
 Use the browser target for browser-safe public and visitor routes. Use the
@@ -271,19 +257,19 @@ routes, agent routes, and webhook-policy routes.
 Run local checks first:
 
 ```bash
-auggy doctor
+bun run auggy doctor
 ```
 
 Then:
 
 ```bash
-auggy deploy
+bun run auggy deploy
 ```
 
 For cloud-specific readiness:
 
 ```bash
-auggy doctor --cloud
+bun run auggy doctor --cloud
 ```
 
 Do not deploy until required secrets are configured in the deployment provider.
@@ -291,7 +277,9 @@ Do not print secret values.
 
 ## Helper Scripts
 
-Use these only when shell access is available:
+These commands use the skill installed in a generated project. For an external
+skill installation, substitute its own scripts directory and keep the agent
+project as the working directory:
 
 ```bash
 bash skills/auggy/scripts/detect-auggy-env.sh

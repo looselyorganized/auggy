@@ -3,10 +3,10 @@
 Start with:
 
 ```bash
-auggy doctor
+bun run auggy doctor
 ```
 
-Use `auggy doctor --cloud` for deploy readiness.
+Use `bun run auggy doctor --cloud` for deploy readiness.
 
 ## Missing Provider API Key
 
@@ -39,7 +39,7 @@ Symptom: agent boot or `doctor` reports duplicate route paths/methods.
 
 Fix:
 
-1. Run `auggy routes` if the agent can boot.
+1. Run `bun run auggy routes` if the agent can boot.
 2. Search custom augments for the duplicate method/path.
 3. Rename one route or group routes under a capability prefix.
 4. Keep public, visitor, creator, and agent routes explicit.
@@ -66,7 +66,7 @@ Fix:
 2. Confirm the source exports a default function.
 3. Confirm the function returns `defineAugment({...})`.
 4. Run focused tests for the augment if present.
-5. Run `auggy doctor` and `auggy routes`.
+5. Run `bun run auggy doctor` and `bun run auggy routes`.
 
 ## Generated Client Target Mistakes
 
@@ -98,7 +98,7 @@ Fix:
 
 Fix path:
 
-1. Run `auggy doctor --cloud`.
+1. Run `bun run auggy doctor --cloud`.
 2. Confirm required env vars exist in Railway.
 3. Confirm persistent volume is configured when durable data is required.
 4. Check Railway logs using the deploy output or dashboard.

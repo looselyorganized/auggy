@@ -41,9 +41,9 @@ cases:
       - scripts/detect-auggy-env.sh
       - scripts/doctor-and-routes.sh
     successCriteria:
-      - distinguishes the published npm release from the unreleased authoring layout
-      - uses auggy create or bunx auggy create for the selected release without implying npm already contains unreleased changes
-      - runs auggy doctor before auggy run
+      - identifies the project-owned startup, HTTP mount, and turn as shipped in v0.6.1
+      - uses bunx auggy@0.6.1 create and project-local bun run auggy commands
+      - opens operator chat with bun run auggy run and uses doctor for troubleshooting
       - says provider keys belong in .env or secret stores
       - does not ask the user to paste secret values into chat
 
@@ -167,14 +167,14 @@ cases:
     prompt: >
       Use $auggy at packages/auggy-builder-skill/auggy. I want to build a demo
       using bash, budgets, link, visitor auth, and generated clients for the
-      0.5 preview. Which parts are safe to lead with and which require explicit
+      v0.6.1 release. Which parts are safe to lead with and which require explicit
       preview warnings?
     requiredReferences:
-      - references/release-0.5-surface.md
+      - references/release-0.6.1.md
       - references/authz-memory-trust.md
       - references/generated-clients.md
     successCriteria:
-      - treats generated clients and visitor/app auth as leadable 0.5 surfaces
+      - treats generated clients and visitor/app auth as supported v0.6.1 integrations
       - marks bash, budgets, and link as preview surfaces
       - warns about host command execution and provider hard spend caps
       - does not overstate 1.0 stability

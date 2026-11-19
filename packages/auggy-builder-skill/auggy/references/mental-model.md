@@ -43,7 +43,7 @@ then starts under managed cleanup
 ```
 
 Open these files in a generated project; they are the code that executes.
-`auggy inspect` reports declared paths and selected installed sources without
+`./node_modules/.bin/auggy inspect` reports declared paths and selected installed sources without
 running code. The installed runtime and built-ins remain in `node_modules/auggy/src`.
 A dependency update changes managed code, while engineers review changes needed
 in their own execution recipe and capability adapters.
