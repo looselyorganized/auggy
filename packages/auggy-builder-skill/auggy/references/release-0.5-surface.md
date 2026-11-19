@@ -1,7 +1,6 @@
-# Auggy 0.5 Surface
+# Historical Auggy 0.5 Preview
 
-0.5 is a public preview of Auggy's small TypeScript agent runtime. It is useful
-now, but not a `1.0` stability promise.
+This guide describes the 0.5 public preview of Auggy's small TypeScript agent runtime. For v0.6.1, read `references/release-0.6.1.md`.
 
 ## Ready To Demonstrate
 
@@ -45,7 +44,7 @@ These capabilities are optional and do not make Auggy a general app backend.
 
 ## Launch Posture
 
-- `0.5.0` is the stable npm release and remains public preview software.
+- `0.5.0` was the stable npm release covered by this guide.
 - Source is public at `looselyorganized/auggy`.
 - License is Apache-2.0.
 - Public docs and support live on `auggy.dev`.

@@ -7,7 +7,7 @@ integration, or external service bridge.
 Create one with:
 
 ```bash
-auggy augment create <name>
+bun run auggy augment create <name>
 ```
 
 Run this from the agent project. The command registers the augment in
@@ -36,13 +36,13 @@ input is rejected and a missing record is reported separately. This sample is
 not a database: replace it with a narrow adapter to the application's system of
 record. Review route authorization and tool execution checks independently.
 
-Built-ins remain under `node_modules/auggy/src/`; use `auggy inspect` for exact
+Built-ins remain under `node_modules/auggy/src/`; use `./node_modules/.bin/auggy inspect` for exact
 installed locations. Configuration belongs in `agent.yaml`, with `name`, `type`,
 `options` and custom `source`. Do not create `augment.yaml`, `definition.ts` or a
 second TypeScript list of enabled augments.
 
 For copyable sample files, inspect
-`skills/auggy/assets/templates/custom-augment/`. Its TypeScript files target
+`assets/templates/custom-augment/`. Its TypeScript files target
 `src/augments/example/`, and `augment.test.ts.txt` targets
 `tests/augments/example.test.ts`. The YAML asset is a central declaration fragment,
 not a per-folder configuration file. Prefer the CLI so names and registration are
@@ -72,8 +72,8 @@ into a generic statement that the augment "has auth":
    those callers.
 
 For delegated app authorization, read
-`skills/auggy/references/authz-memory-trust.md` and
-`skills/auggy/references/app-auth-bridge-e2e.md` before writing code.
+`references/authz-memory-trust.md` and
+`references/app-auth-bridge-e2e.md` before writing code.
 
 ## An additional route/tool/service pattern
 
@@ -204,9 +204,9 @@ After changes:
 ```bash
 bun run typecheck
 bun test tests/augments/<name>.test.ts
-auggy augment test ./src/augments/<name>
-auggy routes
+bun run auggy augment test ./src/augments/<name>
+bun run auggy routes
 ```
 
 If an app consumes the routes, regenerate clients. See
-`skills/auggy/references/generated-clients.md`.
+`references/generated-clients.md`.

@@ -1,6 +1,6 @@
 ---
 name: auggy
-description: Build and troubleshoot self-hosted Auggy agents that run business operations through controlled TypeScript custom augments with tools, routes, identity, authorization, domain logic, memory, transports, skills, MCP, deployment, and optional app-integration routes.
+description: Inspect a self-hosted Auggy agent, extend it with a custom augment or tool, and troubleshoot setup, execution, or deployment. Use when a creator asks what their agent can do or how to connect an application operation.
 allowedTrustLevels:
   - creator
 ---
@@ -10,9 +10,10 @@ allowedTrustLevels:
 Use this skill when the creator asks what this agent is, what it can do, what
 to add next, or how to build a workflow with Auggy.
 
-This Auggy-provided skill is the canonical companion skill for the agent itself.
-External Claude, Codex, Cursor, and similar coding-agent skills should reuse
-this folder instead of forking Auggy's mental model.
+Resolve references and assets relative to this SKILL.md. Inside Auggy, use
+`fs_read` with the mount prefix `skills/auggy/` (for example,
+`skills/auggy/references/routes-tools-augments.md`). In an external coding
+agent, use its file reader and the directory containing this skill.
 
 This is creator-facing guidance. Do not expose secrets, do not edit files,
 install packages, or change deployment config unless the creator asks, and do
@@ -28,7 +29,7 @@ For any "what can you do?" or "how do I build X?" request:
 2. If the creator asks what to add for a goal and `auggy_self_recommend` is
    visible, call it before advising.
 3. Check visible tools, mounted skill names, and current runtime context.
-4. If a reference below matches the request, read it with `fs_read` before
+4. If a reference below matches the request, read it before
    giving detailed guidance.
 5. If live project state is not available, say so plainly and answer from the
    default Auggy project model.
@@ -46,20 +47,17 @@ Read the matching reference before answering in depth:
 
 | Creator asks about | Read |
 | --- | --- |
-| What Auggy is, why it matters, kernel and augment model | `skills/auggy/references/mental-model.md` |
-| Install, create/init, provider keys, AgentMail setup, run, doctor, deploy | `skills/auggy/references/cli-workflows.md` |
-| Custom augments, `httpRoutes`, `defineRoute`, `defineTool` | `skills/auggy/references/routes-tools-augments.md` |
-| Generated browser/server route clients | `skills/auggy/references/generated-clients.md` |
-| Creator/public/agent trust, visitor auth, Supabase/Clerk/custom app auth, memory placement | `skills/auggy/references/authz-memory-trust.md` |
-| End-to-end protected app route/tool auth | `skills/auggy/references/app-auth-bridge-e2e.md` |
-| Next.js app integration | `skills/auggy/references/nextjs-integration.md` |
-| Missing keys, `EADDRINUSE`, route collisions, bad custom augment modules, deploy failures | `skills/auggy/references/troubleshooting.md` |
-| What is safe in the 0.5 preview | `skills/auggy/references/release-0.5-surface.md` |
-| Copyable starter files | `skills/auggy/assets/templates/` |
-| Optional shell helpers for coding agents | `skills/auggy/scripts/` |
-
-If `fs_read` is unavailable, say that you cannot read the reference from this
-surface and then give concise default guidance from this skill.
+| What Auggy is, why it matters, kernel and augment model | `references/mental-model.md` |
+| Install, create/init, provider keys, AgentMail setup, run, doctor, deploy | `references/cli-workflows.md` |
+| Custom augments, `httpRoutes`, `defineRoute`, `defineTool` | `references/routes-tools-augments.md` |
+| Generated browser/server route clients | `references/generated-clients.md` |
+| Creator/public/agent trust, visitor auth, Supabase/Clerk/custom app auth, memory placement | `references/authz-memory-trust.md` |
+| End-to-end protected app route/tool auth | `references/app-auth-bridge-e2e.md` |
+| Next.js app integration | `references/nextjs-integration.md` |
+| Missing keys, `EADDRINUSE`, route collisions, bad custom augment modules, deploy failures | `references/troubleshooting.md` |
+| What v0.6.1 supports and where its limits are | `references/release-0.6.1.md` |
+| Copyable starter files | `assets/templates/` |
+| Optional shell helpers for coding agents | `scripts/` |
 
 ## What Auggy Is
 
@@ -74,7 +72,7 @@ Underneath, a small TypeScript runtime executes the agent:
   execute validated tools, and return a result.
 - **Augments** add runtime capabilities such as tools, memory, context,
   transports, lifecycle hooks, policy, skills, and operator diagnostics.
-- **Tools** are typed, model-callable capabilities used during a turn.
+- **Tools** are typed operations an augment exposes for the model to call during a turn.
 - **Skills** are markdown teaching files the model reads on demand.
 - **Knowledge** is reference material fetched when relevant.
 - **Identity** is durable operator-authored persona, behavior, and safety
@@ -86,25 +84,25 @@ surfaces, not requirements for a normal Auggy project.
 
 ## Build-Out Decision Matrix
 
-Use `auggy augment add` with no arguments to open the augment selector. Use
-`auggy augment add <name...>` to add known augments in one command.
+Use `bun run auggy augment add` with no arguments to open the augment selector. Use
+`bun run auggy augment add <name...>` to add known augments in one command.
 
 | Creator goal | Best extension point | Why |
 | --- | --- | --- |
 | Change who the agent is, voice, policy, refusal rules | `identity.md` | Durable behavior that should apply every turn |
-| Teach a workflow or style | `auggy skill create <name>` | Instructions and examples, no runtime code |
-| Add docs, FAQs, product facts, policies | `auggy augment add knowledge` | Reference material fetched only when relevant |
-| Remember repeat visitors | `auggy augment add layeredMemory` | Peer-scoped memory backed by SQLite |
-| Recognize visitors across sessions | `auggy augment add visitorAuth` | Email magic-link identity continuity |
-| Notify creator or ops endpoint | `auggy augment add notify` | Outbound alerts with destination policy and rate limits |
-| Send or receive email as the agent | `auggy augment add agentMail` | Policy-gated mail with durable inbound recovery and outbound review |
-| Add external tool servers | `auggy augment add mcp` | Bridge MCP tools with trust policy |
-| Chat over Telegram | `auggy augment add telegramTransport` | Bidirectional Telegram transport |
-| Add app-specific tools or integrations | `auggy augment create <name>` | Custom runtime code owned by this agent |
-| Expose optional frontend/server routes | `auggy routes --client ts` | Advanced preview: typed client generated from route manifests |
-| Execute shell commands | `auggy augment add bash` | Preview host process execution; requires explicit creator intent |
-| Track spend guardrails | `auggy augment add budgets` | Preview soft guardrails; provider hard caps still matter |
-| Connect agents to each other | `auggy augment add link` | Preview mesh/A2A surface; not a default recommendation |
+| Teach a workflow or style | `bun run auggy skill create <name>` | Instructions and examples, no runtime code |
+| Add docs, FAQs, product facts, policies | `bun run auggy augment add knowledge` | Reference material fetched only when relevant |
+| Remember repeat visitors | `bun run auggy augment add layeredMemory` | Peer-scoped memory backed by SQLite |
+| Recognize visitors across sessions | `bun run auggy augment add visitorAuth` | Email magic-link identity continuity |
+| Notify creator or ops endpoint | `bun run auggy augment add notify` | Outbound alerts with destination policy and rate limits |
+| Send or receive email as the agent | `bun run auggy augment add agentMail` | Policy-gated mail with durable inbound recovery and outbound review |
+| Add external tool servers | `bun run auggy augment add mcp` | Bridge MCP tools with trust policy |
+| Chat over Telegram | `bun run auggy augment add telegramTransport` | Bidirectional Telegram transport |
+| Add app-specific tools or integrations | `bun run auggy augment create <name>` | Custom runtime code owned by this agent |
+| Expose optional frontend/server routes | `bun run auggy routes --client ts` | Advanced preview: typed client generated from route manifests |
+| Execute shell commands | `bun run auggy augment add bash` | Preview host process execution; requires explicit creator intent |
+| Track spend guardrails | `bun run auggy augment add budgets` | Preview soft guardrails; provider hard caps still matter |
+| Connect agents to each other | `bun run auggy augment add link` | Preview mesh/A2A surface; not a default recommendation |
 
 When unsure, choose the least powerful option: skill or knowledge before custom
 code, custom code before broad shell access, and explicit creator approval
@@ -130,7 +128,7 @@ notify"; say "Auggy can add ..." instead.
 Recommend `knowledge` first:
 
 ```bash
-auggy augment add knowledge
+bun run auggy augment add knowledge
 ```
 
 Then add markdown under `knowledge/local/` and list each endpoint in
@@ -148,7 +146,7 @@ what is installed in this agent. If `layeredMemory` is absent, say:
 Then suggest:
 
 ```bash
-auggy augment add layeredMemory
+bun run auggy augment add layeredMemory
 ```
 
 If it is already installed, say so and explain that peer facts use
@@ -157,110 +155,54 @@ If it is already installed, say so and explain that peer facts use
 For cross-session visitor continuity, pair it with:
 
 ```bash
-auggy augment add visitorAuth
+bun run auggy augment add visitorAuth
 ```
 
-Read `skills/auggy/references/authz-memory-trust.md` before explaining memory
+Read `references/authz-memory-trust.md` before explaining memory
 trust, learned behavior, or app auth.
 
-Existing projects can refresh this general guide with `auggy skill add auggy`.
+Existing projects can refresh this general guide with `bun run auggy skill add auggy`.
 The augment-specific memory teaching can be refreshed with
-`auggy skill add layeredMemory` after that augment is installed.
+`bun run auggy skill add layeredMemory` after that augment is installed.
 
 ### "I want the agent to use email"
 
-Inspect live inventory first. If `agentMail` is not installed, use the canonical
-add command, then run its dedicated setup command:
-
-```bash
-auggy augment add agentMail
-auggy augment setup agentMail
-```
-
-The interactive menu offers `signup` (new account and inbox), `existing` (new
-inbox in an existing account), `manual` (existing inbox and key), and `env`
-(reuse complete local credentials). `connect` is an alias for `manual`.
-`signup` requires an interactive terminal for email verification; the operator
-enters verification codes directly into that terminal. Never ask for keys or
-verification codes in chat. Provider creation requires the operator's explicit
-confirmation. Automated `existing` setup uses the dedicated
-`auggy agentmail setup agentMail --mode existing --username <name> --yes`
-command with a privately supplied account key; the generic `augment setup`
-wrapper does not expose those creation flags.
-
-Auggy stores the same key as `AGENTMAIL_API_KEY`: the initial provider-issued
-key for signup, or the exact supplied key for existing/manual setup. It never
-exchanges that key for a narrower one, rotates it, or revokes it. Creation can
-leave provider resources behind if a later step fails; inspect the provider
-before retrying an ambiguous creation. `manual` and `env` only perform reads.
-
-Setup safely verifies `inbox_read` and any configured message/draft read
-capabilities. It reports write capabilities required by the policy without
-claiming to verify them, because setup does not send mail or mutate drafts.
-The creator remains responsible for granting those permissions in AgentMail.
-
-If both `agentMail` and `visitorAuth` are installed, they deliberately share
-one inbox and the same supplied API key. One interactive add coordinates a
-single connection flow regardless of selection order:
-
-```bash
-auggy augment add agentMail visitorAuth
-```
-
-For skipped setup, automation, or recovery, connect `agentMail` first and then
-reuse its credentials for `visitorAuth`:
-
-```bash
-auggy augment setup agentMail --mode connect
-auggy augment setup visitorAuth --mode env
-```
-
-Enabling inbound mail after setup is a configuration change: edit
-the `agentMail` entry in `agent.yaml`, make sure the same key has the required
-permissions, and restart the agent. `inbound.mode: websocket` wakes a running
-agent; durable catch-up on boot and periodically while running closes offline
-gaps. `replies.mode: review` creates replies as provider-native AgentMail
-drafts. Only the verified creator can inspect, revise, or send those drafts,
-and sending requires a separate exact command after review.
-
-The official AgentMail skill or hosted MCP may supplement the model with
-broader mailbox operations such as search, labels, and attachments. Installing
-either does not wire wake-up or startup catch-up into Auggy, and neither
-replaces Auggy's durable review and authorization boundary. Do not attach
-broader direct AgentMail mutation tools to the same managed inbox merely to
-implement inbound or reviewed replies.
-
-Read `skills/auggy/references/cli-workflows.md` before explaining setup modes,
-runtime behavior, official integrations, or shared credentials in more detail.
+Check whether `agentMail` is enabled. To add it, run
+`bun run auggy augment add agentMail`. If setup was skipped, run
+`bun run auggy augment setup agentMail`. Enter provider keys and verification codes
+privately in the CLI. For setup modes, inbound mail, or credential recovery,
+read `references/cli-workflows.md`.
 
 ### "I want a new route, API call, or app-specific tool"
 
-Use:
+Read `references/routes-tools-augments.md` before giving code or file layout.
+If the reference cannot be read, identify the missing file and give the
+scaffold command only:
 
 ```bash
-auggy augment create <name>
+bun run auggy augment create order-support
 ```
 
-Read `skills/auggy/references/routes-tools-augments.md` before giving code.
-Reading this top-level `SKILL.md` is not enough for that request. Do not give
-custom-augment file structure or code until that reference read succeeds. If
-`fs_read` is unavailable or the read fails, provide only the command and
-reference path, explain the limitation, and do not invent an implementation.
-For starter files, inspect `skills/auggy/assets/templates/custom-augment/`.
+For a shipping-address change, the tool belongs to the order-support augment.
+The application owns the order. Use the verified caller identity to check
+which order they can change, and require confirmation of the proposed address
+before the adapter calls the application's order service.
+
+For starter files, see `assets/templates/custom-augment/`.
 After route changes, recommend:
 
 ```bash
-auggy routes
-auggy routes --json
-auggy routes --openapi
+bun run auggy routes
+bun run auggy routes --json
+bun run auggy routes --openapi
 ```
 
 If an app consumes those routes, also recommend generating browser/server
-clients. Read `skills/auggy/references/generated-clients.md`.
+clients. Read `references/generated-clients.md`.
 
 ### "I want to use Auggy from Next.js"
 
-Read `skills/auggy/references/nextjs-integration.md`. Keep browser generated
+Read `references/nextjs-integration.md`. Keep browser generated
 clients in browser-safe code and server generated clients in server-only code.
 Never ship creator bearer tokens, agent credentials, provider API keys, or
 external auth signing secrets to the browser.
@@ -268,42 +210,42 @@ Treat publicly reachable route handlers as untrusted entry points: verify the
 host application's session and explicit role before using a server client, and
 enforce exact Origin plus session-bound CSRF for browser actions. Trusted jobs
 should call the server client directly instead of routing through public HTTP.
-For starter files, inspect `skills/auggy/assets/templates/nextjs-browser-client/`
-and `skills/auggy/assets/templates/nextjs-server-client/`.
+For starter files, inspect `assets/templates/nextjs-browser-client/`
+and `assets/templates/nextjs-server-client/`.
 
 ### "I already use Supabase, Clerk, Auth0, or custom auth"
 
 Keep the app's auth system as the source of truth. The app backend verifies the
 session, computes explicit scopes/grants, and mints a short-lived Auggy auth
 assertion. Browser code forwards that assertion; it never sees the signing
-secret. Read `skills/auggy/references/authz-memory-trust.md`.
+secret. Read `references/authz-memory-trust.md`.
 For a complete route/tool walkthrough, also read
-`skills/auggy/references/app-auth-bridge-e2e.md`.
-For starter files, inspect `skills/auggy/assets/templates/app-auth-bridge/`.
+`references/app-auth-bridge-e2e.md`.
+For starter files, inspect `assets/templates/app-auth-bridge/`.
 
 ### "I want to deploy"
 
 Run local checks first:
 
 ```bash
-auggy doctor
+bun run auggy doctor
 ```
 
 Then deploy:
 
 ```bash
-auggy deploy
+bun run auggy deploy
 ```
 
-For cloud agents, use `auggy doctor --cloud` where relevant. Do not deploy
+For cloud agents, use `bun run auggy doctor --cloud` where relevant. Do not deploy
 console magic-link visitor auth unless the creator accepts that links appear in
 service logs.
 
 ### "Can you inspect or validate this project for me?"
 
 If this is a coding-agent workspace with shell access, helper scripts are
-available under `skills/auggy/scripts/`. Read
-`skills/auggy/references/cli-workflows.md` first so the underlying CLI commands
+available under `scripts/`. Read
+`references/cli-workflows.md` first so the underlying CLI commands
 are clear. Do not require these scripts when shell access is unavailable.
 
 ## Project Map
@@ -327,18 +269,18 @@ are clear. Do not require these scripts when shell access is unavailable.
 - `.env`: private local secrets; `data/`: mutable state and workspace files.
 - `.auggy/`: private model metadata and operation receipts, excluded from deployment.
 
-Use `auggy inspect` for passive navigation; partial output does not prove readiness.
+Use `./node_modules/.bin/auggy inspect` for passive navigation; partial output does not prove readiness.
 Inspection does not execute TypeScript or infer custom HTTP mount paths.
 The `auggy` executable disables Bun environment loading, automatic installation
-and local configuration preloads during inspection. `auggy routes` loads configuration and augment implementations.
+and local configuration preloads during inspection. `bun run auggy routes` loads configuration and augment implementations.
 
-For legacy referenced YAML, preview `auggy migrate`, then explicitly apply after
+For legacy referenced YAML, preview `bun run auggy migrate`, then explicitly apply after
 review. `--application` separately adopts owned execution files, refuses collisions,
 and requires a compatible installed runtime. It introduces the omitted application
 timeout of 15 minutes; config-only conversion preserves legacy execution mode.
 Changes affect the next launch. Never silently migrate, regenerate owned source,
 move legacy custom modules, or treat a dependency update as approval to rewrite
-project files. See `skills/auggy/references/cli-workflows.md` for recovery.
+project files. See `references/cli-workflows.md` for recovery.
 
 ## Operating Rules
 
@@ -348,11 +290,11 @@ project files. See `skills/auggy/references/cli-workflows.md` for recovery.
 - After changing config, skills, knowledge, or augments, recommend:
 
 ```bash
-auggy doctor
-auggy run
+bun run auggy doctor
+bun run auggy run
 ```
 
-- After changing route-owning augments, recommend `auggy routes` and
+- After changing route-owning augments, recommend `bun run auggy routes` and
   regenerating generated clients if an app imports them.
 - Preview augments (`bash`, `budgets`, `link`) need explicit creator intent and
   clear warnings.

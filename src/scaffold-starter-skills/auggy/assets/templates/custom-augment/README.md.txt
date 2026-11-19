@@ -1,6 +1,6 @@
 # example
 
-Sample read-only lookup logic created by `auggy augment create example` and
+Sample read-only lookup logic created by `bun run auggy augment create example` and
 registered once in `agent.yaml`. The deterministic in-memory fixture is not a
 production database, durable workflow, or system of record.
 

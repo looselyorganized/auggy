@@ -21,13 +21,13 @@ secrets.
 Use `visitorAuth` when the agent should recognize a person across sessions:
 
 ```bash
-auggy augment add visitorAuth
+bun run auggy augment add visitorAuth
 ```
 
 Use `layeredMemory` when the agent should store peer-scoped memory:
 
 ```bash
-auggy augment add layeredMemory
+bun run auggy augment add layeredMemory
 ```
 
 Use both when repeat visitors need cross-session memory continuity.
@@ -87,9 +87,9 @@ Apps that already use Supabase Auth, Clerk, Auth0, SSO, or custom sessions
 should keep that system as the source of truth.
 
 For copyable app-auth bridge files, inspect
-`skills/auggy/assets/templates/app-auth-bridge/`.
+`assets/templates/app-auth-bridge/`.
 For a complete protected route/tool walkthrough, read
-`skills/auggy/references/app-auth-bridge-e2e.md`.
+`references/app-auth-bridge-e2e.md`.
 
 Flow:
 
@@ -135,8 +135,8 @@ requires a different header.
 
 Copyable config templates:
 
-- `skills/auggy/assets/templates/app-auth-bridge/webtransport-external-auth.yaml.txt`
-- `skills/auggy/assets/templates/app-auth-bridge/webtransport-external-auth.ts.txt`
+- `assets/templates/app-auth-bridge/webtransport-external-auth.yaml.txt`
+- `assets/templates/app-auth-bridge/webtransport-external-auth.ts.txt`
 
 ## Minting Assertions
 
@@ -216,7 +216,7 @@ When `requires` fails:
 
 Copyable audit hook template:
 
-- `skills/auggy/assets/templates/app-auth-bridge/denial-audit-hook.ts.txt`
+- `assets/templates/app-auth-bridge/denial-audit-hook.ts.txt`
 
 ## Replay Protection
 
@@ -247,7 +247,7 @@ deployments must provide a shared atomic store. The store operation must mean
 
 Copyable store template:
 
-- `skills/auggy/assets/templates/app-auth-bridge/replay-protection-store.ts.txt`
+- `assets/templates/app-auth-bridge/replay-protection-store.ts.txt`
 
 ## Supabase And Clerk
 
@@ -268,8 +268,8 @@ Use Supabase server APIs or Clerk server APIs only in trusted app backend code:
 
 Copyable provider route-handler recipes:
 
-- `skills/auggy/assets/templates/app-auth-bridge/supabase-next-route.ts.txt`
-- `skills/auggy/assets/templates/app-auth-bridge/clerk-next-route.ts.txt`
-- `skills/auggy/assets/templates/app-auth-bridge/custom-session-next-route.ts.txt`
+- `assets/templates/app-auth-bridge/supabase-next-route.ts.txt`
+- `assets/templates/app-auth-bridge/clerk-next-route.ts.txt`
+- `assets/templates/app-auth-bridge/custom-session-next-route.ts.txt`
 
 Never verify sessions or sign Auggy assertions in browser code.

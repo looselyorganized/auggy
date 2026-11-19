@@ -202,8 +202,8 @@ should tell the user the app has not delegated that action.
 
 ## Files To Inspect
 
-- `skills/auggy/assets/templates/app-auth-bridge/app-policy.ts.txt`
-- `skills/auggy/assets/templates/app-auth-bridge/supabase-next-route.ts.txt`
-- `skills/auggy/assets/templates/app-auth-bridge/clerk-next-route.ts.txt`
-- `skills/auggy/assets/templates/app-auth-bridge/protected-orders-augment.ts.txt`
-- `skills/auggy/assets/templates/app-auth-bridge/denial-audit-hook.ts.txt`
+- `assets/templates/app-auth-bridge/app-policy.ts.txt`
+- `assets/templates/app-auth-bridge/supabase-next-route.ts.txt`
+- `assets/templates/app-auth-bridge/clerk-next-route.ts.txt`
+- `assets/templates/app-auth-bridge/protected-orders-augment.ts.txt`
+- `assets/templates/app-auth-bridge/denial-audit-hook.ts.txt`

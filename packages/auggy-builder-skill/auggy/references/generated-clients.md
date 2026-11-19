@@ -6,8 +6,8 @@ hand-writing paths, params, query strings, bodies, or auth headers.
 Generate both targets when an app consumes Auggy routes:
 
 ```bash
-auggy routes --client ts --target browser --out src/auggy-client.ts
-auggy routes --client ts --target server --out src/auggy-client.server.ts
+bun run auggy routes --client ts --target browser --out src/auggy-client.ts
+bun run auggy routes --client ts --target server --out src/auggy-client.server.ts
 ```
 
 `--target` defaults to `browser`.
@@ -33,8 +33,8 @@ Do not edit generated files manually. Regenerate after route paths, methods,
 auth modes, request schemas, response schemas, or route policies change.
 
 For copyable Next.js usage files, inspect
-`skills/auggy/assets/templates/nextjs-browser-client/` and
-`skills/auggy/assets/templates/nextjs-server-client/`.
+`assets/templates/nextjs-browser-client/` and
+`assets/templates/nextjs-server-client/`.
 
 ## Target Split
 
